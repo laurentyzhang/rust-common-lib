@@ -1,7 +1,7 @@
 use super::{Delta, Error, Value};
 
 pub struct Tracked<'a> {
-    value: std::borrow::Cow<'a, Value>,
+    value: Value<'a>,
     reads: u32,
     checks: u32, // Number of times the value has been checked for existence
     writes: u32,
@@ -13,7 +13,7 @@ pub struct Tracked<'a> {
 impl<'a> Tracked<'a> {
     pub fn new() -> Self {
         Self {
-            value: std::borrow::Cow::Owned(Value::None),
+            value: Value::None,
             reads: 0,
             checks: 0,
             writes: 0,
@@ -23,9 +23,9 @@ impl<'a> Tracked<'a> {
         }
     }
 
-    pub fn new_owned(value: Value) -> Self {
+    pub fn new_owned(value: Value<'a>) -> Self {
         Self {
-            value: std::borrow::Cow::Owned(value),
+            value,
             reads: 0,
             checks: 0,
             writes: 1,
@@ -35,9 +35,9 @@ impl<'a> Tracked<'a> {
         }
     }
 
-    pub fn new_borrowed(value: &'a Value) -> Self {
+    pub fn new_borrowed(value: Value<'a>) -> Self {
         Self {
-            value: std::borrow::Cow::Borrowed(value),
+            value,
             reads: 0,
             checks: 0,
             writes: 0, // Start with 1 write since we are borrowing an existing value
@@ -48,26 +48,26 @@ impl<'a> Tracked<'a> {
     }
 
     /// Borrow the underlying value without recording a read.
-    pub fn value(&self) -> &Value {
-        self.value.as_ref()
+    pub fn value(&self) -> &Value<'a> {
+        &self.value
     }
 
     /// Replace the value while preserving access history and recording a write.
-    pub fn write(&mut self, value: Value) {
-        self.value = std::borrow::Cow::Owned(value);
+    pub fn write(&mut self, value: Value<'a>) {
+        self.value = value;
         self.tombstone = false;
         self.writes += 1;
     }
 
     pub fn check(&mut self) -> bool {
         self.checks += 1;
-        !matches!(self.value.as_ref(), Value::None) && !self.tombstone
+        !matches!(self.value, Value::None) && !self.tombstone
     }
 
-    pub fn read(&mut self) -> Option<&Value> {
+    pub fn read(&mut self) -> Option<&Value<'a>> {
         self.reads += 1;
         if self.is_live() {
-            Some(self.value.as_ref())
+            Some(&self.value)
         } else {
             None
         }
@@ -75,13 +75,13 @@ impl<'a> Tracked<'a> {
 
     pub fn add_delta(&mut self, delta: Delta) -> Result<(), Error> {
         self.deltas += 1;
-        self.value.to_mut().add_delta(&delta)
+        self.value.add_delta(&delta)
     }
 
-    pub fn apply_delta(&mut self) -> Option<&Value> {
+    pub fn apply_delta(&mut self) -> Option<&Value<'a>> {
         self.writes += 1;
-        self.value.to_mut().apply_delta();
-        Some(self.value.as_ref())
+        self.value.apply_delta();
+        Some(&self.value)
     }
 
     pub fn delete(&mut self) -> Result<(), Error> {
@@ -103,7 +103,7 @@ impl<'a> Tracked<'a> {
     }
 
     pub fn is_none(&self) -> bool {
-        matches!(self.value.as_ref(), Value::None)
+        matches!(self.value, Value::None)
     }
 }
 
@@ -121,10 +121,10 @@ mod tests {
         let _ = tracked.read();
         assert!(!tracked.check());
         assert!(tracked.add_delta(Delta::None).is_ok());
-        tracked.write(Value::U64(U64::default()));
+        tracked.write(Value::U64(std::borrow::Cow::Owned(U64::default())));
         assert!(tracked.delete().is_ok());
         let previous_writes = tracked.writes;
-        let value = Value::U64(U64::default());
+        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
 
         tracked.write(value.clone());
 

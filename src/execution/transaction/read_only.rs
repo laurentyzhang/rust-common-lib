@@ -6,7 +6,7 @@ use crate::store::traits::ReadOnlyStore;
 
 /// ExecutionCache as the fallback store for another ExecutionCache,
 /// allowing for a layered caching mechanism.
-impl<'a, K> ReadOnlyStore<'a, K, Value> for cache::ExecutionCache<'a, K>
+impl<'a, K> ReadOnlyStore<'a, K, Value<'a>> for cache::ExecutionCache<'a, K>
 where
     K: std::hash::Hash + Eq,
 {
@@ -16,7 +16,7 @@ where
     }
 
     /// Read without tracking; local tombstones hide fallback values.
-    fn get(&self, key: &K) -> Option<&Value> {
+    fn get(&self, key: &K) -> Option<&Value<'a>> {
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {

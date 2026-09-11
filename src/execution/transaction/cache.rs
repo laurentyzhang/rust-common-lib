@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 pub struct ExecutionCache<'a, K> {
     pub(super) cache: HashMap<K, Tracked<'a>>,
-    pub(super) fallback: Option<&'a dyn ReadOnlyStore<'a, K, Value>>,
+    pub(super) fallback: Option<&'a dyn ReadOnlyStore<'a, K, Value<'a>>>,
 }
 
 impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
@@ -17,7 +17,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(fallback: &'a dyn ReadOnlyStore<'a, K, Value>) -> Self {
+    pub fn new_with_fallback(fallback: &'a dyn ReadOnlyStore<'a, K, Value<'a>>) -> Self {
         Self {
             cache: HashMap::new(),
             fallback: Some(fallback),
@@ -28,7 +28,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     ///
     /// Use `(&mut cache).get(key)` to select this method when `ReadOnlyStore`
     /// is in scope. `(&cache).get(key)` selects the untracked trait method.
-    pub fn get(&mut self, key: &K) -> Option<&Value>
+    pub fn get(&mut self, key: &K) -> Option<&Value<'a>>
     where
         K: Clone,
     {
@@ -36,7 +36,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn create(&mut self, key: K, value: Value) -> Result<(), crate::store::traits::Error>
+    pub fn create(&mut self, key: K, value: Value<'a>) -> Result<(), crate::store::traits::Error>
     where
         K: Clone,
     {
@@ -70,7 +70,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     pub(super) fn has_in_fallback(&self, key: &K) -> bool {
         self.fallback
             .as_ref()
-            .map_or(false, |fallback: &&dyn ReadOnlyStore<'a, K, Value>| {
+            .map_or(false, |fallback: &&dyn ReadOnlyStore<'a, K, Value<'a>>| {
                 (**fallback).contains_key(key)
             })
     }
@@ -92,7 +92,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
             .fallback
             .as_ref()
             .and_then(|fallback| fallback.get(&key))
-            .map(Tracked::new_borrowed)
+            .map(|value| Tracked::new_borrowed(value.clone()))
             .unwrap_or_else(Tracked::new);
 
         self.cache.entry(key).or_insert(tracked)
@@ -106,11 +106,11 @@ mod tests {
     use crate::store::cached::CachedStore;
     use crate::store::traits::{ReadOnlyStore, WriteOnlyStore};
 
-    fn numeric_value(number: u64) -> Value {
-        Value::U64(U64 {
+    fn numeric_value(number: u64) -> Value<'static> {
+        Value::U64(std::borrow::Cow::Owned(U64 {
             value: Some(number),
             ..U64::default()
-        })
+        }))
     }
 
     #[test]
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
         let key = 7;
-        let expected = Value::U64(U64::default());
+        let expected = Value::U64(std::borrow::Cow::Owned(U64::default()));
         let fallback = CachedStore::new(4, None);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
 
@@ -348,7 +348,7 @@ mod tests {
 
     #[test]
     fn create_handles_existing_records_and_rejects_live_values() {
-        let value = Value::U64(U64::default());
+        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(1, value.clone())]);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn receiver_mutability_selects_cache_population() {
         let key = 7;
-        let value = Value::U64(U64::default());
+        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(key, value.clone())]);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
@@ -387,13 +387,13 @@ mod tests {
         assert!((&mut cache).get(&key) == Some(&value));
         assert!(cache.cache.contains_key(&key));
         let tracked = cache.cache.get(&key).unwrap();
-        assert!(std::ptr::eq(tracked.value(), fallback.get(&key).unwrap()));
+        assert!(tracked.value() == fallback.get(&key).unwrap());
     }
 
     #[test]
     fn mutable_read_populates_only_the_outer_cache() {
         let key = 7;
-        let value = Value::U64(U64::default());
+        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(key, value.clone())]);
         let inner = ExecutionCache::new_with_fallback(&fallback);
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn execution_cache_with_execution_cache_fallback() {
-        let fallback = CachedStore::<u64, Value>::new(4, None);
+        let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
         let shared_cache = ExecutionCache::new_with_fallback(&fallback);
         let mut execution_cache = ExecutionCache::new_with_fallback(&shared_cache);
 
