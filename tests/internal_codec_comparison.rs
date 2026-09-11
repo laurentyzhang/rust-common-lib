@@ -2,16 +2,14 @@ use std::{hint::black_box, time::Instant};
 
 use alloy_primitives::U256 as AlloyU256;
 use alloy_rlp::{Decodable, Encodable, decode_exact, encode};
-use rust_common_lib::{
+use rust_common_lib::crdt::{
+    bytes::Bytes,
     codecs::internal,
-    crdt::{
-        bytes::Bytes,
-        crdt::Crdt,
-        int64::I64,
-        path_meta::{PathDelta, PathMeta},
-        u256::U256,
-        uint64::U64,
-    },
+    crdt::Crdt,
+    int64::I64,
+    path_meta::{PathDelta, PathMeta},
+    u256::U256,
+    uint64::U64,
 };
 
 const ITERATIONS: usize = 10_000;

@@ -1,4 +1,5 @@
 pub mod bytes;
+pub mod codecs;
 pub mod crdt;
 pub use self::crdt::Crdt;
 pub mod int64;

@@ -1,6 +1,6 @@
 // use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::Value;
-use crate::execution::cache::ExecutionCache;
+use crate::execution::transaction::cache::ExecutionCache;
 use crate::store::traits::{Error, WriteOnlyStore};
 
 impl<'a, K> WriteOnlyStore<'a, K, Value> for ExecutionCache<'a, K>
