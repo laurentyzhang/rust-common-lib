@@ -16,7 +16,7 @@ pub trait ExecutorStore<'a, K, V, D>: ReadOnlyStore<'a, K, V> + WriteOnlyStore<'
 where
     K: std::hash::Hash + Eq,
 {
-    fn create(&mut self, key: K, value: V) -> Result<(), super::store::Error>;
+    fn create(&mut self, key: K, value: V) -> Result<(), Error>;
     fn delete(&mut self, key: K);
     fn drain(&mut self) -> Vec<(K, Option<V>)>;
 }

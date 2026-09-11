@@ -1,11 +1,11 @@
 // use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::Value;
-use crate::store::store::ReadOnlyStore;
+use crate::store::traits::ReadOnlyStore;
 // use std::collections::HashMap;
 
 /// ExecutionCache as the fallback store for another ExecutionCache,
 /// allowing for a layered caching mechanism.
-impl<'a, K> ReadOnlyStore<'a, K, Value> for crate::store::execution::cache::ExecutionCache<'a, K>
+impl<'a, K> ReadOnlyStore<'a, K, Value> for crate::execution::cache::ExecutionCache<'a, K>
 where
     K: std::hash::Hash + Eq,
 {

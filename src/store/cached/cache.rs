@@ -1,5 +1,5 @@
 // use crate::crdt::state::{Delta, Tracked, Value};
-use crate::store::store::{Error, ReadOnlyStore, WriteOnlyStore};
+use crate::store::traits::{Error, ReadOnlyStore, WriteOnlyStore};
 
 pub struct CachedStore<'a, K, V> {
     cache: quick_cache::unsync::Cache<K, V>,

@@ -1,7 +1,6 @@
 use crate::crdt::state::{Delta, Error};
-// use crate::crdt::state::tracked;
 use crate::crdt::state::{Tracked, Value};
-use crate::store::store::ReadOnlyStore;
+use crate::store::traits::ReadOnlyStore;
 use std::collections::HashMap;
 
 pub struct ExecutionCache<'a, K> {
@@ -37,7 +36,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn create(&mut self, key: K, value: Value) -> Result<(), crate::store::store::Error>
+    pub fn create(&mut self, key: K, value: Value) -> Result<(), crate::store::traits::Error>
     where
         K: Clone,
     {
@@ -46,7 +45,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
             tracked.write(value);
             return Ok(());
         }
-        return Err(crate::store::store::Error::ValueAlreadyExists);
+        return Err(crate::store::traits::Error::ValueAlreadyExists);
     }
 
     /// Record a delta attempt, ignoring any returned error.
@@ -105,7 +104,7 @@ mod tests {
     use super::ExecutionCache;
     use crate::crdt::{state::Value, uint64::U64};
     use crate::store::cached::CachedStore;
-    use crate::store::store::{ReadOnlyStore, WriteOnlyStore};
+    use crate::store::traits::{ReadOnlyStore, WriteOnlyStore};
 
     fn numeric_value(number: u64) -> Value {
         Value::U64(U64 {
@@ -160,7 +159,7 @@ mod tests {
         for replacement in [original.clone(), numeric_value(u64::MAX)] {
             assert!(matches!(
                 cache.create(7, replacement),
-                Err(crate::store::store::Error::ValueAlreadyExists)
+                Err(crate::store::traits::Error::ValueAlreadyExists)
             ));
             assert!((&mut cache).get(&7) == Some(&original));
             assert!((&cache).get(&7) == Some(&original));
@@ -264,7 +263,7 @@ mod tests {
                                 assert!(
                                     matches!(
                                         result,
-                                        Err(crate::store::store::Error::ValueAlreadyExists)
+                                        Err(crate::store::traits::Error::ValueAlreadyExists)
                                     ),
                                     "sequence {sequence}, step {step}"
                                 );
@@ -356,12 +355,12 @@ mod tests {
 
         assert!(matches!(
             cache.create(1, value.clone()),
-            Err(crate::store::store::Error::ValueAlreadyExists)
+            Err(crate::store::traits::Error::ValueAlreadyExists)
         ));
         assert!(cache.create(2, value.clone()).is_ok());
         assert!(matches!(
             cache.create(2, value.clone()),
-            Err(crate::store::store::Error::ValueAlreadyExists)
+            Err(crate::store::traits::Error::ValueAlreadyExists)
         ));
 
         let _ = (&mut cache).get(&3);

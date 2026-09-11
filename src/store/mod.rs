@@ -1,3 +1,4 @@
 pub mod cached;
-pub mod execution;
-pub mod store;
+pub mod traits;
+
+pub use traits::{Error, ExecutorStore, ReadOnlyStore, WriteOnlyStore};

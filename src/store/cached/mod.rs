@@ -1,2 +1,2 @@
-pub mod cached;
-pub use cached::CachedStore;
+mod cache;
+pub use cache::CachedStore;

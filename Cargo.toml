@@ -13,7 +13,12 @@ quick_cache = { path = "../../quick-cache" }
 [dev-dependencies]
 foyer-memory = "0.22.4"
 moka = { version = "0.12.16", features = ["sync"] }
+xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
 
 [[bench]]
 name = "cache_comparison"
+harness = false
+
+[[bench]]
+name = "hasher_comparison"
 harness = false
