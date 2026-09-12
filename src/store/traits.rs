@@ -21,6 +21,6 @@ where
 }
 
 pub enum Error {
-    ValueAlreadyExists,
+    ValueCannotBeRecreated,
     NotFound,
 }

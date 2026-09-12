@@ -1,6 +1,7 @@
 // use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::Value;
 use crate::execution::transaction::cache::ExecutionCache;
+use crate::store::FallbackStore;
 use crate::store::traits::{Error, WriteOnlyStore};
 
 /// A write-only store implementation for the execution cache.
@@ -9,15 +10,11 @@ impl<'a, K> WriteOnlyStore<K, Value<'a>> for ExecutionCache<'a, K>
 where
     K: std::hash::Hash + Eq,
 {
-    fn stage(&mut self, updates: Vec<(K, Value<'a>)>) -> Result<(), Error> {
-        // updates.iter_mut().for_each(|(key, value)| {
-        // match value {
-
-        // }
-
-        // self.get(&key)
-
-        // self.cache.insert(&key), value.clone());
+    fn stage(&mut self, updates: Vec<(K, Value)>) -> Result<(), Error> {
+        // updates.iter().for_each(|(key, value)| {
+        //     if !self.contains_key(key) {
+        //         self.create(key, value);
+        //     }
         // });
         Ok(())
     }

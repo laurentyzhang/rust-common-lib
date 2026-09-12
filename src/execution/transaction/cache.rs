@@ -41,11 +41,14 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
         K: Clone,
     {
         let tracked = self.get_or_populate_tracked(key);
-        if !tracked.is_live() {
-            tracked.write(value);
-            return Ok(());
+
+        if tracked.is_live() {
+            tracked.check();
+            return Err(crate::store::traits::Error::ValueCannotBeRecreated);
         }
-        return Err(crate::store::traits::Error::ValueAlreadyExists);
+
+        tracked.create(value);
+        Ok(())
     }
 
     /// Record a delta attempt, ignoring any returned error.
@@ -91,35 +94,31 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     where
         K: Clone,
     {
-        if self.cache.contains_key(key) {
-            return self
-                .get_tracked_mut(&key)
-                .expect("tracked entry must exist");
-        }
+        let fallback = self.fallback.as_ref();
 
-        let tracked = self
-            .fallback
-            .as_ref()
-            .and_then(|fallback| fallback.get(&key))
-            .map(|value| Tracked::new_borrowed(value.clone()))
-            .unwrap_or_else(Tracked::new);
-
-        self.cache.entry(key.clone()).or_insert(tracked)
+        self.cache.entry(key.clone()).or_insert_with(|| {
+            fallback
+                .and_then(|fallback| fallback.get(key))
+                .map_or_else(Tracked::new, |value| Tracked::new_borrowed(value.clone()))
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ExecutionCache;
-    use crate::crdt::{state::Value, uint64::U64};
+    use crate::crdt::{
+        state::{Numeric, Value},
+        uint64::U64,
+    };
     use crate::store::cached::CachedStore;
     use crate::store::traits::{FallbackStore, WriteOnlyStore};
 
     fn numeric_value(number: u64) -> Value<'static> {
-        Value::U64(std::borrow::Cow::Owned(U64 {
+        Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
             value: Some(number),
             ..U64::default()
-        }))
+        })))
     }
 
     #[test]
@@ -168,7 +167,7 @@ mod tests {
         for replacement in [original.clone(), numeric_value(u64::MAX)] {
             assert!(matches!(
                 cache.create(&7, replacement),
-                Err(crate::store::traits::Error::ValueAlreadyExists)
+                Err(crate::store::traits::Error::ValueCannotBeRecreated)
             ));
         }
 
@@ -280,7 +279,7 @@ mod tests {
                                 assert!(
                                     matches!(
                                         result,
-                                        Err(crate::store::traits::Error::ValueAlreadyExists)
+                                        Err(crate::store::traits::Error::ValueCannotBeRecreated)
                                     ),
                                     "sequence {sequence}, step {step}"
                                 );
@@ -325,7 +324,7 @@ mod tests {
     #[test]
     fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
         let key = 7;
-        let expected = Value::U64(std::borrow::Cow::Owned(U64::default()));
+        let expected = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let fallback = CachedStore::new(4, None);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
 
@@ -365,19 +364,19 @@ mod tests {
 
     #[test]
     fn create_handles_existing_records_and_rejects_live_values() {
-        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
+        let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(1, value.clone())]);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
 
         assert!(matches!(
             cache.create(&1, value.clone()),
-            Err(crate::store::traits::Error::ValueAlreadyExists)
+            Err(crate::store::traits::Error::ValueCannotBeRecreated)
         ));
         assert!(cache.create(&2, value.clone()).is_ok());
         assert!(matches!(
             cache.create(&2, value.clone()),
-            Err(crate::store::traits::Error::ValueAlreadyExists)
+            Err(crate::store::traits::Error::ValueCannotBeRecreated)
         ));
 
         let _ = (&mut cache).get(&3);
@@ -393,7 +392,7 @@ mod tests {
     #[test]
     fn receiver_mutability_selects_cache_population() {
         let key = 7;
-        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
+        let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(key, value.clone())]);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
@@ -410,7 +409,7 @@ mod tests {
     #[test]
     fn mutable_read_populates_only_the_outer_cache() {
         let key = 7;
-        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
+        let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(key, value.clone())]);
         let inner = ExecutionCache::new_with_fallback(&fallback);

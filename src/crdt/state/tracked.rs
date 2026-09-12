@@ -6,8 +6,8 @@ pub struct Tracked<'a> {
     checks: u32, // Number of times the value has been checked for existence
     writes: u32,
     deltas: u32,
-    tombstone: bool,
-    is_new: bool, // Indicates if the tracked value is newly created and not yet committed
+    tombstone: u32,
+    creates: u32, // Indicates if the tracked value is newly created and not yet committed
 }
 
 impl<'a> Tracked<'a> {
@@ -18,8 +18,8 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 0,
             deltas: 0,
-            tombstone: false,
-            is_new: true,
+            tombstone: 0,
+            creates: 1,
         }
     }
 
@@ -30,8 +30,8 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 1,
             deltas: 0,
-            tombstone: false,
-            is_new: true,
+            tombstone: 0,
+            creates: 1,
         }
     }
 
@@ -42,8 +42,8 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 0, // Start with 1 write since we are borrowing an existing value
             deltas: 0,
-            tombstone: false,
-            is_new: false,
+            tombstone: 0,
+            creates: 0,
         }
     }
 
@@ -52,16 +52,21 @@ impl<'a> Tracked<'a> {
         &self.value
     }
 
+    pub fn create(&mut self, value: Value<'a>) {
+        self.write(value);
+        self.writes -= 1;
+        self.creates += 1;
+    }
+
     /// Replace the value while preserving access history and recording a write.
     pub fn write(&mut self, value: Value<'a>) {
         self.value = value;
-        self.tombstone = false;
+        self.tombstone = 0;
         self.writes += 1;
     }
 
-    pub fn check(&mut self) -> bool {
+    pub fn check(&mut self) {
         self.checks += 1;
-        !matches!(self.value, Value::None) && !self.tombstone
     }
 
     pub fn read(&mut self) -> Option<&Value<'a>> {
@@ -90,7 +95,7 @@ impl<'a> Tracked<'a> {
             return Err(Error::EntryNotFound);
         }
 
-        self.tombstone = true;
+        self.tombstone += 1;
         Ok(())
     }
 
@@ -99,7 +104,7 @@ impl<'a> Tracked<'a> {
     }
 
     pub fn is_tombstone(&self) -> bool {
-        self.tombstone
+        self.tombstone > 0
     }
 
     pub fn is_none(&self) -> bool {
@@ -111,7 +116,7 @@ impl<'a> Tracked<'a> {
 mod tests {
     use super::Tracked;
     use crate::crdt::{
-        state::{Delta, Value},
+        state::{Delta, Numeric, Value},
         uint64::U64,
     };
 
@@ -119,12 +124,14 @@ mod tests {
     fn write_preserves_history_and_clears_tombstone() {
         let mut tracked = Tracked::new();
         let _ = tracked.read();
-        assert!(!tracked.check());
+        tracked.check();
         assert!(tracked.add_delta(Delta::None).is_ok());
-        tracked.write(Value::U64(std::borrow::Cow::Owned(U64::default())));
+        tracked.write(Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+            U64::default(),
+        ))));
         assert!(tracked.delete().is_ok());
         let previous_writes = tracked.writes;
-        let value = Value::U64(std::borrow::Cow::Owned(U64::default()));
+        let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
 
         tracked.write(value.clone());
 

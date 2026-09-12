@@ -6,5 +6,5 @@ pub enum Error {
     None,
     TypeMismatch,
     EntryNotFound,
-    ValueAlreadyExists,
+    ValueCannotBeRecreated,
 }
