@@ -18,6 +18,30 @@ impl Default for U64 {
     }
 }
 
+impl U64 {
+    fn check_limits(upper: u64, lower: u64, value: u64) -> Result<(), Error> {
+        if lower > upper {
+            return Err(Error::U64("lower limit must be less than upper limit"));
+        }
+
+        if value < lower {
+            return Err(Error::U64("value is below the configured lower limit"));
+        }
+
+        if value > upper {
+            return Err(Error::U64("value is above the configured upper limit"));
+        }
+        Ok(())
+    }
+
+    pub fn new(&mut self, upper: u64, lower: u64) -> Result<Self, Error> {
+        Self::check_limits(upper, lower, 0)?;
+
+        self.limits = Some((lower, upper));
+        Ok(Self::default())
+    }
+}
+
 impl Crdt<u64, u64> for U64 {
     type Error = Error;
 
@@ -34,20 +58,17 @@ impl Crdt<u64, u64> for U64 {
         let accumulated = old_delta
             .unwrap_or(0)
             .checked_add(*delta)
-            .ok_or(Error::U64((old_delta, "u64 overflow")))?;
+            .ok_or(Error::U64("u64 overflow"))?;
         let projected = match self.value {
             Some(value) => value
                 .checked_add(accumulated)
-                .ok_or(Error::U64((old_delta, "u64 overflow")))?,
+                .ok_or(Error::U64("u64 overflow"))?,
             None => accumulated,
         };
 
         if let Some((_, upper)) = self.limits {
             if projected > upper {
-                return Err(Error::U64((
-                    old_delta,
-                    "value is above the configured upper limit",
-                )));
+                return Err(Error::U64("value is above the configured upper limit"));
             }
         }
 

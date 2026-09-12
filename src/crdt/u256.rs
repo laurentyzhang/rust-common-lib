@@ -20,6 +20,30 @@ impl Default for U256 {
     }
 }
 
+impl U256 {
+    fn check_limits(upper: AlloyU256, lower: AlloyU256, value: AlloyU256) -> Result<(), Error> {
+        if lower > upper {
+            return Err(Error::U256("lower limit must be less than upper limit"));
+        }
+
+        if value < lower {
+            return Err(Error::U256("value is below the configured lower limit"));
+        }
+
+        if value > upper {
+            return Err(Error::U256("value is above the configured upper limit"));
+        }
+        Ok(())
+    }
+
+    pub fn new(&mut self, upper: AlloyU256, lower: AlloyU256) -> Result<Self, Error> {
+        Self::check_limits(upper, lower, AlloyU256::ZERO)?;
+
+        self.limits = Some((AlloyU256::from(lower), AlloyU256::from(upper)));
+        Ok(Self::default())
+    }
+}
+
 impl Crdt<AlloyU256, AlloyU256> for U256 {
     type Error = Error;
 
@@ -37,21 +61,22 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
         let accumulated = old_delta
             .unwrap_or(AlloyU256::ZERO)
             .checked_add(*delta)
-            .ok_or(Error::U256((old_delta, "U256 overflow")))?;
+            .ok_or(Error::U256("U256 overflow"))?;
 
         let projected = match self.value {
             Some(value) => value
                 .checked_add(accumulated)
-                .ok_or(Error::U256((old_delta, "U256 overflow")))?,
+                .ok_or(Error::U256("U256 overflow"))?,
             None => accumulated,
         };
 
-        if let Some((_, upper)) = self.limits {
+        if let Some((lower, upper)) = self.limits {
+            if projected < lower {
+                return Err(Error::U256("value is below the configured lower limit"));
+            }
+
             if projected > upper {
-                return Err(Error::U256((
-                    old_delta,
-                    "value is above the configured upper limit",
-                )));
+                return Err(Error::U256("value is above the configured upper limit"));
             }
         }
 

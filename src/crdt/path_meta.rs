@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::collections::delta_set::DeltaSet;
 
 use super::crdt::Crdt;
@@ -21,6 +23,12 @@ impl Default for PathMeta {
             entries: DeltaSet::new(16),
             delta: None,
         }
+    }
+}
+
+impl PathMeta {
+    pub fn new() -> Result<Self, Error> {
+        Ok(Self::default())
     }
 }
 

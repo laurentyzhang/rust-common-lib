@@ -14,10 +14,3 @@ pub trait Crdt<T: ?Sized + PartialEq, D: ?Sized + PartialEq>: Clone + PartialEq 
 pub trait CacheableCrdt<T: ?Sized + PartialEq, D: ?Sized + PartialEq>: Crdt<T, D> {
     fn cache_weight(&self) -> usize;
 }
-
-/// Test-only operations for constructing CRDT states directly.
-#[cfg(test)]
-pub(crate) trait CrdtTest<T: Clone + PartialEq, D: Clone + PartialEq> {
-    fn set_raw_value(&mut self, value: T);
-    fn reset_raw_delta(&mut self);
-}

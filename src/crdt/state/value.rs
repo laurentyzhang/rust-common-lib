@@ -11,6 +11,12 @@ pub enum Value<'a> {
     None,
 }
 
+pub enum Numberic<'a> {
+    I64(std::borrow::Cow<'a, crate::crdt::int64::I64>),
+    U64(std::borrow::Cow<'a, crate::crdt::uint64::U64>),
+    U256(std::borrow::Cow<'a, crate::crdt::u256::U256>),
+}
+
 impl<'a> Value<'a> {
     pub fn borrowed(value: &'a Value<'_>) -> Self {
         match value {
