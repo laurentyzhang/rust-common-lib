@@ -1,11 +1,11 @@
 use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::{Tracked, Value};
-use crate::store::traits::ReadOnlyStore;
+use crate::store::traits::FallbackStore;
 use std::collections::HashMap;
 
 pub struct ExecutionCache<'a, K> {
     pub(super) cache: HashMap<K, Tracked<'a>>,
-    pub(super) fallback: Option<&'a dyn ReadOnlyStore<'a, K, Value<'a>>>,
+    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
 impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
@@ -17,7 +17,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(fallback: &'a dyn ReadOnlyStore<'a, K, Value<'a>>) -> Self {
+    pub fn new_with_fallback(fallback: &'a dyn FallbackStore<'a, K, Value<'a>>) -> Self {
         Self {
             cache: HashMap::new(),
             fallback: Some(fallback),
@@ -26,21 +26,21 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
 
     /// Populate the cache if needed and record a tracked read.
     ///
-    /// Use `(&mut cache).get(key)` to select this method when `ReadOnlyStore`
+    /// Use `(&mut cache).get(key)` to select this method when `FallbackStore`
     /// is in scope. `(&cache).get(key)` selects the untracked trait method.
     pub fn get(&mut self, key: &K) -> Option<&Value<'a>>
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key.clone()).read()
+        self.get_or_populate_tracked(key).read()
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn create(&mut self, key: K, value: Value<'a>) -> Result<(), crate::store::traits::Error>
+    pub fn create(&mut self, key: &K, value: Value<'a>) -> Result<(), crate::store::traits::Error>
     where
         K: Clone,
     {
-        let tracked = self.get_or_populate_tracked(key.clone());
+        let tracked = self.get_or_populate_tracked(key);
         if !tracked.is_live() {
             tracked.write(value);
             return Ok(());
@@ -49,7 +49,10 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Record a delta attempt, ignoring any returned error.
-    pub fn add_delta(&mut self, key: K, delta: Delta) -> Result<(), Error> {
+    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), Error>
+    where
+        K: Clone,
+    {
         self.get_or_populate_tracked(key).add_delta(delta)
     }
 
@@ -62,7 +65,10 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Mark the tracked value as deleted and record a write.
-    pub fn delete(&mut self, key: K) -> Result<(), Error> {
+    pub fn delete(&mut self, key: &K) -> Result<(), Error>
+    where
+        K: Clone,
+    {
         self.get_or_populate_tracked(key).delete()
     }
 
@@ -70,7 +76,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     pub(super) fn has_in_fallback(&self, key: &K) -> bool {
         self.fallback
             .as_ref()
-            .map_or(false, |fallback: &&dyn ReadOnlyStore<K, Value<'a>>| {
+            .map_or(false, |fallback: &&dyn FallbackStore<K, Value<'a>>| {
                 (**fallback).contains_key(key)
             })
     }
@@ -81,8 +87,11 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
-    fn get_or_populate_tracked(&mut self, key: K) -> &mut Tracked<'a> {
-        if self.cache.contains_key(&key) {
+    fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<'a>
+    where
+        K: Clone,
+    {
+        if self.cache.contains_key(key) {
             return self
                 .get_tracked_mut(&key)
                 .expect("tracked entry must exist");
@@ -95,7 +104,7 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
             .map(|value| Tracked::new_borrowed(value.clone()))
             .unwrap_or_else(Tracked::new);
 
-        self.cache.entry(key).or_insert(tracked)
+        self.cache.entry(key.clone()).or_insert(tracked)
     }
 }
 
@@ -104,7 +113,7 @@ mod tests {
     use super::ExecutionCache;
     use crate::crdt::{state::Value, uint64::U64};
     use crate::store::cached::CachedStore;
-    use crate::store::traits::{ReadOnlyStore, WriteOnlyStore};
+    use crate::store::traits::{FallbackStore, WriteOnlyStore};
 
     fn numeric_value(number: u64) -> Value<'static> {
         Value::U64(std::borrow::Cow::Owned(U64 {
@@ -117,13 +126,13 @@ mod tests {
     fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
         let fallback = CachedStore::new(4, None);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
-        assert!((&cache).get(&7).is_none());
+        assert!((cache).get(&7).is_none());
         assert!(!cache.exists(&7));
         assert!(cache.cache.is_empty());
 
         for _ in 0..3 {
             assert!((&mut cache).get(&7).is_none());
-            assert!((&cache).get(&7).is_none());
+            assert!((cache).get(&7).is_none());
             assert!(!cache.exists(&7));
             assert_eq!(cache.cache.len(), 1);
         }
@@ -135,18 +144,18 @@ mod tests {
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
         for _ in 0..2 {
             assert_eq!(
-                cache.delete(7),
+                cache.delete(&7),
                 Err(crate::crdt::state::Error::EntryNotFound)
             );
         }
-        assert!(cache.create(7, numeric_value(42)).is_ok());
-        assert_eq!(cache.delete(7), Ok(()));
+        assert!(cache.create(&7, numeric_value(42)).is_ok());
+        assert_eq!(cache.delete(&7), Ok(()));
         assert_eq!(
-            cache.delete(7),
+            cache.delete(&7),
             Err(crate::crdt::state::Error::EntryNotFound)
         );
         assert!((&mut cache).get(&7).is_none());
-        assert!((&cache).get(&7).is_none());
+        assert!((cache).get(&7).is_none());
         assert!(!cache.exists(&7));
     }
 
@@ -155,10 +164,10 @@ mod tests {
         let fallback = CachedStore::new(4, None);
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
         let original = numeric_value(42);
-        assert!(cache.create(7, original.clone()).is_ok());
+        assert!(cache.create(&7, original.clone()).is_ok());
         for replacement in [original.clone(), numeric_value(u64::MAX)] {
             assert!(matches!(
-                cache.create(7, replacement),
+                cache.create(&7, replacement),
                 Err(crate::store::traits::Error::ValueAlreadyExists)
             ));
         }
@@ -175,12 +184,12 @@ mod tests {
         let key = String::new();
         let other_key = String::from("other");
         let other_value = numeric_value(17);
-        assert!(cache.create(other_key.clone(), other_value.clone()).is_ok());
+        assert!(cache.create(&other_key, other_value.clone()).is_ok());
         for number in [0, u64::MAX, 42] {
             let expected = numeric_value(number);
-            assert!(cache.create(key.clone(), expected.clone()).is_ok());
+            assert!(cache.create(&key, expected.clone()).is_ok());
             assert!((&mut cache).get(&key) == Some(&expected));
-            assert_eq!(cache.delete(key.clone()), Ok(()));
+            assert_eq!(cache.delete(&key), Ok(()));
             assert!((&mut cache).get(&key).is_none());
             // assert!((&cache).get(&key).is_none());
             // assert!(!cache.exists(&key));
@@ -201,13 +210,13 @@ mod tests {
             if read_first {
                 assert!((&mut cache).get(&7) == Some(&original));
             }
-            assert_eq!(cache.delete(7), Ok(()));
+            assert_eq!(cache.delete(&7), Ok(()));
             assert!(!cache.exists(&7));
             assert!((&cache).get(&7).is_none());
             assert!((&mut cache).get(&7).is_none());
             assert!(fallback.get(&7) == Some(&original));
 
-            assert!(cache.create(7, replacement.clone()).is_ok());
+            assert!(cache.create(&7, replacement.clone()).is_ok());
             assert!((&cache).get(&7) == Some(&replacement));
             assert!((&mut cache).get(&7) == Some(&replacement));
             assert!(fallback.get(&7) == Some(&original));
@@ -221,7 +230,7 @@ mod tests {
         let mut fallback = CachedStore::new(4, None);
         fallback.commit_batch(vec![(7, original.clone())]);
         let mut inner = ExecutionCache::new_with_fallback(&fallback);
-        assert_eq!(inner.delete(7), Ok(()));
+        assert_eq!(inner.delete(&7), Ok(()));
         assert!((&mut inner).get(&8).is_none());
         let mut outer = ExecutionCache::new_with_fallback(&inner);
 
@@ -233,10 +242,10 @@ mod tests {
 
         for key in [7, 8] {
             assert_eq!(
-                outer.delete(key),
+                outer.delete(&key),
                 Err(crate::crdt::state::Error::EntryNotFound)
             );
-            assert!(outer.create(key, replacement.clone()).is_ok());
+            assert!(outer.create(&key, replacement.clone()).is_ok());
         }
 
         for key in [7, 8] {
@@ -266,7 +275,7 @@ mod tests {
                     match operation {
                         0 | 1 => {
                             let value = numeric_value(if operation == 0 { 0 } else { u64::MAX });
-                            let result = cache.create(7, value.clone());
+                            let result = cache.create(&7, value.clone());
                             if expected.is_some() {
                                 assert!(
                                     matches!(
@@ -287,7 +296,7 @@ mod tests {
                                 Err(crate::crdt::state::Error::EntryNotFound)
                             };
                             assert_eq!(
-                                cache.delete(7),
+                                cache.delete(&7),
                                 expected_result,
                                 "sequence {sequence}, step {step}"
                             );
@@ -326,16 +335,16 @@ mod tests {
 
         // Deleting the missing value fails.
         assert_eq!(
-            cache.delete(key),
+            cache.delete(&key),
             Err(crate::crdt::state::Error::EntryNotFound)
         );
 
         // Create a valid value and read it back.
-        assert!(cache.create(key, expected.clone()).is_ok());
+        assert!(cache.create(&key, expected.clone()).is_ok());
         assert!((&mut cache).get(&key) == Some(&expected));
 
         // Deletion now succeeds, and subsequent reads return no value.
-        assert_eq!(cache.delete(key), Ok(()));
+        assert_eq!(cache.delete(&key), Ok(()));
         assert!((&mut cache).get(&key).is_none());
     }
 
@@ -348,7 +357,7 @@ mod tests {
         assert!((&mut cache).get(&key).is_none());
         assert!(cache.cache.contains_key(&key));
         assert_eq!(
-            cache.delete(key),
+            cache.delete(&key),
             Err(crate::crdt::state::Error::EntryNotFound)
         );
         assert!(!cache.exists(&key));
@@ -362,21 +371,21 @@ mod tests {
         let mut cache = ExecutionCache::new_with_fallback(&fallback);
 
         assert!(matches!(
-            cache.create(1, value.clone()),
+            cache.create(&1, value.clone()),
             Err(crate::store::traits::Error::ValueAlreadyExists)
         ));
-        assert!(cache.create(2, value.clone()).is_ok());
+        assert!(cache.create(&2, value.clone()).is_ok());
         assert!(matches!(
-            cache.create(2, value.clone()),
+            cache.create(&2, value.clone()),
             Err(crate::store::traits::Error::ValueAlreadyExists)
         ));
 
         let _ = (&mut cache).get(&3);
-        assert!(cache.create(3, value.clone()).is_ok());
-        assert!((&cache).get(&3) == Some(&value));
+        assert!(cache.create(&3, value.clone()).is_ok());
+        assert!((cache).get(&3) == Some(&value));
 
-        assert!(cache.delete(3).is_ok());
-        assert!(cache.create(3, value.clone()).is_ok());
+        assert!(cache.delete(&3).is_ok());
+        assert!(cache.create(&3, value.clone()).is_ok());
         assert!(cache.exists(&3));
         assert!((&cache).get(&3) == Some(&value));
     }

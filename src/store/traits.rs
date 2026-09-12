@@ -1,8 +1,7 @@
-pub trait ReadOnlyStore<'a, K, V> {
+pub trait FallbackStore<'a, K, V> {
     fn contains_key(&self, key: &K) -> bool; //If the key exists locally.
     fn get(&self, key: &K) -> Option<&V>;
 }
-
 
 pub trait WriteOnlyStore<K, V>
 where
@@ -12,7 +11,7 @@ where
     fn commit_batch(&mut self, updates: Vec<(K, V)>);
 }
 
-pub trait ExecutorStore<'a, K, V, D>: ReadOnlyStore<'a, K, V> + WriteOnlyStore<K, V>
+pub trait ExecutorStore<'a, K, V, D>: FallbackStore<'a, K, V> + WriteOnlyStore<K, V>
 where
     K: std::hash::Hash + Eq,
 {

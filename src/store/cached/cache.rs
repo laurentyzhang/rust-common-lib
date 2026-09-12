@@ -1,16 +1,16 @@
 // use crate::crdt::state::{Delta, Tracked, Value};
-use crate::store::traits::{Error, ReadOnlyStore, WriteOnlyStore};
+use crate::store::traits::{Error, FallbackStore, WriteOnlyStore};
 
 pub struct CachedStore<'a, K, V> {
     cache: quick_cache::unsync::Cache<K, V>,
-    fallback: Option<&'a mut dyn ReadOnlyStore<'a, K, V>>,
+    fallback: Option<&'a mut dyn FallbackStore<'a, K, V>>,
 }
 
 impl<'a, K, V> CachedStore<'a, K, V>
 where
     K: Eq + std::hash::Hash,
 {
-    pub fn new(capacity: usize, fallback: Option<&'a mut dyn ReadOnlyStore<'a, K, V>>) -> Self {
+    pub fn new(capacity: usize, fallback: Option<&'a mut dyn FallbackStore<'a, K, V>>) -> Self {
         Self {
             cache: quick_cache::unsync::Cache::new(capacity),
             fallback,
@@ -18,7 +18,7 @@ where
     }
 }
 
-impl<'a, K, V> ReadOnlyStore<'a, K, V> for CachedStore<'a, K, V>
+impl<'a, K, V> FallbackStore<'a, K, V> for CachedStore<'a, K, V>
 where
     K: Eq + std::hash::Hash + Clone,
 {
@@ -45,7 +45,7 @@ impl<'a, K, V> WriteOnlyStore<K, V> for CachedStore<'a, K, V>
 where
     K: Eq + std::hash::Hash,
 {
-    fn stage(&mut self, updates: Vec<(K, V)>) -> Result<(), Error> {
+    fn stage(&mut self, _: Vec<(K, V)>) -> Result<(), Error> {
         Ok(())
     }
     fn commit_batch(&mut self, updates: Vec<(K, V)>) {
