@@ -1,6 +1,5 @@
 use crate::collections;
 use crate::crdt::state::Value;
-use crate::crdt::state::{Delta, Error};
 use crate::store::traits::ReadOnlyStore;
 
 /// A cache for storing all state transitions within a block.

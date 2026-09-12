@@ -2,15 +2,6 @@ use super::{Delta, Error};
 use crate::crdt::Crdt;
 
 #[derive(Clone, PartialEq)]
-// pub enum Value {
-//     Bytes(crate::crdt::bytes::Bytes),
-//     I64(crate::crdt::int64::I64),
-//     U64(crate::crdt::uint64::U64),
-//     U256(crate::crdt::u256::U256),
-//     PathMeta(crate::crdt::path_meta::PathMeta),
-//     None,
-// }
-
 pub enum Value<'a> {
     Bytes(std::borrow::Cow<'a, crate::crdt::bytes::Bytes>),
     PathMeta(std::borrow::Cow<'a, crate::crdt::path_meta::PathMeta>),

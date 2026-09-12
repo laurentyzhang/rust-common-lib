@@ -3,7 +3,7 @@ use crate::crdt::state::Value;
 use crate::execution::transaction::cache::ExecutionCache;
 use crate::store::traits::{Error, WriteOnlyStore};
 
-impl<'a, K> WriteOnlyStore<'a, K, Value<'a>> for ExecutionCache<'a, K>
+impl<'a, K> WriteOnlyStore<K, Value<'a>> for ExecutionCache<'a, K>
 where
     K: std::hash::Hash + Eq,
 {

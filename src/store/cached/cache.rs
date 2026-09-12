@@ -41,7 +41,7 @@ where
     }
 }
 
-impl<'a, K, V> WriteOnlyStore<'a, K, V> for CachedStore<'a, K, V>
+impl<'a, K, V> WriteOnlyStore<K, V> for CachedStore<'a, K, V>
 where
     K: Eq + std::hash::Hash,
 {
