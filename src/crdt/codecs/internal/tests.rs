@@ -29,9 +29,9 @@ fn every_internal_type_round_trips() {
     assert!(bytes::decode(&encoded).unwrap() == bytes_value);
 
     let int64_value = I64 {
-        value: Some(-100),
-        delta: Some(25),
-        limits: Some((-1_000, 1_000)),
+        value: -100,
+        delta: 25,
+        limits: (-1_000, 1_000),
     };
     let encoded = int64::encode(&int64_value).unwrap();
     assert_eq!(
@@ -41,9 +41,9 @@ fn every_internal_type_round_trips() {
     assert!(int64::decode(&encoded).unwrap() == int64_value);
 
     let uint64_value = U64 {
-        value: Some(100),
-        delta: Some(25),
-        limits: Some((0, 1_000)),
+        value: 100,
+        delta: 25,
+        limits: (0, 1_000),
     };
     let encoded = uint64::encode(&uint64_value).unwrap();
     assert_eq!(
@@ -53,9 +53,9 @@ fn every_internal_type_round_trips() {
     assert!(uint64::decode(&encoded).unwrap() == uint64_value);
 
     let u256_value = U256 {
-        value: Some(AlloyU256::from(1_u64) << 200),
-        delta: Some(AlloyU256::from(25)),
-        limits: Some((AlloyU256::ZERO, AlloyU256::MAX)),
+        value: AlloyU256::from(1_u64) << 200,
+        delta: AlloyU256::from(25),
+        limits: (AlloyU256::ZERO, AlloyU256::MAX),
     };
     let encoded = u256::encode(&u256_value).unwrap();
     assert_eq!(
@@ -107,9 +107,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
     let int64_value = I64 {
-        value: Some(10),
-        delta: Some(2),
-        limits: Some((0, 100)),
+        value: 10,
+        delta: 2,
+        limits: (0, 100),
     };
     let mut output =
         vec![0xaa; usize::try_from(int64::encoded_size(&int64_value).unwrap()).unwrap() - 1];
@@ -120,9 +120,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
     let uint64_value = U64 {
-        value: Some(10),
-        delta: Some(2),
-        limits: Some((0, 100)),
+        value: 10,
+        delta: 2,
+        limits: (0, 100),
     };
     let mut output =
         vec![0xaa; usize::try_from(uint64::encoded_size(&uint64_value).unwrap()).unwrap() - 1];
@@ -133,9 +133,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
     let u256_value = U256 {
-        value: Some(AlloyU256::from(10)),
-        delta: Some(AlloyU256::from(2)),
-        limits: Some((AlloyU256::ZERO, AlloyU256::from(100))),
+        value: AlloyU256::from(10),
+        delta: AlloyU256::from(2),
+        limits: (AlloyU256::ZERO, AlloyU256::from(100)),
     };
     let mut output =
         vec![0xaa; usize::try_from(u256::encoded_size(&u256_value).unwrap()).unwrap() - 1];
@@ -207,9 +207,9 @@ fn malformed_input_is_rejected() {
     assert!(path_delta::decode(&u64::MAX.to_le_bytes()).is_err());
 
     let valid = I64 {
-        value: Some(1),
-        delta: None,
-        limits: None,
+        value: 1,
+        delta: 0,
+        limits: (i64::MIN, i64::MAX),
     };
     let mut trailing = int64::encode(&valid).unwrap();
     trailing.push(0);
@@ -227,9 +227,9 @@ fn every_truncated_encoding_is_rejected() {
     }
 
     let int64_encoded = int64::encode(&I64 {
-        value: Some(-10),
-        delta: Some(2),
-        limits: Some((-100, 100)),
+        value: -10,
+        delta: 2,
+        limits: (-100, 100),
     })
     .unwrap();
     for end in 0..int64_encoded.len() {
@@ -237,9 +237,9 @@ fn every_truncated_encoding_is_rejected() {
     }
 
     let uint64_encoded = uint64::encode(&U64 {
-        value: Some(10),
-        delta: Some(2),
-        limits: Some((0, 100)),
+        value: 10,
+        delta: 2,
+        limits: (0, 100),
     })
     .unwrap();
     for end in 0..uint64_encoded.len() {
@@ -247,9 +247,9 @@ fn every_truncated_encoding_is_rejected() {
     }
 
     let u256_encoded = u256::encode(&U256 {
-        value: Some(AlloyU256::from(10)),
-        delta: Some(AlloyU256::from(2)),
-        limits: Some((AlloyU256::ZERO, AlloyU256::from(100))),
+        value: AlloyU256::from(10),
+        delta: AlloyU256::from(2),
+        limits: (AlloyU256::ZERO, AlloyU256::from(100)),
     })
     .unwrap();
     for end in 0..u256_encoded.len() {
@@ -289,18 +289,21 @@ fn primitive_encodings_match_golden_bytes() {
     assert_eq!(bytes::encode(&bytes_value).unwrap(), expected);
 
     let int64_value = I64 {
-        value: Some(-2),
-        delta: None,
-        limits: None,
+        value: -2,
+        delta: 0,
+        limits: (i64::MIN, i64::MAX),
     };
-    let mut expected = vec![1];
+    let mut expected = vec![7];
     expected.extend_from_slice(&(-2_i64).to_le_bytes());
+    expected.extend_from_slice(&0_i64.to_le_bytes());
+    expected.extend_from_slice(&i64::MIN.to_le_bytes());
+    expected.extend_from_slice(&i64::MAX.to_le_bytes());
     assert_eq!(int64::encode(&int64_value).unwrap(), expected);
 
     let uint64_value = U64 {
-        value: Some(1),
-        delta: Some(2),
-        limits: Some((3, 4)),
+        value: 1,
+        delta: 2,
+        limits: (3, 4),
     };
     let mut expected = vec![7];
     expected.extend_from_slice(&1_u64.to_le_bytes());
@@ -310,12 +313,15 @@ fn primitive_encodings_match_golden_bytes() {
     assert_eq!(uint64::encode(&uint64_value).unwrap(), expected);
 
     let u256_value = U256 {
-        value: Some(AlloyU256::from(1)),
-        delta: None,
-        limits: None,
+        value: AlloyU256::from(1),
+        delta: AlloyU256::ZERO,
+        limits: (AlloyU256::ZERO, AlloyU256::MAX),
     };
-    let mut expected = vec![1, 1];
-    expected.extend_from_slice(&[0; 31]);
+    let mut expected = vec![7];
+    expected.extend_from_slice(&AlloyU256::from(1).to_le_bytes::<32>());
+    expected.extend_from_slice(&AlloyU256::ZERO.to_le_bytes::<32>());
+    expected.extend_from_slice(&AlloyU256::ZERO.to_le_bytes::<32>());
+    expected.extend_from_slice(&AlloyU256::MAX.to_le_bytes::<32>());
     assert_eq!(u256::encode(&u256_value).unwrap(), expected);
 }
 
@@ -347,9 +353,9 @@ fn path_and_batch_encodings_match_golden_bytes() {
         delta: Some(vec![0xaa].into_boxed_slice()),
     };
     let uint64_value = U64 {
-        value: Some(7),
-        delta: None,
-        limits: None,
+        value: 7,
+        delta: 0,
+        limits: (u64::MIN, u64::MAX),
     };
     let values: [&dyn InternalEncode; 2] = [&bytes_value, &uint64_value];
 
@@ -360,8 +366,11 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_batch.push(1);
     expected_batch.extend_from_slice(&1_u64.to_le_bytes());
     expected_batch.push(0xaa);
-    expected_batch.push(1);
+    expected_batch.push(7);
     expected_batch.extend_from_slice(&7_u64.to_le_bytes());
+    expected_batch.extend_from_slice(&0_u64.to_le_bytes());
+    expected_batch.extend_from_slice(&u64::MIN.to_le_bytes());
+    expected_batch.extend_from_slice(&u64::MAX.to_le_bytes());
     assert_eq!(batch::encode(&values).unwrap(), expected_batch);
 }
 
@@ -369,9 +378,9 @@ fn path_and_batch_encodings_match_golden_bytes() {
 fn large_batch_uses_non_overlapping_parallel_sections() {
     let stored = vec![
         U64 {
-            value: Some(7),
-            delta: None,
-            limits: None,
+            value: 7,
+            delta: 0,
+            limits: (u64::MIN, u64::MAX),
         };
         2_048
     ];
@@ -394,8 +403,8 @@ fn large_batch_uses_non_overlapping_parallel_sections() {
                 .try_into()
                 .unwrap()
         ),
-        ((values.len() - 1) * 9) as u64
+        ((values.len() - 1) * 33) as u64
     );
-    assert!(uint64::decode(&encoded[header_size..header_size + 9]).unwrap() == stored[0]);
-    assert!(uint64::decode(&encoded[encoded.len() - 9..]).unwrap() == stored[stored.len() - 1]);
+    assert!(uint64::decode(&encoded[header_size..header_size + 33]).unwrap() == stored[0]);
+    assert!(uint64::decode(&encoded[encoded.len() - 33..]).unwrap() == stored[stored.len() - 1]);
 }

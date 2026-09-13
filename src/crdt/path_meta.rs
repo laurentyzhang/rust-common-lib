@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::collections::delta_set::DeltaSet;
 
 use super::crdt::Crdt;

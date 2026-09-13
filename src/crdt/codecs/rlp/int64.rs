@@ -1,14 +1,14 @@
-﻿use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
 use crate::crdt::int64::I64;
 
 impl Encodable for I64 {
     fn encode(&self, out: &mut dyn BufMut) {
-        let has_value = u8::from(self.value.is_some());
-        let value = self.value.unwrap_or(0);
+        let has_value = 1_u8;
+        let value = self.value;
         let value = ((value as u64) << 1) ^ ((value >> 63) as u64);
-        let has_limits = u8::from(self.limits.is_some());
-        let (lower, upper) = self.limits.unwrap_or((0, 0));
+        let has_limits = 1_u8;
+        let (lower, upper) = self.limits;
         let lower = ((lower as u64) << 1) ^ ((lower >> 63) as u64);
         let upper = ((upper as u64) << 1) ^ ((upper >> 63) as u64);
         let payload_length = has_value.length()
@@ -30,11 +30,11 @@ impl Encodable for I64 {
     }
 
     fn length(&self) -> usize {
-        let has_value = u8::from(self.value.is_some());
-        let value = self.value.unwrap_or(0);
+        let has_value = 1_u8;
+        let value = self.value;
         let value = ((value as u64) << 1) ^ ((value >> 63) as u64);
-        let has_limits = u8::from(self.limits.is_some());
-        let (lower, upper) = self.limits.unwrap_or((0, 0));
+        let has_limits = 1_u8;
+        let (lower, upper) = self.limits;
         let lower = ((lower as u64) << 1) ^ ((lower >> 63) as u64);
         let upper = ((upper as u64) << 1) ^ ((upper >> 63) as u64);
         let payload_length = has_value.length()
@@ -63,9 +63,13 @@ impl Decodable for I64 {
         }
 
         Ok(Self {
-            value: (has_value == 1).then_some(value),
-            delta: None,
-            limits: (has_limits == 1).then_some((lower, upper)),
+            value: if has_value == 1 { value } else { 0 },
+            delta: 0,
+            limits: if has_limits == 1 {
+                (lower, upper)
+            } else {
+                (i64::MIN, i64::MAX)
+            },
         })
     }
 }
@@ -79,13 +83,13 @@ mod tests {
     #[test]
     fn i64_storage_round_trip_ignores_delta() {
         let dirty = I64 {
-            value: Some(-100),
-            delta: Some(25),
-            limits: Some((-1_000, 1_000)),
+            value: -100,
+            delta: 25,
+            limits: (-1_000, 1_000),
         };
         let clean = I64 {
             value: dirty.value,
-            delta: None,
+            delta: 0,
             limits: dirty.limits,
         };
 

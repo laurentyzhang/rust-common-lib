@@ -5,10 +5,10 @@ use crate::crdt::u256::U256;
 
 impl Encodable for U256 {
     fn encode(&self, out: &mut dyn BufMut) {
-        let has_value = u8::from(self.value.is_some());
-        let value = self.value.unwrap_or(AlloyU256::ZERO);
-        let has_limits = u8::from(self.limits.is_some());
-        let (lower, upper) = self.limits.unwrap_or((AlloyU256::ZERO, AlloyU256::ZERO));
+        let has_value = 1_u8;
+        let value = self.value;
+        let has_limits = 1_u8;
+        let (lower, upper) = self.limits;
         let payload_length = has_value.length()
             + value.length()
             + has_limits.length()
@@ -28,10 +28,10 @@ impl Encodable for U256 {
     }
 
     fn length(&self) -> usize {
-        let has_value = u8::from(self.value.is_some());
-        let value = self.value.unwrap_or(AlloyU256::ZERO);
-        let has_limits = u8::from(self.limits.is_some());
-        let (lower, upper) = self.limits.unwrap_or((AlloyU256::ZERO, AlloyU256::ZERO));
+        let has_value = 1_u8;
+        let value = self.value;
+        let has_limits = 1_u8;
+        let (lower, upper) = self.limits;
         let payload_length = has_value.length()
             + value.length()
             + has_limits.length()
@@ -55,9 +55,17 @@ impl Decodable for U256 {
         }
 
         Ok(Self {
-            value: (has_value == 1).then_some(value),
-            delta: None,
-            limits: (has_limits == 1).then_some((lower, upper)),
+            value: if has_value == 1 {
+                value
+            } else {
+                AlloyU256::ZERO
+            },
+            delta: AlloyU256::ZERO,
+            limits: if has_limits == 1 {
+                (lower, upper)
+            } else {
+                (AlloyU256::ZERO, AlloyU256::MAX)
+            },
         })
     }
 }
@@ -71,13 +79,13 @@ mod tests {
     #[test]
     fn u256_storage_round_trip_ignores_delta() {
         let dirty = U256 {
-            value: Some(AlloyU256::from(1_u64) << 200),
-            delta: Some(AlloyU256::from(25)),
-            limits: Some((AlloyU256::ZERO, AlloyU256::MAX)),
+            value: AlloyU256::from(1_u64) << 200,
+            delta: AlloyU256::from(25),
+            limits: (AlloyU256::ZERO, AlloyU256::MAX),
         };
         let clean = U256 {
             value: dirty.value,
-            delta: None,
+            delta: AlloyU256::ZERO,
             limits: dirty.limits,
         };
 

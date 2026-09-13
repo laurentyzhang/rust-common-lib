@@ -61,3 +61,7 @@ where
 
     fn commit(&mut self, _: Vec<(K, Value<'a>)>) {} // Place holder
 }
+
+#[cfg(test)]
+#[path = "block_cache_tests.rs"]
+mod block_cache_tests;

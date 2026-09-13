@@ -1,26 +1,44 @@
+use super::state::Numeric;
+use super::state::Value;
 use alloy_primitives::U256 as AlloyU256;
+use std::borrow::Cow;
 
 use super::crdt::{CacheableCrdt, Crdt};
 use super::state::Error;
 
 #[derive(Clone, PartialEq)]
 pub struct U256 {
-    pub(crate) value: Option<AlloyU256>,
-    pub(crate) delta: Option<AlloyU256>,
-    pub(crate) limits: Option<(AlloyU256, AlloyU256)>,
+    pub(crate) value: AlloyU256,
+    pub(crate) delta: AlloyU256,
+    pub(crate) limits: (AlloyU256, AlloyU256),
 }
 
 impl Default for U256 {
     fn default() -> Self {
         Self {
-            value: Some(AlloyU256::ZERO),
-            delta: None,
-            limits: Some((AlloyU256::ZERO, AlloyU256::MAX)),
+            value: AlloyU256::ZERO,
+            delta: AlloyU256::ZERO,
+            limits: (AlloyU256::ZERO, AlloyU256::MAX),
         }
     }
 }
 
+impl From<U256> for Value<'static> {
+    fn from(value: U256) -> Self {
+        Value::Numeric(Numeric::U256(Cow::Owned(value)))
+    }
+}
+
 impl U256 {
+    pub fn new(upper: AlloyU256, lower: AlloyU256) -> Result<Self, Error> {
+        Self::check_limits(upper, lower, AlloyU256::ZERO)?;
+        Ok(Self {
+            value: AlloyU256::ZERO,
+            delta: AlloyU256::ZERO,
+            limits: (AlloyU256::from(lower), AlloyU256::from(upper)),
+        })
+    }
+
     fn check_limits(upper: AlloyU256, lower: AlloyU256, value: AlloyU256) -> Result<(), Error> {
         if lower > upper {
             return Err(Error::U256("lower limit must be less than upper limit"));
@@ -35,67 +53,54 @@ impl U256 {
         }
         Ok(())
     }
-
-    pub fn new(&mut self, upper: AlloyU256, lower: AlloyU256) -> Result<Self, Error> {
-        Self::check_limits(upper, lower, AlloyU256::ZERO)?;
-
-        self.limits = Some((AlloyU256::from(lower), AlloyU256::from(upper)));
-        Ok(Self::default())
-    }
 }
 
 impl Crdt<AlloyU256, AlloyU256> for U256 {
     type Error = Error;
 
     fn value(&self) -> Option<&AlloyU256> {
-        self.value.as_ref()
+        Some(&self.value)
     }
 
     fn delta(&self) -> Option<&AlloyU256> {
-        self.delta.as_ref()
+        Some(&self.delta)
     }
 
     fn add_delta(&mut self, delta: &AlloyU256) -> Result<&AlloyU256, Self::Error> {
-        let old_delta = self.delta;
-
-        let accumulated = old_delta
-            .unwrap_or(AlloyU256::ZERO)
+        let accumulated = self
+            .delta
             .checked_add(*delta)
             .ok_or(Error::U256("U256 overflow"))?;
 
-        let projected = match self.value {
-            Some(value) => value
-                .checked_add(accumulated)
-                .ok_or(Error::U256("U256 overflow"))?,
-            None => accumulated,
-        };
+        let projected = self
+            .value
+            .checked_add(accumulated)
+            .ok_or(Error::U256("U256 overflow"))?;
 
-        if let Some((lower, upper)) = self.limits {
-            if projected < lower {
-                return Err(Error::U256("value is below the configured lower limit"));
-            }
-
-            if projected > upper {
-                return Err(Error::U256("value is above the configured upper limit"));
-            }
+        let (lower, upper) = self.limits;
+        if projected < lower {
+            return Err(Error::U256("value is below the configured lower limit"));
         }
 
-        let stored = self.delta.insert(accumulated);
-        Ok(&*stored)
+        if projected > upper {
+            return Err(Error::U256("value is above the configured upper limit"));
+        }
+
+        self.delta = accumulated;
+        Ok(&self.delta)
     }
 
     fn apply_delta(&mut self) -> &Self {
-        let Some(delta) = self.delta else {
-            return self;
-        };
+        let delta = self.delta;
 
-        self.value = Some(self.value.unwrap_or(AlloyU256::ZERO) + delta);
-        self.delta = None;
+        self.value = self.value + delta;
+        self.delta = AlloyU256::ZERO;
         self
     }
 
     fn limits(&self) -> Option<(&AlloyU256, &AlloyU256)> {
-        self.limits.as_ref().map(|(lower, upper)| (lower, upper))
+        let (lower, upper) = &self.limits;
+        Some((lower, upper))
     }
 
     fn is_numeric(&self) -> bool {

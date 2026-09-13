@@ -1,20 +1,38 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::Error;
-
+use crate::crdt::state::Numeric;
+use crate::crdt::state::Value;
+use std::borrow::Cow;
 #[derive(Clone, PartialEq)]
 pub struct I64 {
-    pub(crate) value: Option<i64>,
-    pub(crate) delta: Option<i64>,
-    pub(crate) limits: Option<(i64, i64)>,
+    pub(crate) value: i64,
+    pub(crate) delta: i64,
+    pub(crate) limits: (i64, i64),
+}
+
+impl Default for I64 {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            delta: 0,
+            limits: (i64::MIN, i64::MAX),
+        }
+    }
+}
+
+impl From<I64> for Value<'static> {
+    fn from(value: I64) -> Self {
+        Value::Numeric(Numeric::I64(Cow::Owned(value)))
+    }
 }
 
 impl I64 {
-    pub fn new(&mut self, upper: i64, lower: i64) -> Result<Self, Error> {
+    pub fn new(upper: i64, lower: i64) -> Result<Self, Error> {
         Self::check_limits(upper, lower, 0)?;
         Ok(Self {
-            value: Some(0),
-            delta: None,
-            limits: Some((lower, upper)),
+            value: 0,
+            delta: 0,
+            limits: (lower, upper),
         })
     }
 
@@ -39,60 +57,45 @@ impl I64 {
     }
 }
 
-impl Default for I64 {
-    fn default() -> Self {
-        Self {
-            value: Some(0),
-            delta: None,
-            limits: Some((i64::MIN, i64::MAX)),
-        }
-    }
-}
-
 impl Crdt<i64, i64> for I64 {
     type Error = Error;
 
     fn value(&self) -> Option<&i64> {
-        self.value.as_ref()
+        Some(&self.value)
     }
 
     fn delta(&self) -> Option<&i64> {
-        self.delta.as_ref()
+        Some(&self.delta)
     }
 
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
         let old_delta = self.delta;
-        let accumulated = Self::checked_add(old_delta.unwrap_or(0), *delta)?;
-        let projected = match self.value {
-            Some(value) => Self::checked_add(value, accumulated)?,
-            None => accumulated,
-        };
+        let accumulated = Self::checked_add(old_delta, *delta)?;
+        let projected = Self::checked_add(self.value, accumulated)?;
 
-        if let Some((lower, upper)) = self.limits {
-            if projected < lower {
-                return Err(Error::I64("value is below the configured lower limit"));
-            }
-            if projected > upper {
-                return Err(Error::I64("value is above the configured upper limit"));
-            }
+        let (lower, upper) = self.limits;
+        if projected < lower {
+            return Err(Error::I64("value is below the configured lower limit"));
+        }
+        if projected > upper {
+            return Err(Error::I64("value is above the configured upper limit"));
         }
 
-        let stored = self.delta.insert(accumulated);
-        Ok(&*stored)
+        self.delta = accumulated;
+        Ok(&self.delta)
     }
 
     fn apply_delta(&mut self) -> &Self {
-        let Some(delta) = self.delta else {
-            return self;
-        };
+        let delta = self.delta;
 
-        self.value = Some(self.value.unwrap_or(0) + delta);
-        self.delta = None;
+        self.value = self.value + delta;
+        self.delta = 0;
         self
     }
 
     fn limits(&self) -> Option<(&i64, &i64)> {
-        self.limits.as_ref().map(|(lower, upper)| (lower, upper))
+        let (lower, upper) = &self.limits;
+        Some((lower, upper))
     }
 
     fn is_numeric(&self) -> bool {

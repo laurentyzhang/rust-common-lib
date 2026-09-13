@@ -1,9 +1,17 @@
 use super::crdt::{CacheableCrdt, Crdt};
 use super::state::Error;
+use super::state::Value;
+use std::borrow::Cow;
 
 #[derive(Clone, PartialEq, Default)]
 pub struct Bytes {
     pub(crate) delta: Option<Box<[u8]>>,
+}
+
+impl From<Bytes> for Value<'static> {
+    fn from(value: Bytes) -> Self {
+        Value::Bytes(Cow::Owned(value))
+    }
 }
 
 impl Crdt<[u8], [u8]> for Bytes {

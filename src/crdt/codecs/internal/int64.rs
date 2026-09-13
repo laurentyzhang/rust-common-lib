@@ -6,10 +6,8 @@ const VALUE: u8 = 1;
 const DELTA: u8 = 2;
 const LIMITS: u8 = 4;
 
-pub fn encoded_size(value: &I64) -> Result<u64> {
-    Ok(1 + u64::from(u8::from(value.value.is_some())) * 8
-        + u64::from(u8::from(value.delta.is_some())) * 8
-        + u64::from(u8::from(value.limits.is_some())) * 16)
+pub fn encoded_size(_: &I64) -> Result<u64> {
+    Ok(33)
 }
 
 pub fn encode(value: &I64) -> Result<Vec<u8>> {
@@ -27,21 +25,11 @@ pub fn encode_to(value: &I64, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
-    writer.write_u8(
-        u8::from(value.value.is_some()) * VALUE
-            + u8::from(value.delta.is_some()) * DELTA
-            + u8::from(value.limits.is_some()) * LIMITS,
-    )?;
-    if let Some(value) = value.value {
-        writer.write_i64(value)?;
-    }
-    if let Some(delta) = value.delta {
-        writer.write_i64(delta)?;
-    }
-    if let Some((lower, upper)) = value.limits {
-        writer.write_i64(lower)?;
-        writer.write_i64(upper)?;
-    }
+    writer.write_u8(VALUE | DELTA | LIMITS)?;
+    writer.write_i64(value.value)?;
+    writer.write_i64(value.delta)?;
+    writer.write_i64(value.limits.0)?;
+    writer.write_i64(value.limits.1)?;
     Ok(writer.finish() as u64)
 }
 
@@ -52,16 +40,20 @@ pub fn decode(input: &[u8]) -> Result<I64> {
         return Err("invalid I64 flags");
     }
 
-    let value = (flags & VALUE != 0)
-        .then(|| reader.read_i64())
-        .transpose()?;
-    let delta = (flags & DELTA != 0)
-        .then(|| reader.read_i64())
-        .transpose()?;
-    let limits = if flags & LIMITS != 0 {
-        Some((reader.read_i64()?, reader.read_i64()?))
+    let value = if flags & VALUE != 0 {
+        reader.read_i64()?
     } else {
-        None
+        0
+    };
+    let delta = if flags & DELTA != 0 {
+        reader.read_i64()?
+    } else {
+        0
+    };
+    let limits = if flags & LIMITS != 0 {
+        (reader.read_i64()?, reader.read_i64()?)
+    } else {
+        (i64::MIN, i64::MAX)
     };
     reader.finish()?;
 

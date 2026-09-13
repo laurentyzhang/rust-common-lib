@@ -1,24 +1,49 @@
 use super::crdt::{CacheableCrdt, Crdt};
 use super::state::Error;
+use super::state::Numeric;
+use super::state::Value;
+use std::borrow::Cow;
 
 #[derive(Clone, PartialEq)]
 pub struct U64 {
-    pub(crate) value: Option<u64>,
-    pub(crate) delta: Option<u64>,
-    pub(crate) limits: Option<(u64, u64)>,
+    pub(crate) value: u64,
+    pub(crate) delta: u64,
+    pub(crate) limits: (u64, u64),
 }
 
 impl Default for U64 {
     fn default() -> Self {
         Self {
-            value: Some(0),
-            delta: None,
-            limits: Some((u64::MIN, u64::MAX)),
+            value: 0,
+            delta: 0,
+            limits: (u64::MIN, u64::MAX),
         }
     }
 }
 
+impl From<U64> for Value<'static> {
+    fn from(value: U64) -> Self {
+        Value::Numeric(Numeric::U64(Cow::Owned(value)))
+    }
+}
+
 impl U64 {
+    // fn numeric_value(number: u64) -> Value<'static> {
+    //     Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
+    //         value: number,
+    //         ..U64::default()
+    //     })))
+    // }
+
+    pub fn new(upper: u64, lower: u64) -> Result<Self, Error> {
+        Self::check_limits(upper, lower, 0)?;
+        Ok(Self {
+            value: 0,
+            delta: 0,
+            limits: (lower, upper),
+        })
+    }
+
     fn check_limits(upper: u64, lower: u64, value: u64) -> Result<(), Error> {
         if lower > upper {
             return Err(Error::U64("lower limit must be less than upper limit"));
@@ -33,61 +58,51 @@ impl U64 {
         }
         Ok(())
     }
-
-    pub fn new(&mut self, upper: u64, lower: u64) -> Result<Self, Error> {
-        Self::check_limits(upper, lower, 0)?;
-
-        self.limits = Some((lower, upper));
-        Ok(Self::default())
-    }
 }
 
 impl Crdt<u64, u64> for U64 {
     type Error = Error;
 
     fn value(&self) -> Option<&u64> {
-        self.value.as_ref()
+        Some(&self.value)
     }
 
     fn delta(&self) -> Option<&u64> {
-        self.delta.as_ref()
+        Some(&self.delta)
     }
 
     fn add_delta(&mut self, delta: &u64) -> Result<&u64, Error> {
-        let old_delta = self.delta;
-        let accumulated = old_delta
-            .unwrap_or(0)
+        let accumulated = self
+            .delta
             .checked_add(*delta)
             .ok_or(Error::U64("u64 overflow"))?;
-        let projected = match self.value {
-            Some(value) => value
-                .checked_add(accumulated)
-                .ok_or(Error::U64("u64 overflow"))?,
-            None => accumulated,
-        };
+        let projected = self
+            .value
+            .checked_add(accumulated)
+            .ok_or(Error::U64("u64 overflow"))?;
 
-        if let Some((_, upper)) = self.limits {
-            if projected > upper {
-                return Err(Error::U64("value is above the configured upper limit"));
-            }
+        let (_, upper) = self.limits;
+        if projected > upper {
+            return Err(Error::U64("value is above the configured upper limit"));
         }
 
-        let stored = self.delta.insert(accumulated);
-        Ok(&*stored)
+        self.delta = accumulated;
+        Ok(&self.delta)
     }
 
     fn apply_delta(&mut self) -> &Self {
-        let Some(delta) = self.delta else {
+        if self.delta == 0 {
             return self;
-        };
+        }
 
-        self.value = Some(self.value.unwrap_or(0) + delta);
-        self.delta = None;
+        self.value = self.value + self.delta;
+        self.delta = 0;
         self
     }
 
     fn limits(&self) -> Option<(&u64, &u64)> {
-        self.limits.as_ref().map(|(lower, upper)| (lower, upper))
+        let (lower, upper) = &self.limits;
+        Some((lower, upper))
     }
 
     fn is_numeric(&self) -> bool {

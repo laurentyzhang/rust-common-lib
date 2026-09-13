@@ -108,9 +108,9 @@ where
         &self.elements
     }
     /// Returns whether the live keys differ from the last committed snapshot.
-    fn is_dirty(&self) -> bool {
-        self.keys != self.committed
-    }
+    // fn is_dirty(&self) -> bool {
+    //     self.keys != self.committed
+    // }
 
     /// Iterates over live elements in insertion order, skipping removed slots.
     pub(crate) fn iter_live(&self) -> impl Iterator<Item = &K> {

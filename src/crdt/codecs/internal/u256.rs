@@ -8,10 +8,8 @@ const VALUE: u8 = 1;
 const DELTA: u8 = 2;
 const LIMITS: u8 = 4;
 
-pub fn encoded_size(value: &U256) -> Result<u64> {
-    Ok(1 + u64::from(u8::from(value.value.is_some())) * 32
-        + u64::from(u8::from(value.delta.is_some())) * 32
-        + u64::from(u8::from(value.limits.is_some())) * 64)
+pub fn encoded_size(_: &U256) -> Result<u64> {
+    Ok(129)
 }
 
 pub fn encode(value: &U256) -> Result<Vec<u8>> {
@@ -29,21 +27,11 @@ pub fn encode_to(value: &U256, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
-    writer.write_u8(
-        u8::from(value.value.is_some()) * VALUE
-            + u8::from(value.delta.is_some()) * DELTA
-            + u8::from(value.limits.is_some()) * LIMITS,
-    )?;
-    if let Some(value) = value.value {
-        writer.write_bytes(&value.to_le_bytes::<32>())?;
-    }
-    if let Some(delta) = value.delta {
-        writer.write_bytes(&delta.to_le_bytes::<32>())?;
-    }
-    if let Some((lower, upper)) = value.limits {
-        writer.write_bytes(&lower.to_le_bytes::<32>())?;
-        writer.write_bytes(&upper.to_le_bytes::<32>())?;
-    }
+    writer.write_u8(VALUE | DELTA | LIMITS)?;
+    writer.write_bytes(&value.value.to_le_bytes::<32>())?;
+    writer.write_bytes(&value.delta.to_le_bytes::<32>())?;
+    writer.write_bytes(&value.limits.0.to_le_bytes::<32>())?;
+    writer.write_bytes(&value.limits.1.to_le_bytes::<32>())?;
     Ok(writer.finish() as u64)
 }
 
@@ -54,19 +42,23 @@ pub fn decode(input: &[u8]) -> Result<U256> {
         return Err("invalid U256 flags");
     }
 
-    let value = (flags & VALUE != 0)
-        .then(|| reader.read_array::<32>().map(AlloyU256::from_le_bytes))
-        .transpose()?;
-    let delta = (flags & DELTA != 0)
-        .then(|| reader.read_array::<32>().map(AlloyU256::from_le_bytes))
-        .transpose()?;
-    let limits = if flags & LIMITS != 0 {
-        Some((
-            AlloyU256::from_le_bytes(reader.read_array::<32>()?),
-            AlloyU256::from_le_bytes(reader.read_array::<32>()?),
-        ))
+    let value = if flags & VALUE != 0 {
+        AlloyU256::from_le_bytes(reader.read_array::<32>()?)
     } else {
-        None
+        AlloyU256::ZERO
+    };
+    let delta = if flags & DELTA != 0 {
+        AlloyU256::from_le_bytes(reader.read_array::<32>()?)
+    } else {
+        AlloyU256::ZERO
+    };
+    let limits = if flags & LIMITS != 0 {
+        (
+            AlloyU256::from_le_bytes(reader.read_array::<32>()?),
+            AlloyU256::from_le_bytes(reader.read_array::<32>()?),
+        )
+    } else {
+        (AlloyU256::ZERO, AlloyU256::MAX)
     };
     reader.finish()?;
 
