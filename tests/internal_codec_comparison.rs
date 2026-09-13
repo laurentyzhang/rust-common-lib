@@ -82,7 +82,7 @@ fn compare<T>(
 
 #[test]
 fn compare_internal_codec_with_rlp_on_same_objects() {
-    let mut bytes = Bytes::new();
+    let mut bytes = Bytes::default();
     bytes.add_delta(&[1; 128]).unwrap();
     bytes.apply_delta();
     bytes.add_delta(&[2; 64]).unwrap();
@@ -95,7 +95,7 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::bytes::decode,
     );
 
-    let mut int64 = I64::new();
+    let mut int64 = I64::default();
     int64.add_delta(&1_000).unwrap();
     int64.apply_delta();
     int64.add_delta(&-250).unwrap();
@@ -108,7 +108,7 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::int64::decode,
     );
 
-    let mut uint64 = U64::new();
+    let mut uint64 = U64::default();
     uint64.add_delta(&1_000).unwrap();
     uint64.apply_delta();
     uint64.add_delta(&250).unwrap();
@@ -121,7 +121,7 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::uint64::decode,
     );
 
-    let mut u256 = U256::new();
+    let mut u256 = U256::default();
     u256.add_delta(&AlloyU256::from(1_000)).unwrap();
     u256.apply_delta();
     u256.add_delta(&AlloyU256::from(250)).unwrap();
@@ -134,7 +134,7 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::u256::decode,
     );
 
-    let mut path = PathMeta::new();
+    let mut path = PathMeta::new().unwrap();
     path.add_delta(&PathDelta {
         added: (0..64).collect(),
         removed: vec![],

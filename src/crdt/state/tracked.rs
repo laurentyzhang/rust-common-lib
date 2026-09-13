@@ -1,4 +1,5 @@
 use super::{Delta, Error, Value};
+use crate::store::traits::StoreError;
 
 pub struct Tracked<'a> {
     value: Value<'a>,
@@ -8,10 +9,11 @@ pub struct Tracked<'a> {
     deltas: u32,
     tombstone: u32,
     creates: u32, // Indicates if the tracked value is newly created and not yet committed
+    is_new: bool,
 }
 
 impl<'a> Tracked<'a> {
-    pub fn new() -> Self {
+    pub fn new_empty() -> Self {
         Self {
             value: Value::None,
             reads: 0,
@@ -19,19 +21,21 @@ impl<'a> Tracked<'a> {
             writes: 0,
             deltas: 0,
             tombstone: 0,
-            creates: 1,
+            creates: 0,
+            is_new: true,
         }
     }
 
-    pub fn new_owned(value: Value<'a>) -> Self {
+    pub fn new_owned(value: Value<'static>) -> Self {
         Self {
             value,
             reads: 0,
             checks: 0,
-            writes: 1,
+            writes: 0,
             deltas: 0,
             tombstone: 0,
             creates: 1,
+            is_new: true,
         }
     }
 
@@ -44,6 +48,7 @@ impl<'a> Tracked<'a> {
             deltas: 0,
             tombstone: 0,
             creates: 0,
+            is_new: false,
         }
     }
 
@@ -52,30 +57,35 @@ impl<'a> Tracked<'a> {
         &self.value
     }
 
-    pub fn create(&mut self, value: Value<'a>) {
-        self.write(value);
-        self.writes -= 1;
-        self.creates += 1;
-    }
-
     /// Replace the value while preserving access history and recording a write.
-    pub fn write(&mut self, value: Value<'a>) {
+    pub fn set(&mut self, value: Value<'a>) -> Result<(), StoreError> {
+        if self.is_live() {
+            self.check();
+            return Err(StoreError::ValueCannotBeRecreated);
+        }
+
+        if self.is_none() {
+            self.creates += 1;
+        } else {
+            self.writes += 1;
+        }
+
         self.value = value;
         self.tombstone = 0;
-        self.writes += 1;
+        Ok(())
     }
 
-    pub fn check(&mut self) {
-        self.checks += 1;
-    }
-
-    pub fn read(&mut self) -> Option<&Value<'a>> {
+    pub fn get(&mut self) -> Option<&Value<'a>> {
         self.reads += 1;
         if self.is_live() {
             Some(&self.value)
         } else {
             None
         }
+    }
+
+    pub fn check(&mut self) {
+        self.checks += 1;
     }
 
     pub fn add_delta(&mut self, delta: Delta) -> Result<(), Error> {
@@ -89,10 +99,10 @@ impl<'a> Tracked<'a> {
         Some(&self.value)
     }
 
-    pub fn delete(&mut self) -> Result<(), Error> {
+    pub fn delete(&mut self) -> Result<(), StoreError> {
         self.writes += 1;
         if !self.is_live() {
-            return Err(Error::EntryNotFound);
+            return Err(StoreError::EntryNotFound);
         }
 
         self.tombstone += 1;
@@ -110,6 +120,10 @@ impl<'a> Tracked<'a> {
     pub fn is_none(&self) -> bool {
         matches!(self.value, Value::None)
     }
+
+    pub fn is_new(&self) -> bool {
+        self.is_new
+    }
 }
 
 #[cfg(test)]
@@ -122,18 +136,20 @@ mod tests {
 
     #[test]
     fn write_preserves_history_and_clears_tombstone() {
-        let mut tracked = Tracked::new();
-        let _ = tracked.read();
+        let mut tracked = Tracked::new_empty();
+        let _ = tracked.get();
         tracked.check();
         assert!(tracked.add_delta(Delta::None).is_ok());
-        tracked.write(Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(
-            U64::default(),
-        ))));
+        tracked
+            .set(Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+                U64::default(),
+            ))))
+            .unwrap();
         assert!(tracked.delete().is_ok());
         let previous_writes = tracked.writes;
         let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
 
-        tracked.write(value.clone());
+        tracked.set(value.clone()).unwrap();
 
         assert_eq!(tracked.reads, 1);
         assert_eq!(tracked.checks, 1);

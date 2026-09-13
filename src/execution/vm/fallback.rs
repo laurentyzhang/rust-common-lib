@@ -1,12 +1,11 @@
 // use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::Value;
-use crate::execution::transaction::cache;
+use crate::execution::vm::vm_cache;
 use crate::store::traits::FallbackStore;
-// use std::collections::HashMap;
 
-/// ExecutionCache as the fallback store for another ExecutionCache,
+/// VmCache as the fallback store for another VmCache,
 /// allowing for a layered caching mechanism.
-impl<'a, K> FallbackStore<'a, K, Value<'a>> for cache::ExecutionCache<'a, K>
+impl<'a, K> FallbackStore<'a, K, Value<'a>> for vm_cache::VmCache<'a, K>
 where
     K: std::hash::Hash + Eq,
 {
@@ -24,7 +23,6 @@ where
                 } else {
                     None
                 }
-                // Some(tracked.value())
             }
 
             None => self

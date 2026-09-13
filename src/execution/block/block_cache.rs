@@ -51,10 +51,13 @@ impl<'a, K> WriteOnlyStore<K, Value<'a>> for BlockCache<'a, K>
 where
     K: std::hash::Hash + Eq + Send + Sync,
 {
-    fn stage(&mut self, updates: Vec<(K, Value<'a>)>) -> Result<(), crate::store::traits::Error> {
+    fn stage(
+        &mut self,
+        updates: Vec<(K, Value<'a>)>,
+    ) -> Result<(), crate::store::traits::StoreError> {
         self.cache.apply_batch(updates);
         Ok(())
     }
 
-    fn commit_batch(&mut self, _: Vec<(K, Value<'a>)>) {} // Place holder
+    fn commit(&mut self, _: Vec<(K, Value<'a>)>) {} // Place holder
 }

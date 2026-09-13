@@ -1,2 +1,3 @@
 mod block;
-mod transaction;
+mod vm;
+pub use vm::vm_cache;

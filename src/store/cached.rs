@@ -1,5 +1,5 @@
 // use crate::crdt::state::{Delta, Tracked, Value};
-use crate::store::traits::{Error, FallbackStore, WriteOnlyStore};
+use crate::store::traits::{FallbackStore, StoreError, WriteOnlyStore};
 
 pub struct CachedStore<'a, K, V> {
     cache: quick_cache::unsync::Cache<K, V>,
@@ -45,10 +45,10 @@ impl<'a, K, V> WriteOnlyStore<K, V> for CachedStore<'a, K, V>
 where
     K: Eq + std::hash::Hash,
 {
-    fn stage(&mut self, _: Vec<(K, V)>) -> Result<(), Error> {
+    fn stage(&mut self, _: Vec<(K, V)>) -> Result<(), StoreError> {
         Ok(())
     }
-    fn commit_batch(&mut self, updates: Vec<(K, V)>) {
+    fn commit(&mut self, updates: Vec<(K, V)>) {
         for (key, value) in updates {
             if self.cache.contains_key(&key) {
                 continue;

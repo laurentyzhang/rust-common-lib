@@ -1,14 +1,16 @@
 use crate::crdt::state::{Delta, Error};
 use crate::crdt::state::{Tracked, Value};
 use crate::store::traits::FallbackStore;
+use crate::store::traits::StoreError;
+use crate::store::traits::WriteOnlyStore;
 use std::collections::HashMap;
 
-pub struct ExecutionCache<'a, K> {
+pub struct VmCache<'a, K> {
     pub(super) cache: HashMap<K, Tracked<'a>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
-impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
+impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     pub fn new() -> Self {
         Self {
             cache: HashMap::new(),
@@ -32,11 +34,11 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key).read()
+        self.get_or_populate_tracked(key).get()
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn create(&mut self, key: &K, value: Value<'a>) -> Result<(), crate::store::traits::Error>
+    pub fn create(&mut self, key: &K, value: Value<'static>) -> Result<(), StoreError>
     where
         K: Clone,
     {
@@ -44,11 +46,9 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
 
         if tracked.is_live() {
             tracked.check();
-            return Err(crate::store::traits::Error::ValueCannotBeRecreated);
+            return Err(StoreError::ValueCannotBeRecreated);
         }
-
-        tracked.create(value);
-        Ok(())
+        tracked.set(value)
     }
 
     /// Record a delta attempt, ignoring any returned error.
@@ -63,30 +63,34 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
     pub fn exists(&self, key: &K) -> bool {
         match self.cache.get(key) {
             Some(tracked) => tracked.is_live(),
-            None => self.has_in_fallback(key),
+            None => self
+                .fallback
+                .as_ref()
+                .map_or(false, |fallback: &&dyn FallbackStore<K, Value<'a>>| {
+                    (**fallback).contains_key(key)
+                }),
         }
     }
 
     /// Mark the tracked value as deleted and record a write.
-    pub fn delete(&mut self, key: &K) -> Result<(), Error>
+    pub fn delete(&mut self, key: &K) -> Result<(), StoreError>
     where
         K: Clone,
     {
         self.get_or_populate_tracked(key).delete()
     }
 
-    /// Check if the key exists in the fallback store.
-    pub(super) fn has_in_fallback(&self, key: &K) -> bool {
-        self.fallback
-            .as_ref()
-            .map_or(false, |fallback: &&dyn FallbackStore<K, Value<'a>>| {
-                (**fallback).contains_key(key)
-            })
-    }
+    pub fn views(&self) -> (Vec<(&K, &Tracked<'a>)>, Vec<(&K, &Value<'a>)>) {
+        let access_records = self.cache.iter().collect();
 
-    /// Get a mutable reference to a tracked value if it exists locally.
-    fn get_tracked_mut(&mut self, key: &K) -> Option<&mut Tracked<'a>> {
-        self.cache.get_mut(key)
+        let transitions = self
+            .cache
+            .iter()
+            .filter(|(_, tracked)| tracked.is_live())
+            .map(|(key, tracked)| (key, tracked.value()))
+            .collect();
+
+        (access_records, transitions)
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
@@ -99,14 +103,35 @@ impl<'a, K: std::hash::Hash + Eq> ExecutionCache<'a, K> {
         self.cache.entry(key.clone()).or_insert_with(|| {
             fallback
                 .and_then(|fallback| fallback.get(key))
-                .map_or_else(Tracked::new, |value| Tracked::new_borrowed(value.clone()))
+                .map_or_else(Tracked::new_empty, |value| {
+                    Tracked::new_borrowed(value.clone())
+                })
         })
     }
 }
 
+/// A write-only store implementation for the execution cache.
+/// Useful for using the execution cache as the fallback store for another execution cache.
+impl<'a, K> WriteOnlyStore<K, Value<'static>> for VmCache<'a, K>
+where
+    K: std::hash::Hash + Eq + Clone,
+{
+    fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
+        for (key, value) in updates {
+            if !self.contains_key(&key) {
+                self.create(&key, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply local deltas for the supplied keys; incoming values are unused.
+    fn commit(&mut self, _: Vec<(K, Value<'static>)>) {}
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ExecutionCache;
+    use super::VmCache;
     use crate::crdt::{
         state::{Numeric, Value},
         uint64::U64,
@@ -124,7 +149,7 @@ mod tests {
     #[test]
     fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
         assert!((cache).get(&7).is_none());
         assert!(!cache.exists(&7));
         assert!(cache.cache.is_empty());
@@ -140,18 +165,18 @@ mod tests {
     #[test]
     fn deleting_without_reading_and_deleting_twice_report_missing_values() {
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
         for _ in 0..2 {
             assert_eq!(
                 cache.delete(&7),
-                Err(crate::crdt::state::Error::EntryNotFound)
+                Err(crate::store::traits::StoreError::EntryNotFound)
             );
         }
         assert!(cache.create(&7, numeric_value(42)).is_ok());
         assert_eq!(cache.delete(&7), Ok(()));
         assert_eq!(
             cache.delete(&7),
-            Err(crate::crdt::state::Error::EntryNotFound)
+            Err(crate::store::traits::StoreError::EntryNotFound)
         );
         assert!((&mut cache).get(&7).is_none());
         assert!((cache).get(&7).is_none());
@@ -161,13 +186,13 @@ mod tests {
     #[test]
     fn rejected_duplicate_creation_preserves_the_original_value() {
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
         let original = numeric_value(42);
         assert!(cache.create(&7, original.clone()).is_ok());
         for replacement in [original.clone(), numeric_value(u64::MAX)] {
             assert!(matches!(
                 cache.create(&7, replacement),
-                Err(crate::store::traits::Error::ValueCannotBeRecreated)
+                Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
             ));
         }
 
@@ -179,7 +204,7 @@ mod tests {
     #[test]
     fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
         let key = String::new();
         let other_key = String::from("other");
         let other_value = numeric_value(17);
@@ -203,8 +228,8 @@ mod tests {
             let original = numeric_value(17);
             let replacement = numeric_value(42);
             let mut fallback = CachedStore::new(4, None);
-            fallback.commit_batch(vec![(7, original.clone())]);
-            let mut cache = ExecutionCache::new_with_fallback(&fallback);
+            fallback.commit(vec![(7, original.clone())]);
+            let mut cache = VmCache::new_with_fallback(&fallback);
             assert!(cache.exists(&7));
             if read_first {
                 assert!((&mut cache).get(&7) == Some(&original));
@@ -227,11 +252,11 @@ mod tests {
         let original = numeric_value(17);
         let replacement = numeric_value(42);
         let mut fallback = CachedStore::new(4, None);
-        fallback.commit_batch(vec![(7, original.clone())]);
-        let mut inner = ExecutionCache::new_with_fallback(&fallback);
+        fallback.commit(vec![(7, original.clone())]);
+        let mut inner = VmCache::new_with_fallback(&fallback);
         assert_eq!(inner.delete(&7), Ok(()));
         assert!((&mut inner).get(&8).is_none());
-        let mut outer = ExecutionCache::new_with_fallback(&inner);
+        let mut outer = VmCache::new_with_fallback(&inner);
 
         for key in [7, 8] {
             assert!(!outer.exists(&key));
@@ -242,7 +267,7 @@ mod tests {
         for key in [7, 8] {
             assert_eq!(
                 outer.delete(&key),
-                Err(crate::crdt::state::Error::EntryNotFound)
+                Err(crate::store::traits::StoreError::EntryNotFound)
             );
             assert!(outer.create(&key, replacement.clone()).is_ok());
         }
@@ -264,9 +289,9 @@ mod tests {
                 let mut fallback = CachedStore::new(4, None);
                 let mut expected = initially_present.then(|| numeric_value(17));
                 if let Some(value) = &expected {
-                    fallback.commit_batch(vec![(7, value.clone())]);
+                    fallback.commit(vec![(7, value.clone())]);
                 }
-                let mut cache = ExecutionCache::new_with_fallback(&fallback);
+                let mut cache = VmCache::new_with_fallback(&fallback);
                 let mut operations = sequence;
                 for step in 0..5 {
                     let operation = operations % 4;
@@ -279,7 +304,7 @@ mod tests {
                                 assert!(
                                     matches!(
                                         result,
-                                        Err(crate::store::traits::Error::ValueCannotBeRecreated)
+                                        Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
                                     ),
                                     "sequence {sequence}, step {step}"
                                 );
@@ -292,7 +317,7 @@ mod tests {
                             let expected_result = if expected.take().is_some() {
                                 Ok(())
                             } else {
-                                Err(crate::crdt::state::Error::EntryNotFound)
+                                Err(crate::store::traits::StoreError::EntryNotFound)
                             };
                             assert_eq!(
                                 cache.delete(&7),
@@ -326,7 +351,7 @@ mod tests {
         let key = 7;
         let expected = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
 
         // Reading a missing key returns no value and creates a tracking record.
         assert!((&mut cache).get(&key).is_none());
@@ -335,7 +360,7 @@ mod tests {
         // Deleting the missing value fails.
         assert_eq!(
             cache.delete(&key),
-            Err(crate::crdt::state::Error::EntryNotFound)
+            Err(crate::store::traits::StoreError::EntryNotFound)
         );
 
         // Create a valid value and read it back.
@@ -351,13 +376,13 @@ mod tests {
     fn deleting_a_previously_read_missing_key_returns_entry_not_found() {
         let key = 7;
         let fallback = CachedStore::new(4, None);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(&fallback);
 
         assert!((&mut cache).get(&key).is_none());
         assert!(cache.cache.contains_key(&key));
         assert_eq!(
             cache.delete(&key),
-            Err(crate::crdt::state::Error::EntryNotFound)
+            Err(crate::store::traits::StoreError::EntryNotFound)
         );
         assert!(!cache.exists(&key));
     }
@@ -366,17 +391,17 @@ mod tests {
     fn create_handles_existing_records_and_rejects_live_values() {
         let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
-        fallback.commit_batch(vec![(1, value.clone())]);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        fallback.commit(vec![(1, value.clone())]);
+        let mut cache = VmCache::new_with_fallback(&fallback);
 
         assert!(matches!(
             cache.create(&1, value.clone()),
-            Err(crate::store::traits::Error::ValueCannotBeRecreated)
+            Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
         ));
         assert!(cache.create(&2, value.clone()).is_ok());
         assert!(matches!(
             cache.create(&2, value.clone()),
-            Err(crate::store::traits::Error::ValueCannotBeRecreated)
+            Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
         ));
 
         let _ = (&mut cache).get(&3);
@@ -394,8 +419,8 @@ mod tests {
         let key = 7;
         let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
-        fallback.commit_batch(vec![(key, value.clone())]);
-        let mut cache = ExecutionCache::new_with_fallback(&fallback);
+        fallback.commit(vec![(key, value.clone())]);
+        let mut cache = VmCache::new_with_fallback(&fallback);
 
         assert!((&cache).get(&key) == Some(&value));
         assert!(cache.cache.is_empty());
@@ -411,9 +436,9 @@ mod tests {
         let key = 7;
         let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut fallback = CachedStore::new(4, None);
-        fallback.commit_batch(vec![(key, value.clone())]);
-        let inner = ExecutionCache::new_with_fallback(&fallback);
-        let mut outer = ExecutionCache::new_with_fallback(&inner);
+        fallback.commit(vec![(key, value.clone())]);
+        let inner = VmCache::new_with_fallback(&fallback);
+        let mut outer = VmCache::new_with_fallback(&inner);
 
         assert!((&mut outer).get(&key) == Some(&value));
         assert!(outer.cache.contains_key(&key));
@@ -423,8 +448,8 @@ mod tests {
     #[test]
     fn execution_cache_with_execution_cache_fallback() {
         let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
-        let shared_cache = ExecutionCache::new_with_fallback(&fallback);
-        let mut execution_cache = ExecutionCache::new_with_fallback(&shared_cache);
+        let shared_cache = VmCache::new_with_fallback(&fallback);
+        let mut execution_cache = VmCache::new_with_fallback(&shared_cache);
 
         assert!((&mut execution_cache).get(&7u64).is_none());
         assert!(execution_cache.cache.contains_key(&7u64));

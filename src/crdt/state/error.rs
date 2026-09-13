@@ -5,6 +5,4 @@ pub enum Error {
     U256(&'static str),
     None,
     TypeMismatch,
-    EntryNotFound,
-    ValueCannotBeRecreated,
 }
