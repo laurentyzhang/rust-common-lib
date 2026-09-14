@@ -39,7 +39,8 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
             Err(crate::store::traits::StoreError::EntryNotFound)
         );
     }
-    assert!(cache.create(&7, numeric_u64(42)).is_ok());
+
+    assert!(cache.insert(&7, numeric_u64(42)).is_ok());
     assert_eq!(cache.delete(&7), Ok(()));
     assert_eq!(
         cache.delete(&7),
@@ -55,10 +56,10 @@ fn rejected_duplicate_creation_preserves_the_original_value() {
     let fallback = CachedStore::new(4, None);
     let mut cache = VmCache::new_with_fallback(&fallback);
     let original = numeric_u64(42);
-    assert!(cache.create(&7, original.clone()).is_ok());
+    assert!(cache.insert(&7, original.clone()).is_ok());
     for replacement in [original.clone(), numeric_u64(u64::MAX)] {
         assert!(matches!(
-            cache.create(&7, replacement),
+            cache.insert(&7, replacement),
             Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
         ));
     }
@@ -75,10 +76,10 @@ fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
     let key = String::new();
     let other_key = String::from("other");
     let other_value = numeric_u64(17);
-    assert!(cache.create(&other_key, other_value.clone()).is_ok());
+    assert!(cache.insert(&other_key, other_value.clone()).is_ok());
     for number in [0, u64::MAX, 42] {
         let expected = numeric_u64(number);
-        assert!(cache.create(&key, expected.clone()).is_ok());
+        assert!(cache.insert(&key, expected.clone()).is_ok());
         assert!((&mut cache).get(&key) == Some(&expected));
         assert_eq!(cache.delete(&key), Ok(()));
         assert!((&mut cache).get(&key).is_none());
@@ -107,7 +108,7 @@ fn local_deletion_and_recreation_do_not_modify_fallback() {
         assert!((&mut cache).get(&7).is_none());
         assert!(fallback.get(&7) == Some(&original));
 
-        assert!(cache.create(&7, replacement.clone()).is_ok());
+        assert!(cache.insert(&7, replacement.clone()).is_ok());
         assert!((&cache).get(&7) == Some(&replacement));
         assert!((&mut cache).get(&7) == Some(&replacement));
         assert!(fallback.get(&7) == Some(&original));
@@ -136,7 +137,7 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
             outer.delete(&key),
             Err(crate::store::traits::StoreError::EntryNotFound)
         );
-        assert!(outer.create(&key, replacement.clone()).is_ok());
+        assert!(outer.insert(&key, replacement.clone()).is_ok());
     }
 
     for key in [7, 8] {
@@ -166,7 +167,7 @@ fn short_operation_sequences_match_value_existence_model() {
                 match operation {
                     0 | 1 => {
                         let value = numeric_u64(if operation == 0 { 0 } else { u64::MAX });
-                        let result = cache.create(&7, value.clone());
+                        let result = cache.insert(&7, value.clone());
                         if expected.is_some() {
                             assert!(
                                 matches!(
@@ -231,7 +232,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
     );
 
     // Create a valid value and read it back.
-    assert!(cache.create(&key, expected.clone()).is_ok());
+    assert!(cache.insert(&key, expected.clone()).is_ok());
     assert!((&mut cache).get(&key) == Some(&expected));
 
     // Deletion now succeeds, and subsequent reads return no value.
@@ -262,21 +263,21 @@ fn create_handles_existing_records_and_rejects_live_values() {
     let mut cache = VmCache::new_with_fallback(&fallback);
 
     assert!(matches!(
-        cache.create(&1, value.clone()),
+        cache.insert(&1, value.clone()),
         Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
     ));
-    assert!(cache.create(&2, value.clone()).is_ok());
+    assert!(cache.insert(&2, value.clone()).is_ok());
     assert!(matches!(
-        cache.create(&2, value.clone()),
+        cache.insert(&2, value.clone()),
         Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
     ));
 
     let _ = (&mut cache).get(&3);
-    assert!(cache.create(&3, value.clone()).is_ok());
+    assert!(cache.insert(&3, value.clone()).is_ok());
     assert!((cache).get(&3) == Some(&value));
 
     assert!(cache.delete(&3).is_ok());
-    assert!(cache.create(&3, value.clone()).is_ok());
+    assert!(cache.insert(&3, value.clone()).is_ok());
     assert!(cache.exists(&3));
     assert!((&cache).get(&3) == Some(&value));
 }
@@ -322,18 +323,7 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(vm_cache.cache.contains_key(&7u64));
     assert!(block_cache.cache.is_empty());
 
-    let k0: u64 = 1;
-    let v0: u64 = 77;
-    let v00 = U64::new(0, 100);
-
-    if let Ok(v) = v00 {
-        vm_cache.create(&k0, v.into());
-    }
+    vm_cache
+        .insert(&1, U64::new(0, 100).unwrap().into())
+        .expect("Failed")
 }
-
-// fn numeric_u64(number: u64) -> Value<'static> {
-//     Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
-//         value: number,
-//         ..U64::default()
-//     })))
-// }

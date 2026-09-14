@@ -27,8 +27,8 @@ impl From<I64> for Value<'static> {
 }
 
 impl I64 {
-    pub fn new(upper: i64, lower: i64) -> Result<Self, Error> {
-        Self::check_limits(upper, lower, 0)?;
+    pub fn new(lower: i64, upper: i64) -> Result<Self, Error> {
+        Self::check_limits(lower, upper, 0)?;
         Ok(Self {
             value: 0,
             delta: 0,
@@ -36,21 +36,13 @@ impl I64 {
         })
     }
 
-    fn checked_add(left: i64, right: i64) -> Result<i64, Error> {
-        left.checked_add(right).ok_or(if right < 0 {
-            Error::I64("i64 underflow")
-        } else {
-            Error::I64("i64 overflow")
-        })
-    }
-
-    fn check_limits(upper: i64, lower: i64, value: i64) -> Result<(), Error> {
-        if value < lower {
+    fn check_limits(lower: i64, upper: i64, value: i64) -> Result<(), Error> {
+        if lower > upper {
+            Err(Error::I64("lower limit is above the upper limit"))
+        } else if value < lower {
             Err(Error::I64("value is below the configured lower limit"))
         } else if value > upper {
             Err(Error::I64("value is above the configured upper limit"))
-        } else if upper < lower {
-            Err(Error::I64("upper limit is below the lower limit"))
         } else {
             Ok(())
         }
@@ -69,9 +61,20 @@ impl Crdt<i64, i64> for I64 {
     }
 
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
-        let old_delta = self.delta;
-        let accumulated = Self::checked_add(old_delta, *delta)?;
-        let projected = Self::checked_add(self.value, accumulated)?;
+        let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
+            if *delta < 0 {
+                Error::I64("i64 underflow")
+            } else {
+                Error::I64("i64 overflow")
+            }
+        })?;
+        let projected = self.value.checked_add(accumulated).ok_or_else(|| {
+            if accumulated < 0 {
+                Error::I64("i64 underflow")
+            } else {
+                Error::I64("i64 overflow")
+            }
+        })?;
 
         let (lower, upper) = self.limits;
         if projected < lower {
@@ -110,5 +113,19 @@ impl Crdt<i64, i64> for I64 {
 impl CacheableCrdt<i64, i64> for I64 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructor_validates_bounds_before_initial_value() {
+        assert!(I64::new(-10, 10).is_ok());
+        assert!(matches!(
+            I64::new(10, -10),
+            Err(Error::I64("lower limit is above the upper limit"))
+        ));
     }
 }

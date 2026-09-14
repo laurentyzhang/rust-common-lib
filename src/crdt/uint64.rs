@@ -35,8 +35,8 @@ impl U64 {
     //     })))
     // }
 
-    pub fn new(upper: u64, lower: u64) -> Result<Self, Error> {
-        Self::check_limits(upper, lower, 0)?;
+    pub fn new(lower: u64, upper: u64) -> Result<Self, Error> {
+        Self::check_limits(lower, upper, 0)?;
         Ok(Self {
             value: 0,
             delta: 0,
@@ -44,7 +44,7 @@ impl U64 {
         })
     }
 
-    fn check_limits(upper: u64, lower: u64, value: u64) -> Result<(), Error> {
+    fn check_limits(lower: u64, upper: u64, value: u64) -> Result<(), Error> {
         if lower > upper {
             return Err(Error::U64("lower limit must be less than upper limit"));
         }
@@ -117,5 +117,16 @@ impl Crdt<u64, u64> for U64 {
 impl CacheableCrdt<u64, u64> for U64 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructor_uses_lower_then_upper() {
+        assert!(U64::new(0, 100).is_ok());
+        assert!(U64::new(100, 0).is_err());
     }
 }

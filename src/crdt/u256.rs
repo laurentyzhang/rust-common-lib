@@ -30,8 +30,8 @@ impl From<U256> for Value<'static> {
 }
 
 impl U256 {
-    pub fn new(upper: AlloyU256, lower: AlloyU256) -> Result<Self, Error> {
-        Self::check_limits(upper, lower, AlloyU256::ZERO)?;
+    pub fn new(lower: AlloyU256, upper: AlloyU256) -> Result<Self, Error> {
+        Self::check_limits(lower, upper, AlloyU256::ZERO)?;
         Ok(Self {
             value: AlloyU256::ZERO,
             delta: AlloyU256::ZERO,
@@ -39,7 +39,7 @@ impl U256 {
         })
     }
 
-    fn check_limits(upper: AlloyU256, lower: AlloyU256, value: AlloyU256) -> Result<(), Error> {
+    fn check_limits(lower: AlloyU256, upper: AlloyU256, value: AlloyU256) -> Result<(), Error> {
         if lower > upper {
             return Err(Error::U256("lower limit must be less than upper limit"));
         }
@@ -115,5 +115,16 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
 impl CacheableCrdt<AlloyU256, AlloyU256> for U256 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constructor_uses_lower_then_upper() {
+        assert!(U256::new(AlloyU256::ZERO, AlloyU256::from(100)).is_ok());
+        assert!(U256::new(AlloyU256::from(100), AlloyU256::ZERO).is_err());
     }
 }

@@ -38,7 +38,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn create(&mut self, key: &K, value: Value<'static>) -> Result<(), StoreError>
+    pub fn insert(&mut self, key: &K, value: Value<'static>) -> Result<(), StoreError>
     where
         K: Clone,
     {
@@ -50,20 +50,6 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
         }
         tracked.set(value)
     }
-
-    // pub fn createEx(&mut self, key: &K, value: Value) -> Result<(), StoreError>
-    // where
-    //     K: Clone,
-    // {
-    //     let v = std::borrow::Cow::Owned(value);
-    //     let tracked = self.get_or_populate_tracked(key);
-
-    //     if tracked.is_live() {
-    //         tracked.check();
-    //         return Err(StoreError::ValueCannotBeRecreated);
-    //     }
-    //     tracked.set(v.into())
-    // }
 
     /// Record a delta attempt, ignoring any returned error.
     pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), Error>
@@ -132,8 +118,8 @@ where
 {
     fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
-            if !self.contains_key(&key) {
-                self.create(&key, value)?;
+            if !self.exists(&key) {
+                self.insert(&key, value)?;
             }
         }
         Ok(())
