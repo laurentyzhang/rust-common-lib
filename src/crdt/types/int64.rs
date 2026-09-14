@@ -1,7 +1,7 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::Numeric;
-use crate::crdt::state::StateError;
 use crate::crdt::state::Value;
+use crate::crdt::state::{NumericError, StateError};
 use std::borrow::Cow;
 #[derive(Clone, PartialEq)]
 pub struct I64 {
@@ -38,11 +38,17 @@ impl I64 {
 
     fn check_limits(lower: i64, upper: i64, value: i64) -> Result<(), StateError> {
         if lower > upper {
-            Err(StateError::I64("lower limit is above the upper limit"))
+            Err(StateError::I64(NumericError::invalid_limits(
+                &lower, &upper,
+            )))
         } else if value < lower {
-            Err(StateError::I64("value is below the configured lower limit"))
+            Err(StateError::I64(NumericError::below_lower_limit(
+                &value, &lower, &upper,
+            )))
         } else if value > upper {
-            Err(StateError::I64("value is above the configured upper limit"))
+            Err(StateError::I64(NumericError::above_upper_limit(
+                &value, &lower, &upper,
+            )))
         } else {
             Ok(())
         }
@@ -63,25 +69,29 @@ impl Crdt<i64, i64> for I64 {
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
         let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
             if *delta < 0 {
-                StateError::I64("i64 underflow")
+                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
             } else {
-                StateError::I64("i64 overflow")
+                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
             }
         })?;
         let projected = self.value.checked_add(accumulated).ok_or_else(|| {
             if accumulated < 0 {
-                StateError::I64("i64 underflow")
+                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
             } else {
-                StateError::I64("i64 overflow")
+                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
             }
         })?;
 
         let (lower, upper) = self.limits;
         if projected < lower {
-            return Err(StateError::I64("value is below the configured lower limit"));
+            return Err(StateError::I64(NumericError::below_lower_limit(
+                &projected, &lower, &upper,
+            )));
         }
         if projected > upper {
-            return Err(StateError::I64("value is above the configured upper limit"));
+            return Err(StateError::I64(NumericError::above_upper_limit(
+                &projected, &lower, &upper,
+            )));
         }
 
         self.delta = accumulated;
@@ -125,7 +135,7 @@ mod tests {
         assert!(I64::new(-10, 10).is_ok());
         assert!(matches!(
             I64::new(10, -10),
-            Err(StateError::I64("lower limit is above the upper limit"))
+            Err(StateError::I64(NumericError::InvalidLimits(_)))
         ));
     }
 }

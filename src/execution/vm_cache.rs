@@ -1,4 +1,5 @@
-use crate::crdt::state::{Delta, StateError};
+use super::Error;
+use crate::crdt::state::Delta;
 use crate::crdt::state::{Tracked, Value};
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
@@ -42,7 +43,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn insert(&mut self, key: &K, value: Value<'static>) -> Result<(), StoreError>
+    pub fn insert(&mut self, key: &K, value: Value<'static>) -> Result<(), Error>
     where
         K: Clone,
     {
@@ -50,17 +51,19 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
 
         if tracked.is_live() {
             tracked.check();
-            return Err(StoreError::ValueCannotBeRecreated);
+            return Err(StoreError::ValueCannotBeRecreated.into());
         }
-        tracked.set(value)
+        tracked.set(value).map_err(Error::from)
     }
 
-    /// Record a delta attempt, ignoring any returned error.
-    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), StateError>
+    /// Record a delta attempt and return any state validation error.
+    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), Error>
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key).add_delta(delta)
+        self.get_or_populate_tracked(key)
+            .add_delta(delta)
+            .map_err(Error::from)
     }
 
     /// Return whether a live value exists locally or in the fallback.
@@ -77,11 +80,13 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Mark the tracked value as deleted and record a write.
-    pub fn delete(&mut self, key: &K) -> Result<(), StoreError>
+    pub fn delete(&mut self, key: &K) -> Result<(), Error>
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key).delete()
+        self.get_or_populate_tracked(key)
+            .delete()
+            .map_err(Error::from)
     }
 
     pub fn views(&self) -> (Vec<(&K, &Tracked<'a>)>, Vec<(&K, &Value<'a>)>) {
@@ -123,7 +128,7 @@ where
     fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
             if !self.exists(&key) {
-                self.insert(&key, value)?;
+                self.get_or_populate_tracked(&key).set(value)?;
             }
         }
         Ok(())

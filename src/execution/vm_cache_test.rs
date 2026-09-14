@@ -1,9 +1,10 @@
-use super::VmCache;
+use super::{Error, VmCache};
 use crate::crdt::{
     bytes::Bytes,
-    state::{Numeric, Value},
+    state::{Numeric, NumericError, StateError, Value},
     uint64::U64,
 };
+use crate::store::StoreError;
 use crate::store::cached::CachedStore;
 use crate::store::traits::{FallbackStore, WriteOnlyStore};
 
@@ -37,7 +38,7 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
     for _ in 0..2 {
         assert_eq!(
             cache.delete(&7),
-            Err(crate::store::traits::StoreError::EntryNotFound)
+            Err(Error::Store(StoreError::EntryNotFound))
         );
     }
 
@@ -45,7 +46,7 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
     assert_eq!(cache.delete(&7), Ok(()));
     assert_eq!(
         cache.delete(&7),
-        Err(crate::store::traits::StoreError::EntryNotFound)
+        Err(Error::Store(StoreError::EntryNotFound))
     );
     assert!((&mut cache).get(&7).is_none());
     assert!((cache).get(&7).is_none());
@@ -61,7 +62,7 @@ fn rejected_duplicate_creation_preserves_the_original_value() {
     for replacement in [original.clone(), numeric_u64(u64::MAX)] {
         assert!(matches!(
             cache.insert(&7, replacement),
-            Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
+            Err(Error::Store(StoreError::ValueCannotBeRecreated))
         ));
     }
 
@@ -136,7 +137,7 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
     for key in [7, 8] {
         assert_eq!(
             outer.delete(&key),
-            Err(crate::store::traits::StoreError::EntryNotFound)
+            Err(Error::Store(StoreError::EntryNotFound))
         );
         assert!(outer.insert(&key, replacement.clone()).is_ok());
     }
@@ -152,7 +153,7 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
 
 #[test]
 fn short_operation_sequences_match_value_existence_model() {
-    // Exhaust all five-operation sequences of two creations, delete, and read.
+    // rxhaust all five-operation sequences of two creations, delete, and read.
     for initially_present in [false, true] {
         for sequence in 0..4_usize.pow(5) {
             let mut fallback = CachedStore::new(4, None);
@@ -173,7 +174,7 @@ fn short_operation_sequences_match_value_existence_model() {
                             assert!(
                                 matches!(
                                     result,
-                                    Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
+                                    Err(Error::Store(StoreError::ValueCannotBeRecreated))
                                 ),
                                 "sequence {sequence}, step {step}"
                             );
@@ -186,7 +187,7 @@ fn short_operation_sequences_match_value_existence_model() {
                         let expected_result = if expected.take().is_some() {
                             Ok(())
                         } else {
-                            Err(crate::store::traits::StoreError::EntryNotFound)
+                            Err(Error::Store(StoreError::EntryNotFound))
                         };
                         assert_eq!(
                             cache.delete(&7),
@@ -229,7 +230,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
     // Deleting the missing value fails.
     assert_eq!(
         cache.delete(&key),
-        Err(crate::store::traits::StoreError::EntryNotFound)
+        Err(Error::Store(StoreError::EntryNotFound))
     );
 
     // Create a valid value and read it back.
@@ -251,7 +252,7 @@ fn deleting_a_previously_read_missing_key_returns_entry_not_found() {
     assert!(cache.cache.contains_key(&key));
     assert_eq!(
         cache.delete(&key),
-        Err(crate::store::traits::StoreError::EntryNotFound)
+        Err(Error::Store(StoreError::EntryNotFound))
     );
     assert!(!cache.exists(&key));
 }
@@ -265,12 +266,12 @@ fn create_handles_existing_records_and_rejects_live_values() {
 
     assert!(matches!(
         cache.insert(&1, value.clone()),
-        Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
+        Err(Error::Store(StoreError::ValueCannotBeRecreated))
     ));
     assert!(cache.insert(&2, value.clone()).is_ok());
     assert!(matches!(
         cache.insert(&2, value.clone()),
-        Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
+        Err(Error::Store(StoreError::ValueCannotBeRecreated))
     ));
 
     let _ = (&mut cache).get(&3);
@@ -324,7 +325,7 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(vm_cache.cache.contains_key(&7u64));
     assert!(block_cache.cache.is_empty());
 
-    let mut result: Result<(), crate::store::StoreError>;
+    let mut result: Result<(), Error>;
 
     result = vm_cache.insert(&1, U64::new(0, 100).unwrap().into());
     assert!(result.is_ok());
@@ -341,10 +342,12 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(delta_result.is_ok());
 
     let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64(1).into());
-    // assert!(matches!(
-    //     delta_result,
-    //     Err(StoreError::ValueCannotBeRecreated)
-    // ));
+    assert!(matches!(
+        delta_result,
+        Err(Error::State(StateError::U64(
+            NumericError::AboveUpperLimit(_)
+        )))
+    ));
     assert!(delta_result.is_err());
 
     let v = vm_cache.get(&1);
