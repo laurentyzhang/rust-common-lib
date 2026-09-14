@@ -1,5 +1,6 @@
 use super::VmCache;
 use crate::crdt::{
+    bytes::Bytes,
     state::{Numeric, Value},
     uint64::U64,
 };
@@ -323,7 +324,30 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(vm_cache.cache.contains_key(&7u64));
     assert!(block_cache.cache.is_empty());
 
-    vm_cache
-        .insert(&1, U64::new(0, 100).unwrap().into())
-        .expect("Failed")
+    let mut result: Result<(), crate::store::StoreError>;
+
+    result = vm_cache.insert(&1, U64::new(0, 100).unwrap().into());
+    assert!(result.is_ok());
+
+    result = vm_cache.insert(&1, Bytes::new(vec![70, 71, 72]).unwrap().into());
+    assert!(result.is_err()); // This should fail because the key already exists with a different value.
+
+    result = vm_cache.insert(&2, Bytes::new(vec![70, 71, 72]).unwrap().into());
+    assert!(result.is_ok()); // This should succeed.
+
+    assert!(vm_cache.size() == 3);
+
+    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64(100).into());
+    assert!(delta_result.is_ok());
+
+    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64(1).into());
+    // assert!(matches!(
+    //     delta_result,
+    //     Err(StoreError::ValueCannotBeRecreated)
+    // ));
+    assert!(delta_result.is_err());
+
+    let v = vm_cache.get(&1);
+    assert!(v.is_some());
+    assert!(matches!(v.unwrap(), Value::Numeric(Numeric::U64(_))));
 }

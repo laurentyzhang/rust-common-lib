@@ -1,4 +1,4 @@
-use super::{Delta, Error, Numeric};
+use super::{Delta, Numeric, StateError};
 use crate::crdt::Crdt;
 
 #[derive(Clone, PartialEq)]
@@ -35,7 +35,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn add_delta(&mut self, delta: &Delta) -> Result<(), Error> {
+    pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
             (Self::Bytes(value), Delta::Bytes(delta)) => {
@@ -48,8 +48,8 @@ impl<'a> Value<'a> {
 
             (Self::Numeric(value), delta) => value.add_delta(delta),
 
-            (Self::None, _) => Err(Error::None),
-            _ => Err(Error::TypeMismatch),
+            (Self::None, _) => Err(StateError::None),
+            _ => Err(StateError::TypeMismatch),
         }
     }
 

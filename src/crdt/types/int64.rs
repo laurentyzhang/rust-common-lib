@@ -1,6 +1,6 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::Error;
 use crate::crdt::state::Numeric;
+use crate::crdt::state::StateError;
 use crate::crdt::state::Value;
 use std::borrow::Cow;
 #[derive(Clone, PartialEq)]
@@ -27,7 +27,7 @@ impl From<I64> for Value<'static> {
 }
 
 impl I64 {
-    pub fn new(lower: i64, upper: i64) -> Result<Self, Error> {
+    pub fn new(lower: i64, upper: i64) -> Result<Self, StateError> {
         Self::check_limits(lower, upper, 0)?;
         Ok(Self {
             value: 0,
@@ -36,13 +36,13 @@ impl I64 {
         })
     }
 
-    fn check_limits(lower: i64, upper: i64, value: i64) -> Result<(), Error> {
+    fn check_limits(lower: i64, upper: i64, value: i64) -> Result<(), StateError> {
         if lower > upper {
-            Err(Error::I64("lower limit is above the upper limit"))
+            Err(StateError::I64("lower limit is above the upper limit"))
         } else if value < lower {
-            Err(Error::I64("value is below the configured lower limit"))
+            Err(StateError::I64("value is below the configured lower limit"))
         } else if value > upper {
-            Err(Error::I64("value is above the configured upper limit"))
+            Err(StateError::I64("value is above the configured upper limit"))
         } else {
             Ok(())
         }
@@ -50,7 +50,7 @@ impl I64 {
 }
 
 impl Crdt<i64, i64> for I64 {
-    type Error = Error;
+    type Error = StateError;
 
     fn value(&self) -> Option<&i64> {
         Some(&self.value)
@@ -63,25 +63,25 @@ impl Crdt<i64, i64> for I64 {
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
         let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
             if *delta < 0 {
-                Error::I64("i64 underflow")
+                StateError::I64("i64 underflow")
             } else {
-                Error::I64("i64 overflow")
+                StateError::I64("i64 overflow")
             }
         })?;
         let projected = self.value.checked_add(accumulated).ok_or_else(|| {
             if accumulated < 0 {
-                Error::I64("i64 underflow")
+                StateError::I64("i64 underflow")
             } else {
-                Error::I64("i64 overflow")
+                StateError::I64("i64 overflow")
             }
         })?;
 
         let (lower, upper) = self.limits;
         if projected < lower {
-            return Err(Error::I64("value is below the configured lower limit"));
+            return Err(StateError::I64("value is below the configured lower limit"));
         }
         if projected > upper {
-            return Err(Error::I64("value is above the configured upper limit"));
+            return Err(StateError::I64("value is above the configured upper limit"));
         }
 
         self.delta = accumulated;
@@ -125,7 +125,7 @@ mod tests {
         assert!(I64::new(-10, 10).is_ok());
         assert!(matches!(
             I64::new(10, -10),
-            Err(Error::I64("lower limit is above the upper limit"))
+            Err(StateError::I64("lower limit is above the upper limit"))
         ));
     }
 }

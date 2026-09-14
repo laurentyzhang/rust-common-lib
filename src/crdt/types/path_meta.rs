@@ -1,7 +1,7 @@
 use crate::collections::delta_set::DeltaSet;
 
-use super::crdt::Crdt;
-use super::state::Error;
+use crate::crdt::crdt::Crdt;
+use crate::crdt::state::StateError;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PathDelta {
@@ -25,13 +25,13 @@ impl Default for PathMeta {
 }
 
 impl PathMeta {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new() -> Result<Self, StateError> {
         Ok(Self::default())
     }
 }
 
 impl Crdt<DeltaSet<u64>, PathDelta> for PathMeta {
-    type Error = Error;
+    type Error = StateError;
 
     fn value(&self) -> Option<&DeltaSet<u64>> {
         Some(&self.entries)
@@ -41,7 +41,7 @@ impl Crdt<DeltaSet<u64>, PathDelta> for PathMeta {
         self.delta.as_ref()
     }
 
-    fn add_delta(&mut self, delta: &PathDelta) -> Result<&PathDelta, Error> {
+    fn add_delta(&mut self, delta: &PathDelta) -> Result<&PathDelta, StateError> {
         let pending = self.delta.get_or_insert_with(PathDelta::default);
 
         for key in &delta.added {

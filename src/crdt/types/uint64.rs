@@ -1,7 +1,5 @@
-use super::crdt::{CacheableCrdt, Crdt};
-use super::state::Error;
-use super::state::Numeric;
-use super::state::Value;
+use crate::crdt::crdt::{CacheableCrdt, Crdt};
+use crate::crdt::state::{Numeric, StateError, Value};
 use std::borrow::Cow;
 
 #[derive(Clone, PartialEq)]
@@ -35,7 +33,7 @@ impl U64 {
     //     })))
     // }
 
-    pub fn new(lower: u64, upper: u64) -> Result<Self, Error> {
+    pub fn new(lower: u64, upper: u64) -> Result<Self, StateError> {
         Self::check_limits(lower, upper, 0)?;
         Ok(Self {
             value: 0,
@@ -44,24 +42,24 @@ impl U64 {
         })
     }
 
-    fn check_limits(lower: u64, upper: u64, value: u64) -> Result<(), Error> {
+    fn check_limits(lower: u64, upper: u64, value: u64) -> Result<(), StateError> {
         if lower > upper {
-            return Err(Error::U64("lower limit must be less than upper limit"));
+            return Err(StateError::U64("lower limit must be less than upper limit"));
         }
 
         if value < lower {
-            return Err(Error::U64("value is below the configured lower limit"));
+            return Err(StateError::U64("value is below the configured lower limit"));
         }
 
         if value > upper {
-            return Err(Error::U64("value is above the configured upper limit"));
+            return Err(StateError::U64("value is above the configured upper limit"));
         }
         Ok(())
     }
 }
 
 impl Crdt<u64, u64> for U64 {
-    type Error = Error;
+    type Error = StateError;
 
     fn value(&self) -> Option<&u64> {
         Some(&self.value)
@@ -71,19 +69,19 @@ impl Crdt<u64, u64> for U64 {
         Some(&self.delta)
     }
 
-    fn add_delta(&mut self, delta: &u64) -> Result<&u64, Error> {
+    fn add_delta(&mut self, delta: &u64) -> Result<&u64, StateError> {
         let accumulated = self
             .delta
             .checked_add(*delta)
-            .ok_or(Error::U64("u64 overflow"))?;
+            .ok_or(StateError::U64("u64 overflow"))?;
         let projected = self
             .value
             .checked_add(accumulated)
-            .ok_or(Error::U64("u64 overflow"))?;
+            .ok_or(StateError::U64("u64 overflow"))?;
 
         let (_, upper) = self.limits;
         if projected > upper {
-            return Err(Error::U64("value is above the configured upper limit"));
+            return Err(StateError::U64("value is above the configured upper limit"));
         }
 
         self.delta = accumulated;

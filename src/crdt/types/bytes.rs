@@ -1,6 +1,5 @@
-use super::crdt::{CacheableCrdt, Crdt};
-use super::state::Error;
-use super::state::Value;
+use crate::crdt::crdt::{CacheableCrdt, Crdt};
+use crate::crdt::state::{StateError, Value};
 use std::borrow::Cow;
 
 #[derive(Clone, PartialEq, Default)]
@@ -14,8 +13,16 @@ impl From<Bytes> for Value<'static> {
     }
 }
 
+impl Bytes {
+    pub fn new(data: Vec<u8>) -> Result<Self, StateError> {
+        Ok(Self {
+            delta: Some(data.into_boxed_slice()),
+        })
+    }
+}
+
 impl Crdt<[u8], [u8]> for Bytes {
-    type Error = Error;
+    type Error = StateError;
 
     fn value(&self) -> Option<&[u8]> {
         self.delta.as_deref()

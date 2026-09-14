@@ -1,10 +1,9 @@
-use super::state::Numeric;
-use super::state::Value;
+use crate::crdt::state::{Numeric, Value};
 use alloy_primitives::U256 as AlloyU256;
 use std::borrow::Cow;
 
-use super::crdt::{CacheableCrdt, Crdt};
-use super::state::Error;
+use crate::crdt::crdt::{CacheableCrdt, Crdt};
+use crate::crdt::state::StateError;
 
 #[derive(Clone, PartialEq)]
 pub struct U256 {
@@ -30,7 +29,7 @@ impl From<U256> for Value<'static> {
 }
 
 impl U256 {
-    pub fn new(lower: AlloyU256, upper: AlloyU256) -> Result<Self, Error> {
+    pub fn new(lower: AlloyU256, upper: AlloyU256) -> Result<Self, StateError> {
         Self::check_limits(lower, upper, AlloyU256::ZERO)?;
         Ok(Self {
             value: AlloyU256::ZERO,
@@ -39,24 +38,34 @@ impl U256 {
         })
     }
 
-    fn check_limits(lower: AlloyU256, upper: AlloyU256, value: AlloyU256) -> Result<(), Error> {
+    fn check_limits(
+        lower: AlloyU256,
+        upper: AlloyU256,
+        value: AlloyU256,
+    ) -> Result<(), StateError> {
         if lower > upper {
-            return Err(Error::U256("lower limit must be less than upper limit"));
+            return Err(StateError::U256(
+                "lower limit must be less than upper limit",
+            ));
         }
 
         if value < lower {
-            return Err(Error::U256("value is below the configured lower limit"));
+            return Err(StateError::U256(
+                "value is below the configured lower limit",
+            ));
         }
 
         if value > upper {
-            return Err(Error::U256("value is above the configured upper limit"));
+            return Err(StateError::U256(
+                "value is above the configured upper limit",
+            ));
         }
         Ok(())
     }
 }
 
 impl Crdt<AlloyU256, AlloyU256> for U256 {
-    type Error = Error;
+    type Error = StateError;
 
     fn value(&self) -> Option<&AlloyU256> {
         Some(&self.value)
@@ -70,20 +79,24 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
         let accumulated = self
             .delta
             .checked_add(*delta)
-            .ok_or(Error::U256("U256 overflow"))?;
+            .ok_or(StateError::U256("U256 overflow"))?;
 
         let projected = self
             .value
             .checked_add(accumulated)
-            .ok_or(Error::U256("U256 overflow"))?;
+            .ok_or(StateError::U256("U256 overflow"))?;
 
         let (lower, upper) = self.limits;
         if projected < lower {
-            return Err(Error::U256("value is below the configured lower limit"));
+            return Err(StateError::U256(
+                "value is below the configured lower limit",
+            ));
         }
 
         if projected > upper {
-            return Err(Error::U256("value is above the configured upper limit"));
+            return Err(StateError::U256(
+                "value is above the configured upper limit",
+            ));
         }
 
         self.delta = accumulated;

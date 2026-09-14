@@ -1,4 +1,4 @@
-use super::{Delta, Error, Value};
+use super::{Delta, StateError, Value};
 use crate::store::traits::StoreError;
 
 pub struct Tracked<'a> {
@@ -88,7 +88,7 @@ impl<'a> Tracked<'a> {
         self.checks += 1;
     }
 
-    pub fn add_delta(&mut self, delta: Delta) -> Result<(), Error> {
+    pub fn add_delta(&mut self, delta: Delta) -> Result<(), StateError> {
         self.deltas += 1;
         self.value.add_delta(&delta)
     }

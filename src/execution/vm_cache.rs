@@ -1,4 +1,4 @@
-use crate::crdt::state::{Delta, Error};
+use crate::crdt::state::{Delta, StateError};
 use crate::crdt::state::{Tracked, Value};
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
@@ -24,6 +24,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             cache: HashMap::new(),
             fallback: Some(fallback),
         }
+    }
+
+    pub fn size(&self) -> u64 {
+        self.cache.len() as u64
     }
 
     /// Populate the cache if needed and record a tracked read.
@@ -52,7 +56,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Record a delta attempt, ignoring any returned error.
-    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), Error>
+    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), StateError>
     where
         K: Clone,
     {
