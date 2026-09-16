@@ -19,6 +19,46 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn applied(&self) -> Self {
+        let mut applied = self.clone();
+        applied.apply_delta();
+        applied
+    }
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Numeric(Numeric::I64(value)) => value.value().copied(),
+            _ => None,
+        }
+    }
+
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Numeric(Numeric::U64(value)) => value.value().copied(),
+            _ => None,
+        }
+    }
+
+    pub fn as_u256(&self) -> Option<alloy_primitives::U256> {
+        match self {
+            Self::Numeric(Numeric::U256(value)) => value.value().copied(),
+            _ => None,
+        }
+    }
+
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Bytes(value) => value.value(),
+            _ => None,
+        }
+    }
+
+    pub fn as_path(&self) -> Option<&crate::collections::delta_set::DeltaSet<u64>> {
+        match self {
+            Self::PathMeta(value) => value.value(),
+            _ => None,
+        }
+    }
+
     pub fn is_numeric(&self) -> bool {
         match self {
             Self::Numeric(_) => true,

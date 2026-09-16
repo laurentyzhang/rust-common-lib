@@ -9,3 +9,6 @@ pub use int64::I64;
 pub use path_meta::{PathDelta, PathMeta};
 pub use u256::U256;
 pub use uint64::U64;
+
+#[cfg(test)]
+mod tests;

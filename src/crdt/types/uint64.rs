@@ -71,10 +71,6 @@ impl Crdt<u64, u64> for U64 {
         Some(&self.value)
     }
 
-    fn delta(&self) -> Option<&u64> {
-        Some(&self.delta)
-    }
-
     fn add_delta(&mut self, delta: &u64) -> Result<&u64, StateError> {
         let accumulated =
             self.delta
@@ -131,16 +127,5 @@ impl Crdt<u64, u64> for U64 {
 impl CacheableCrdt<u64, u64> for U64 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constructor_uses_lower_then_upper() {
-        assert!(U64::new(0, 100).is_ok());
-        assert!(U64::new(100, 0).is_err());
     }
 }

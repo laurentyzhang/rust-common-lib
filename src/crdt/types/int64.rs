@@ -62,10 +62,6 @@ impl Crdt<i64, i64> for I64 {
         Some(&self.value)
     }
 
-    fn delta(&self) -> Option<&i64> {
-        Some(&self.delta)
-    }
-
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
         let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
             if *delta < 0 {
@@ -123,19 +119,5 @@ impl Crdt<i64, i64> for I64 {
 impl CacheableCrdt<i64, i64> for I64 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constructor_validates_bounds_before_initial_value() {
-        assert!(I64::new(-10, 10).is_ok());
-        assert!(matches!(
-            I64::new(10, -10),
-            Err(StateError::I64(NumericError::InvalidLimits(_)))
-        ));
     }
 }

@@ -71,10 +71,6 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
         Some(&self.value)
     }
 
-    fn delta(&self) -> Option<&AlloyU256> {
-        Some(&self.delta)
-    }
-
     fn add_delta(&mut self, delta: &AlloyU256) -> Result<&AlloyU256, Self::Error> {
         let accumulated =
             self.delta
@@ -136,16 +132,5 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
 impl CacheableCrdt<AlloyU256, AlloyU256> for U256 {
     fn cache_weight(&self) -> usize {
         std::mem::size_of::<Self>()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constructor_uses_lower_then_upper() {
-        assert!(U256::new(AlloyU256::ZERO, AlloyU256::from(100)).is_ok());
-        assert!(U256::new(AlloyU256::from(100), AlloyU256::ZERO).is_err());
     }
 }

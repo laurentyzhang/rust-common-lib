@@ -82,7 +82,7 @@ fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
     for number in [0, u64::MAX, 42] {
         let expected = numeric_u64(number);
         assert!(cache.insert(&key, expected.clone()).is_ok());
-        assert!((&mut cache).get(&key) == Some(&expected));
+        assert!((&mut cache).get(&key).as_deref() == Some(&expected));
         assert_eq!(cache.delete(&key), Ok(()));
         assert!((&mut cache).get(&key).is_none());
         // assert!((&cache).get(&key).is_none());
@@ -102,7 +102,7 @@ fn local_deletion_and_recreation_do_not_modify_fallback() {
         let mut cache = VmCache::new_with_fallback(&fallback);
         assert!(cache.exists(&7));
         if read_first {
-            assert!((&mut cache).get(&7) == Some(&original));
+            assert!((&mut cache).get(&7).as_deref() == Some(&original));
         }
         assert_eq!(cache.delete(&7), Ok(()));
         assert!(!cache.exists(&7));
@@ -112,7 +112,7 @@ fn local_deletion_and_recreation_do_not_modify_fallback() {
 
         assert!(cache.insert(&7, replacement.clone()).is_ok());
         assert!((&cache).get(&7) == Some(&replacement));
-        assert!((&mut cache).get(&7) == Some(&replacement));
+        assert!((&mut cache).get(&7).as_deref() == Some(&replacement));
         assert!(fallback.get(&7) == Some(&original));
     }
 }
@@ -197,7 +197,7 @@ fn short_operation_sequences_match_value_existence_model() {
                     }
                     _ => {
                         assert!(
-                            (&mut cache).get(&7) == expected.as_ref(),
+                            (&mut cache).get(&7).as_deref() == expected.as_ref(),
                             "sequence {sequence}, step {step}"
                         );
                     }
@@ -235,7 +235,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
 
     // Create a valid value and read it back.
     assert!(cache.insert(&key, expected.clone()).is_ok());
-    assert!((&mut cache).get(&key) == Some(&expected));
+    assert!((&mut cache).get(&key).as_deref() == Some(&expected));
 
     // Deletion now succeeds, and subsequent reads return no value.
     assert_eq!(cache.delete(&key), Ok(()));
@@ -295,7 +295,7 @@ fn receiver_mutability_selects_cache_population() {
     assert!((&cache).get(&key) == Some(&value));
     assert!(cache.cache.is_empty());
 
-    assert!((&mut cache).get(&key) == Some(&value));
+    assert!((&mut cache).get(&key).as_deref() == Some(&value));
     assert!(cache.cache.contains_key(&key));
     let tracked = cache.cache.get(&key).unwrap();
     assert!(tracked.value() == fallback.get(&key).unwrap());
@@ -310,7 +310,7 @@ fn mutable_read_populates_only_the_outer_cache() {
     let inner = VmCache::new_with_fallback(&fallback);
     let mut outer = VmCache::new_with_fallback(&inner);
 
-    assert!((&mut outer).get(&key) == Some(&value));
+    assert!((&mut outer).get(&key).as_deref() == Some(&value));
     assert!(outer.cache.contains_key(&key));
     assert!(inner.cache.is_empty());
 }
@@ -350,7 +350,9 @@ fn vm_cache_with_vm_cache_fallback() {
     ));
     assert!(delta_result.is_err());
 
-    let v = vm_cache.get(&1);
-    assert!(v.is_some());
-    assert!(matches!(v.unwrap(), Value::Numeric(Numeric::U64(_))));
+    let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
+    assert_eq!(applied.as_ref().as_u64(), Some(100));
+
+    applied = (&mut vm_cache).get(&2).expect("value should exist");
+    assert_eq!(applied.as_ref().as_bytes(), Some(&[70, 71, 72][..]));
 }

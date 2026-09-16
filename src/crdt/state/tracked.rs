@@ -109,6 +109,10 @@ impl<'a> Tracked<'a> {
         Ok(())
     }
 
+    pub fn has_delta(&self) -> bool {
+        self.deltas > 0
+    }
+
     pub fn is_live(&self) -> bool {
         !self.is_tombstone() && !self.is_none()
     }

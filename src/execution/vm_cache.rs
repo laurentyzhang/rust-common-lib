@@ -4,6 +4,7 @@ use crate::crdt::state::{Tracked, Value};
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
 use crate::store::traits::WriteOnlyStore;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub struct VmCache<'a, K> {
@@ -35,11 +36,19 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     ///
     /// Use `(&mut cache).get(key)` to select this method when `FallbackStore`
     /// is in scope. `(&cache).get(key)` selects the untracked trait method.
-    pub fn get(&mut self, key: &K) -> Option<&Value<'a>>
+    pub fn get(&mut self, key: &K) -> Option<Cow<'_, Value<'a>>>
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key).get()
+        let tracked = self.get_or_populate_tracked(key);
+        let touched = tracked.has_delta();
+        let value = tracked.get()?;
+
+        Some(if touched {
+            Cow::Owned(value.applied())
+        } else {
+            Cow::Borrowed(value)
+        })
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
