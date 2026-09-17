@@ -7,9 +7,9 @@ pub struct Tracked<'a> {
     checks: u32, // Number of times the value has been checked for existence
     writes: u32,
     deltas: u32,
-    tombstone: u32,
     creates: u32, // Indicates if the tracked value is newly created and not yet committed
     is_new: bool,
+    tombstone: bool,
 }
 
 impl<'a> Tracked<'a> {
@@ -46,9 +46,9 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 0,
             deltas: 0,
-            tombstone: 0,
             creates: 0,
             is_new: true,
+            tombstone: false,
         }
     }
 
@@ -59,9 +59,9 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 0,
             deltas: 0,
-            tombstone: 0,
             creates: 1,
             is_new: true,
+            tombstone: false,
         }
     }
 
@@ -72,9 +72,9 @@ impl<'a> Tracked<'a> {
             checks: 0,
             writes: 0, // Start with 1 write since we are borrowing an existing value
             deltas: 0,
-            tombstone: 0,
             creates: 0,
             is_new: false,
+            tombstone: false,
         }
     }
 
@@ -85,19 +85,29 @@ impl<'a> Tracked<'a> {
 
     /// Replace the value while preserving access history and recording a write.
     pub fn set(&mut self, value: Value<'a>) -> Result<(), StoreError> {
-        if self.is_live() {
-            self.check();
-            return Err(StoreError::ValueCannotBeRecreated);
+        if matches!(value, Value::None) {
+            return self.delete();
         }
 
-        if self.is_none() {
-            self.creates += 1;
-        } else {
-            self.writes += 1;
-        }
-
+        let is_live = self.is_live();
         self.value = value;
-        self.tombstone = 0;
+        self.tombstone = false;
+
+        if !is_live {
+            self.creates += 1; // Having a none value    
+            return Ok(());
+        }
+        self.writes += 1;
+        Ok(())
+    }
+
+    pub fn delete(&mut self) -> Result<(), StoreError> {
+        self.writes += 1;
+        if !self.is_live() {
+            return Err(StoreError::DeleteNonexistingEntry);
+        }
+        self.value = Value::None;
+        self.tombstone = true;
         Ok(())
     }
 
@@ -125,16 +135,6 @@ impl<'a> Tracked<'a> {
         Some(&self.value)
     }
 
-    pub fn delete(&mut self) -> Result<(), StoreError> {
-        self.writes += 1;
-        if !self.is_live() {
-            return Err(StoreError::EntryNotFound);
-        }
-
-        self.tombstone += 1;
-        Ok(())
-    }
-
     pub fn has_delta(&self) -> bool {
         self.deltas > 0
     }
@@ -144,7 +144,7 @@ impl<'a> Tracked<'a> {
     }
 
     pub fn is_tombstone(&self) -> bool {
-        self.tombstone > 0
+        self.tombstone
     }
 
     pub fn is_none(&self) -> bool {

@@ -22,7 +22,9 @@ where
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreError {
+    DeleteNonexistingEntry,
     ValueCannotBeRecreated,
+    ValueCannotBeNone,
     NotFound,
     EntryNotFound,
 }

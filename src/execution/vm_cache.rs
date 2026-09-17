@@ -56,6 +56,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     where
         K: Clone,
     {
+        if matches!(value, Value::None) {
+            return Err(StoreError::ValueCannotBeNone.into());
+        }
+
         let tracked = self.get_or_populate_tracked(key);
 
         if tracked.is_live() {

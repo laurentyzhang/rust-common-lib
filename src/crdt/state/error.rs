@@ -9,6 +9,15 @@ pub enum NumericError {
     Underflow(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum StateError {
+    I64(NumericError),
+    U64(NumericError),
+    U256(NumericError),
+    None,
+    TypeMismatch,
+}
+
 impl NumericError {
     pub(crate) fn invalid_limits<T: Display>(lower: &T, upper: &T) -> Self {
         Self::InvalidLimits(format!("lower limit {lower} exceeds upper limit {upper}"))
@@ -33,13 +42,4 @@ impl NumericError {
             "operation underflowed: value {value}, pending delta {pending_delta}, incoming delta {delta}"
         ))
     }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum StateError {
-    I64(NumericError),
-    U64(NumericError),
-    U256(NumericError),
-    None,
-    TypeMismatch,
 }

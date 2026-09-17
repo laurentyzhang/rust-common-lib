@@ -48,6 +48,7 @@ where
     fn stage(&mut self, _: Vec<(K, V)>) -> Result<(), StoreError> {
         Ok(())
     }
+
     fn commit(&mut self, updates: Vec<(K, V)>) {
         for (key, value) in updates {
             if self.cache.contains_key(&key) {
