@@ -9,6 +9,7 @@ use crate::crdt::state::{NumericError, StateError};
 pub struct U256 {
     pub(crate) value: AlloyU256,
     pub(crate) delta: AlloyU256,
+    pub(crate) delta_subtract: bool,
     pub(crate) limits: (AlloyU256, AlloyU256),
 }
 
@@ -17,6 +18,7 @@ impl Default for U256 {
         Self {
             value: AlloyU256::ZERO,
             delta: AlloyU256::ZERO,
+            delta_subtract: false,
             limits: (AlloyU256::ZERO, AlloyU256::MAX),
         }
     }
@@ -29,11 +31,59 @@ impl From<U256> for Value<'static> {
 }
 
 impl U256 {
+    /// Queue a subtraction, returning the magnitude of the net pending delta.
+    /// The committed value is unchanged until apply_delta.
+    pub fn sub_delta(&mut self, delta: &AlloyU256) -> Result<&AlloyU256, StateError> {
+        self.update_delta(delta, true)
+    }
+
+    fn update_delta(
+        &mut self,
+        delta: &AlloyU256,
+        subtract: bool,
+    ) -> Result<&AlloyU256, StateError> {
+        let current = if self.delta_subtract {
+            self.value.checked_sub(self.delta)
+        } else {
+            self.value.checked_add(self.delta)
+        };
+        let current = current.ok_or_else(|| {
+            StateError::U256(if self.delta_subtract {
+                NumericError::underflow(&self.value, &self.delta, delta)
+            } else {
+                NumericError::overflow(&self.value, &self.delta, delta)
+            })
+        })?;
+        let projected = if subtract {
+            current.checked_sub(*delta)
+        } else {
+            current.checked_add(*delta)
+        }
+        .ok_or_else(|| {
+            StateError::U256(if subtract {
+                NumericError::underflow(&self.value, &self.delta, delta)
+            } else {
+                NumericError::overflow(&self.value, &self.delta, delta)
+            })
+        })?;
+        Self::check_limits(self.limits.0, self.limits.1, projected)?;
+
+        // Store a normalized signed magnitude without narrowing the unsigned range.
+        self.delta_subtract = projected < self.value;
+        self.delta = if self.delta_subtract {
+            self.value - projected
+        } else {
+            projected - self.value
+        };
+        Ok(&self.delta)
+    }
+
     pub fn new(lower: AlloyU256, upper: AlloyU256) -> Result<Self, StateError> {
         Self::check_limits(lower, upper, AlloyU256::ZERO)?;
         Ok(Self {
             value: AlloyU256::ZERO,
             delta: AlloyU256::ZERO,
+            delta_subtract: false,
             limits: (AlloyU256::from(lower), AlloyU256::from(upper)),
         })
     }
@@ -71,50 +121,21 @@ impl Crdt<AlloyU256, AlloyU256> for U256 {
         Some(&self.value)
     }
 
+    /// Queue an addition, returning the magnitude of the net pending delta.
     fn add_delta(&mut self, delta: &AlloyU256) -> Result<&AlloyU256, Self::Error> {
-        let accumulated =
-            self.delta
-                .checked_add(*delta)
-                .ok_or(StateError::U256(NumericError::overflow(
-                    &self.value,
-                    &self.delta,
-                    delta,
-                )))?;
-
-        let projected =
-            self.value
-                .checked_add(accumulated)
-                .ok_or(StateError::U256(NumericError::overflow(
-                    &self.value,
-                    &self.delta,
-                    delta,
-                )))?;
-
-        let (lower, upper) = self.limits;
-        if projected < lower {
-            return Err(StateError::U256(NumericError::below_lower_limit(
-                &projected, &lower, &upper,
-            )));
-        }
-
-        if projected > upper {
-            return Err(StateError::U256(NumericError::above_upper_limit(
-                &projected, &lower, &upper,
-            )));
-        }
-
-        self.delta = accumulated;
-        Ok(&self.delta)
+        self.update_delta(delta, false)
     }
 
     fn apply_delta(&mut self) -> &Self {
-        let delta = self.delta;
-
-        self.value = self.value + delta;
+        self.value = if self.delta_subtract {
+            self.value - self.delta
+        } else {
+            self.value + self.delta
+        };
         self.delta = AlloyU256::ZERO;
+        self.delta_subtract = false;
         self
     }
-
     fn limits(&self) -> Option<(&AlloyU256, &AlloyU256)> {
         let (lower, upper) = &self.limits;
         Some((lower, upper))

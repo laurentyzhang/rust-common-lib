@@ -98,14 +98,20 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             .map_err(Error::from)
     }
 
-    pub fn views(&self) -> (Vec<(&K, &Tracked<'a>)>, Vec<(&K, &Value<'a>)>) {
-        let access_records = self.cache.iter().collect();
-
-        let transitions = self
+    pub fn drain(&self) -> (Vec<(K, Tracked<'static>)>, Vec<(K, Value<'static>)>)
+    where
+        K: Clone,
+    {
+        let access_records: Vec<(K, Tracked<'static>)> = self
             .cache
             .iter()
+            .map(|(key, tracked)| ((*key).clone(), tracked.owned_clone()))
+            .collect();
+
+        let transitions: Vec<(K, Value<'static>)> = access_records
+            .iter()
             .filter(|(_, tracked)| tracked.is_live())
-            .map(|(key, tracked)| (key, tracked.value()))
+            .map(|(key, tracked)| ((*key).clone(), tracked.value().clone()))
             .collect();
 
         (access_records, transitions)
@@ -149,9 +155,10 @@ where
 
 /// VmCache as the fallback store for another VmCache,
 /// allowing for a layered caching mechanism.
-impl<'a, K> FallbackStore<'a, K, Value<'a>> for VmCache<'a, K>
+impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for VmCache<'cache, K>
 where
     K: std::hash::Hash + Eq,
+    'cache: 'value,
 {
     /// Check for a live value locally or in the fallback.
     fn contains_key(&self, key: &K) -> bool {
@@ -159,7 +166,7 @@ where
     }
 
     /// Read without tracking; local tombstones hide fallback values.
-    fn get(&self, key: &K) -> Option<&Value<'a>> {
+    fn get(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {

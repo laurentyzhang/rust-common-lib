@@ -10,6 +10,15 @@ pub enum Value<'a> {
 }
 
 impl<'a> Value<'a> {
+    pub fn into_owned(self) -> Value<'static> {
+        match self {
+            Self::Bytes(value) => Value::Bytes(std::borrow::Cow::Owned(value.into_owned())),
+            Self::PathMeta(value) => Value::PathMeta(std::borrow::Cow::Owned(value.into_owned())),
+            Self::Numeric(value) => Value::Numeric(value.into_owned()),
+            Self::None => Value::None,
+        }
+    }
+
     pub fn borrowed(value: &'a Value<'_>) -> Self {
         match value {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),

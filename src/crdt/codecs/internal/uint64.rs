@@ -5,6 +5,8 @@ use super::{Reader, Result, Writer};
 const VALUE: u8 = 1;
 const DELTA: u8 = 2;
 const LIMITS: u8 = 4;
+// Existing additive encodings retain their original flags and layout.
+const SUBTRACT: u8 = 8;
 
 pub fn encoded_size(_: &U64) -> Result<u64> {
     Ok(33)
@@ -25,7 +27,7 @@ pub fn encode_to(value: &U64, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
-    writer.write_u8(VALUE | DELTA | LIMITS)?;
+    writer.write_u8(VALUE | DELTA | LIMITS | if value.delta_subtract { SUBTRACT } else { 0 })?;
     writer.write_u64(value.value)?;
     writer.write_u64(value.delta)?;
     writer.write_u64(value.limits.0)?;
@@ -36,7 +38,9 @@ pub fn encode_to(value: &U64, output: &mut [u8]) -> Result<u64> {
 pub fn decode(input: &[u8]) -> Result<U64> {
     let mut reader = Reader::new(input);
     let flags = reader.read_u8()?;
-    if flags & !(VALUE | DELTA | LIMITS) != 0 {
+    if flags & !(VALUE | DELTA | LIMITS | SUBTRACT) != 0
+        || (flags & SUBTRACT != 0 && flags & DELTA == 0)
+    {
         return Err("invalid U64 flags");
     }
 
@@ -60,6 +64,7 @@ pub fn decode(input: &[u8]) -> Result<U64> {
     Ok(U64 {
         value,
         delta,
+        delta_subtract: flags & SUBTRACT != 0,
         limits,
     })
 }

@@ -56,6 +56,7 @@ impl Decodable for U64 {
         Ok(Self {
             value: if has_value == 1 { value } else { 0 },
             delta: 0,
+            delta_subtract: false,
             limits: if has_limits == 1 {
                 (lower, upper)
             } else {
@@ -76,11 +77,13 @@ mod tests {
         let dirty = U64 {
             value: 100,
             delta: 25,
+            delta_subtract: false,
             limits: (0, 1_000),
         };
         let clean = U64 {
             value: dirty.value,
             delta: 0,
+            delta_subtract: false,
             limits: dirty.limits,
         };
 

@@ -9,6 +9,14 @@ pub enum Numeric<'a> {
 }
 
 impl<'a> Numeric<'a> {
+    pub fn into_owned(self) -> Numeric<'static> {
+        match self {
+            Self::I64(value) => Numeric::I64(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U64(value) => Numeric::U64(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U256(value) => Numeric::U256(std::borrow::Cow::Owned(value.into_owned())),
+        }
+    }
+
     pub fn borrowed(value: &'a Numeric<'_>) -> Self {
         match value {
             Self::I64(value) => Self::I64(std::borrow::Cow::Borrowed(value.as_ref())),
@@ -21,8 +29,14 @@ impl<'a> Numeric<'a> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
             (Self::I64(value), Delta::I64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U64(value), Delta::U64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U256(value), Delta::U256(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
+            (Self::U64(value), Delta::U64Add(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
+            (Self::U256(value), Delta::U256Add(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
+            (Self::U64(value), Delta::U64Sub(delta)) => value.to_mut().sub_delta(delta).map(|_| ()),
+            (Self::U256(value), Delta::U256Sub(delta)) => {
+                value.to_mut().sub_delta(delta).map(|_| ())
+            }
             _ => Err(StateError::TypeMismatch),
         }
     }
@@ -40,5 +54,157 @@ impl<'a> Numeric<'a> {
             }
         };
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crdt::state::{NumericError, Value};
+
+    macro_rules! unsigned_delta_tests {
+        ($module:ident, $crdt:ty, $number:ty, $add:ident, $sub:ident, $error:ident, $accessor:ident, $codec:ident) => {
+            mod $module {
+                use super::*;
+                fn n(value: u64) -> $number {
+                    <$number>::from(value)
+                }
+
+                #[test]
+                fn mixed_deltas_are_deferred_and_cancel_in_both_directions() {
+                    let mut value: Value<'static> = <$crdt>::default().into();
+                    value.add_delta(&Delta::$add(n(10))).unwrap();
+                    value.apply_delta();
+                    value.add_delta(&Delta::$sub(n(7))).unwrap();
+                    assert_eq!(value.$accessor(), Some(n(10)));
+                    value.add_delta(&Delta::$add(n(9))).unwrap();
+                    assert_eq!(value.applied().$accessor(), Some(n(12)));
+                    value.add_delta(&Delta::$sub(n(5))).unwrap();
+                    assert_eq!(value.applied().$accessor(), Some(n(7)));
+                    value.add_delta(&Delta::$add(n(3))).unwrap();
+                    assert_eq!(value.applied().$accessor(), Some(n(10)));
+                    value.add_delta(&Delta::$sub(n(10))).unwrap();
+                    value.apply_delta();
+                    value.apply_delta();
+                    assert_eq!(value.$accessor(), Some(n(0)));
+                    value.add_delta(&Delta::$sub(n(0))).unwrap();
+                    assert_eq!(value.applied().$accessor(), Some(n(0)));
+                }
+
+                #[test]
+                fn full_unsigned_range_and_failed_operations_preserve_state() {
+                    let mut value: Value<'static> = <$crdt>::default().into();
+                    let before = value.clone();
+                    assert!(matches!(
+                        value.add_delta(&Delta::$sub(n(1))),
+                        Err(StateError::$error(NumericError::Underflow(_)))
+                    ));
+                    assert!(value == before);
+                    value.add_delta(&Delta::$add(<$number>::MAX)).unwrap();
+                    let before = value.clone();
+                    assert!(matches!(
+                        value.add_delta(&Delta::$add(n(1))),
+                        Err(StateError::$error(NumericError::Overflow(_)))
+                    ));
+                    assert!(value == before);
+                    value.apply_delta();
+                    value.add_delta(&Delta::$sub(<$number>::MAX)).unwrap();
+                    let before = value.clone();
+                    assert!(matches!(
+                        value.add_delta(&Delta::$sub(n(1))),
+                        Err(StateError::$error(NumericError::Underflow(_)))
+                    ));
+                    assert!(value == before);
+                    value.add_delta(&Delta::$add(<$number>::MAX)).unwrap();
+                    assert_eq!(value.applied().$accessor(), Some(<$number>::MAX));
+                    value.add_delta(&Delta::$sub(<$number>::MAX)).unwrap();
+                    value.apply_delta();
+                    assert_eq!(value.$accessor(), Some(n(0)));
+                }
+
+                #[test]
+                fn limits_are_checked_before_mutating_pending_delta() {
+                    type TestCrdt = $crdt;
+                    let mut value = TestCrdt {
+                        value: n(10),
+                        limits: (n(5), n(15)),
+                        ..Default::default()
+                    };
+                    value.sub_delta(&n(5)).unwrap();
+                    let before = value.clone();
+                    assert!(matches!(
+                        value.sub_delta(&n(1)),
+                        Err(StateError::$error(NumericError::BelowLowerLimit(_)))
+                    ));
+                    assert!(value == before);
+                    value.add_delta(&n(10)).unwrap();
+                    let before = value.clone();
+                    assert!(matches!(
+                        value.add_delta(&n(1)),
+                        Err(StateError::$error(NumericError::AboveUpperLimit(_)))
+                    ));
+                    assert!(value == before);
+                    value.apply_delta();
+                    assert_eq!(value.value(), Some(&n(15)));
+                    assert!(!value.delta_subtract);
+                }
+
+                #[test]
+                fn subtraction_survives_internal_codec_but_storage_omits_pending_delta() {
+                    use crate::crdt::codecs::internal::$codec as codec;
+                    let mut value = <$crdt>::default();
+                    value.add_delta(&<$number>::MAX).unwrap();
+                    value.apply_delta();
+                    let clean = value.clone();
+                    value.sub_delta(&<$number>::MAX).unwrap();
+                    let encoded = codec::encode(&value).unwrap();
+                    assert_eq!(encoded[0], 15);
+                    let mut decoded = codec::decode(&encoded).unwrap();
+                    assert!(decoded == value);
+                    decoded.apply_delta();
+                    assert_eq!(decoded.value(), Some(&n(0)));
+                    assert_eq!(alloy_rlp::encode(&value), alloy_rlp::encode(&clean));
+                    let stored =
+                        alloy_rlp::decode_exact::<$crdt>(&alloy_rlp::encode(&value)).unwrap();
+                    assert!(stored == clean);
+                    assert!(codec::decode(&[16]).is_err());
+                }
+            }
+        };
+    }
+
+    unsigned_delta_tests!(
+        u64_delta,
+        crate::crdt::uint64::U64,
+        u64,
+        U64Add,
+        U64Sub,
+        U64,
+        as_u64,
+        uint64
+    );
+    unsigned_delta_tests!(
+        u256_delta,
+        crate::crdt::u256::U256,
+        alloy_primitives::U256,
+        U256Add,
+        U256Sub,
+        U256,
+        as_u256,
+        u256
+    );
+
+    #[test]
+    fn unsigned_subtraction_rejects_other_numeric_types() {
+        let mut u64_value: Value<'static> = crate::crdt::uint64::U64::default().into();
+        let mut u256_value: Value<'static> = crate::crdt::u256::U256::default().into();
+        assert_eq!(
+            u64_value.add_delta(&Delta::U256Sub(alloy_primitives::U256::ZERO)),
+            Err(StateError::TypeMismatch)
+        );
+        assert_eq!(
+            u256_value.add_delta(&Delta::U64Sub(0)),
+            Err(StateError::TypeMismatch)
+        );
     }
 }

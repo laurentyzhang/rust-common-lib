@@ -61,6 +61,7 @@ impl Decodable for U256 {
                 AlloyU256::ZERO
             },
             delta: AlloyU256::ZERO,
+            delta_subtract: false,
             limits: if has_limits == 1 {
                 (lower, upper)
             } else {
@@ -81,11 +82,13 @@ mod tests {
         let dirty = U256 {
             value: AlloyU256::from(1_u64) << 200,
             delta: AlloyU256::from(25),
+            delta_subtract: false,
             limits: (AlloyU256::ZERO, AlloyU256::MAX),
         };
         let clean = U256 {
             value: dirty.value,
             delta: AlloyU256::ZERO,
+            delta_subtract: false,
             limits: dirty.limits,
         };
 

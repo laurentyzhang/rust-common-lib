@@ -43,6 +43,7 @@ fn every_internal_type_round_trips() {
     let uint64_value = U64 {
         value: 100,
         delta: 25,
+        delta_subtract: false,
         limits: (0, 1_000),
     };
     let encoded = uint64::encode(&uint64_value).unwrap();
@@ -55,6 +56,7 @@ fn every_internal_type_round_trips() {
     let u256_value = U256 {
         value: AlloyU256::from(1_u64) << 200,
         delta: AlloyU256::from(25),
+        delta_subtract: false,
         limits: (AlloyU256::ZERO, AlloyU256::MAX),
     };
     let encoded = u256::encode(&u256_value).unwrap();
@@ -122,6 +124,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     let uint64_value = U64 {
         value: 10,
         delta: 2,
+        delta_subtract: false,
         limits: (0, 100),
     };
     let mut output =
@@ -135,6 +138,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     let u256_value = U256 {
         value: AlloyU256::from(10),
         delta: AlloyU256::from(2),
+        delta_subtract: false,
         limits: (AlloyU256::ZERO, AlloyU256::from(100)),
     };
     let mut output =
@@ -239,6 +243,7 @@ fn every_truncated_encoding_is_rejected() {
     let uint64_encoded = uint64::encode(&U64 {
         value: 10,
         delta: 2,
+        delta_subtract: false,
         limits: (0, 100),
     })
     .unwrap();
@@ -249,6 +254,7 @@ fn every_truncated_encoding_is_rejected() {
     let u256_encoded = u256::encode(&U256 {
         value: AlloyU256::from(10),
         delta: AlloyU256::from(2),
+        delta_subtract: false,
         limits: (AlloyU256::ZERO, AlloyU256::from(100)),
     })
     .unwrap();
@@ -303,6 +309,7 @@ fn primitive_encodings_match_golden_bytes() {
     let uint64_value = U64 {
         value: 1,
         delta: 2,
+        delta_subtract: false,
         limits: (3, 4),
     };
     let mut expected = vec![7];
@@ -315,6 +322,7 @@ fn primitive_encodings_match_golden_bytes() {
     let u256_value = U256 {
         value: AlloyU256::from(1),
         delta: AlloyU256::ZERO,
+        delta_subtract: false,
         limits: (AlloyU256::ZERO, AlloyU256::MAX),
     };
     let mut expected = vec![7];
@@ -355,6 +363,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     let uint64_value = U64 {
         value: 7,
         delta: 0,
+        delta_subtract: false,
         limits: (u64::MIN, u64::MAX),
     };
     let values: [&dyn InternalEncode; 2] = [&bytes_value, &uint64_value];
@@ -380,6 +389,7 @@ fn large_batch_uses_non_overlapping_parallel_sections() {
         U64 {
             value: 7,
             delta: 0,
+            delta_subtract: false,
             limits: (u64::MIN, u64::MAX),
         };
         2_048

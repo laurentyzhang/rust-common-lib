@@ -318,7 +318,7 @@ fn mutable_read_populates_only_the_outer_cache() {
 #[test]
 fn vm_cache_with_vm_cache_fallback() {
     let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
-    let block_cache = VmCache::new_with_fallback(&fallback);
+    let mut block_cache = VmCache::new_with_fallback(&fallback);
     let mut vm_cache = VmCache::new_with_fallback(&block_cache);
 
     assert!((&mut vm_cache).get(&7u64).is_none());
@@ -338,18 +338,51 @@ fn vm_cache_with_vm_cache_fallback() {
 
     assert!(vm_cache.size() == 3);
 
-    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64(100).into());
+    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(100).into());
     assert!(delta_result.is_ok());
 
-    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64(1).into());
+    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(1).into());
     assert!(matches!(
         delta_result,
         Err(Error::State(StateError::U64(
             NumericError::AboveUpperLimit(_)
         )))
     ));
-    assert!(delta_result.is_err());
 
+    let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
+    assert_eq!(applied.as_ref().as_u64(), Some(100));
+
+    applied = (&mut vm_cache).get(&2).expect("value should exist");
+    assert_eq!(applied.as_ref().as_bytes(), Some(&[70, 71, 72][..]));
+
+    let mut delta = crate::crdt::state::Delta::U64Sub(10);
+    let delta_result = vm_cache.add_delta(&1, delta.into());
+    assert!(delta_result.is_ok()); // This should fail because the key already exists with a different value.
+    applied = (&mut vm_cache).get(&1).expect("value should exist");
+    assert_eq!(applied.as_ref().as_u64(), Some(90));
+
+    let delta_add = crate::crdt::state::Delta::U64Add(1000);
+    let _ = vm_cache.add_delta(&1, delta_add.into());
+
+    let delta_sub = crate::crdt::state::Delta::U64Sub(999);
+    let _ = vm_cache.add_delta(&1, delta_sub.into());
+
+    delta = crate::crdt::state::Delta::Bytes(vec![10, 11]);
+    let delta_result = vm_cache.add_delta(&2, delta.into());
+    assert!(delta_result.is_ok());
+    applied = (&mut vm_cache).get(&2).expect("value should exist");
+    assert_eq!(applied.as_ref().as_bytes(), Some(&[10, 11][..]));
+    drop(applied);
+
+    let views = vm_cache.drain();
+    let block_cache_stage = block_cache.stage(views.1);
+    assert!(matches!(block_cache_stage, Ok(())));
+    assert_eq!(block_cache.size(), 2);
+
+    vm_cache = VmCache::new_with_fallback(&block_cache);
+    assert_eq!(vm_cache.size(), 0);
+
+    // Get values from the new VM cache after it has been initialized with the block cache.
     let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
     assert_eq!(applied.as_ref().as_u64(), Some(100));
 

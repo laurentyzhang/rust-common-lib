@@ -13,6 +13,32 @@ pub struct Tracked<'a> {
 }
 
 impl<'a> Tracked<'a> {
+    pub fn owned_clone(&self) -> Tracked<'static> {
+        Tracked {
+            value: self.value.clone().into_owned(),
+            reads: self.reads,
+            checks: self.checks,
+            writes: self.writes,
+            deltas: self.deltas,
+            tombstone: self.tombstone,
+            creates: self.creates,
+            is_new: self.is_new,
+        }
+    }
+
+    pub fn into_owned(self) -> Tracked<'static> {
+        Tracked {
+            value: self.value.into_owned(),
+            reads: self.reads,
+            checks: self.checks,
+            writes: self.writes,
+            deltas: self.deltas,
+            tombstone: self.tombstone,
+            creates: self.creates,
+            is_new: self.is_new,
+        }
+    }
+
     pub fn new_empty() -> Self {
         Self {
             value: Value::None,

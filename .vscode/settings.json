@@ -1,0 +1,6 @@
+{
+    "lldb.launch.preRunCommands": [
+        "type category disable Rust"
+    ],
+    "lldb.evaluateForHovers": false
+}
