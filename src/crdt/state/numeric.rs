@@ -1,4 +1,4 @@
-use super::{Delta, StateError};
+use super::{Delta, DeltaOp, StateError};
 use crate::crdt::Crdt;
 
 #[derive(Clone, PartialEq)]
@@ -29,12 +29,16 @@ impl<'a> Numeric<'a> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
             (Self::I64(value), Delta::I64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U64(value), Delta::U64Add(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U256(value), Delta::U256Add(delta)) => {
+            (Self::U64(value), Delta::U64(DeltaOp::Add(delta))) => {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
-            (Self::U64(value), Delta::U64Sub(delta)) => value.to_mut().sub_delta(delta).map(|_| ()),
-            (Self::U256(value), Delta::U256Sub(delta)) => {
+            (Self::U256(value), Delta::U256(DeltaOp::Add(delta))) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
+            (Self::U64(value), Delta::U64(DeltaOp::Sub(delta))) => {
+                value.to_mut().sub_delta(delta).map(|_| ())
+            }
+            (Self::U256(value), Delta::U256(DeltaOp::Sub(delta))) => {
                 value.to_mut().sub_delta(delta).map(|_| ())
             }
             _ => Err(StateError::TypeMismatch),
@@ -63,7 +67,7 @@ mod tests {
     use crate::crdt::state::{NumericError, Value};
 
     macro_rules! unsigned_delta_tests {
-        ($module:ident, $crdt:ty, $number:ty, $add:ident, $sub:ident, $error:ident, $accessor:ident, $codec:ident) => {
+        ($module:ident, $crdt:ty, $number:ty, $variant:ident, $error:ident, $accessor:ident, $codec:ident) => {
             mod $module {
                 use super::*;
                 fn n(value: u64) -> $number {
@@ -73,21 +77,35 @@ mod tests {
                 #[test]
                 fn mixed_deltas_are_deferred_and_cancel_in_both_directions() {
                     let mut value: Value<'static> = <$crdt>::default().into();
-                    value.add_delta(&Delta::$add(n(10))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Add(n(10))))
+                        .unwrap();
                     value.apply_delta();
-                    value.add_delta(&Delta::$sub(n(7))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(n(7))))
+                        .unwrap();
                     assert_eq!(value.$accessor(), Some(n(10)));
-                    value.add_delta(&Delta::$add(n(9))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Add(n(9))))
+                        .unwrap();
                     assert_eq!(value.applied().$accessor(), Some(n(12)));
-                    value.add_delta(&Delta::$sub(n(5))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(n(5))))
+                        .unwrap();
                     assert_eq!(value.applied().$accessor(), Some(n(7)));
-                    value.add_delta(&Delta::$add(n(3))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Add(n(3))))
+                        .unwrap();
                     assert_eq!(value.applied().$accessor(), Some(n(10)));
-                    value.add_delta(&Delta::$sub(n(10))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(n(10))))
+                        .unwrap();
                     value.apply_delta();
                     value.apply_delta();
                     assert_eq!(value.$accessor(), Some(n(0)));
-                    value.add_delta(&Delta::$sub(n(0))).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(n(0))))
+                        .unwrap();
                     assert_eq!(value.applied().$accessor(), Some(n(0)));
                 }
 
@@ -96,28 +114,36 @@ mod tests {
                     let mut value: Value<'static> = <$crdt>::default().into();
                     let before = value.clone();
                     assert!(matches!(
-                        value.add_delta(&Delta::$sub(n(1))),
+                        value.add_delta(&Delta::$variant(DeltaOp::Sub(n(1)))),
                         Err(StateError::$error(NumericError::Underflow(_)))
                     ));
                     assert!(value == before);
-                    value.add_delta(&Delta::$add(<$number>::MAX)).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Add(<$number>::MAX)))
+                        .unwrap();
                     let before = value.clone();
                     assert!(matches!(
-                        value.add_delta(&Delta::$add(n(1))),
+                        value.add_delta(&Delta::$variant(DeltaOp::Add(n(1)))),
                         Err(StateError::$error(NumericError::Overflow(_)))
                     ));
                     assert!(value == before);
                     value.apply_delta();
-                    value.add_delta(&Delta::$sub(<$number>::MAX)).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(<$number>::MAX)))
+                        .unwrap();
                     let before = value.clone();
                     assert!(matches!(
-                        value.add_delta(&Delta::$sub(n(1))),
+                        value.add_delta(&Delta::$variant(DeltaOp::Sub(n(1)))),
                         Err(StateError::$error(NumericError::Underflow(_)))
                     ));
                     assert!(value == before);
-                    value.add_delta(&Delta::$add(<$number>::MAX)).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Add(<$number>::MAX)))
+                        .unwrap();
                     assert_eq!(value.applied().$accessor(), Some(<$number>::MAX));
-                    value.add_delta(&Delta::$sub(<$number>::MAX)).unwrap();
+                    value
+                        .add_delta(&Delta::$variant(DeltaOp::Sub(<$number>::MAX)))
+                        .unwrap();
                     value.apply_delta();
                     assert_eq!(value.$accessor(), Some(n(0)));
                 }
@@ -177,8 +203,7 @@ mod tests {
         u64_delta,
         crate::crdt::uint64::U64,
         u64,
-        U64Add,
-        U64Sub,
+        U64,
         U64,
         as_u64,
         uint64
@@ -187,8 +212,7 @@ mod tests {
         u256_delta,
         crate::crdt::u256::U256,
         alloy_primitives::U256,
-        U256Add,
-        U256Sub,
+        U256,
         U256,
         as_u256,
         u256
@@ -199,11 +223,11 @@ mod tests {
         let mut u64_value: Value<'static> = crate::crdt::uint64::U64::default().into();
         let mut u256_value: Value<'static> = crate::crdt::u256::U256::default().into();
         assert_eq!(
-            u64_value.add_delta(&Delta::U256Sub(alloy_primitives::U256::ZERO)),
+            u64_value.add_delta(&Delta::U256(DeltaOp::Sub(alloy_primitives::U256::ZERO,))),
             Err(StateError::TypeMismatch)
         );
         assert_eq!(
-            u256_value.add_delta(&Delta::U64Sub(0)),
+            u256_value.add_delta(&Delta::U64(DeltaOp::Sub(0))),
             Err(StateError::TypeMismatch)
         );
     }

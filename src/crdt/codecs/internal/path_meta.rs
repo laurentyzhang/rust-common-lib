@@ -1,10 +1,10 @@
-use crate::{collections::delta_set::DeltaSet, crdt::path_meta::PathMeta};
+use crate::{collections::delta_set::DeltaSet, crdt::u64_set::U64Set};
 
 use super::{Reader, Result, Writer, path_delta};
 
 const DELTA: u8 = 1;
 
-pub fn encoded_size(value: &PathMeta) -> Result<u64> {
+pub fn encoded_size(value: &U64Set) -> Result<u64> {
     let slots = value.entries.slots();
     let bitmap_size = slots.len().div_ceil(8) as u64;
     let live_size = slots
@@ -26,7 +26,7 @@ pub fn encoded_size(value: &PathMeta) -> Result<u64> {
     Ok(size)
 }
 
-pub fn encode(value: &PathMeta) -> Result<Vec<u8>> {
+pub fn encode(value: &U64Set) -> Result<Vec<u8>> {
     let size =
         usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
@@ -34,7 +34,7 @@ pub fn encode(value: &PathMeta) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub fn encode_to(value: &PathMeta, output: &mut [u8]) -> Result<u64> {
+pub fn encode_to(value: &U64Set, output: &mut [u8]) -> Result<u64> {
     let size = encoded_size(value)?;
     if (output.len() as u64) < size {
         return Err("output buffer too small");
@@ -70,11 +70,11 @@ pub fn encode_to(value: &PathMeta, output: &mut [u8]) -> Result<u64> {
     Ok(written)
 }
 
-pub fn decode(input: &[u8]) -> Result<PathMeta> {
+pub fn decode(input: &[u8]) -> Result<U64Set> {
     let mut reader = Reader::new(input);
     let flags = reader.read_u8()?;
     if flags & !DELTA != 0 {
-        return Err("invalid PathMeta flags");
+        return Err("invalid U64Set flags");
     }
 
     let slot_count =
@@ -86,7 +86,7 @@ pub fn decode(input: &[u8]) -> Result<PathMeta> {
     if remainder != 0 {
         let valid_bits = (1u8 << remainder) - 1;
         if bitmap.last().copied().unwrap_or(0) & !valid_bits != 0 {
-            return Err("invalid PathMeta bitmap");
+            return Err("invalid U64Set bitmap");
         }
     }
 
@@ -119,9 +119,8 @@ pub fn decode(input: &[u8]) -> Result<PathMeta> {
     };
     reader.finish()?;
 
-    Ok(PathMeta {
-        entries: DeltaSet::try_from_slots(slots)
-            .ok_or("duplicate or unindexable PathMeta entry")?,
+    Ok(U64Set {
+        entries: DeltaSet::try_from_slots(slots).ok_or("duplicate or unindexable U64Set entry")?,
         delta,
     })
 }

@@ -1,8 +1,8 @@
-﻿use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
-use crate::{collections::delta_set::DeltaSet, crdt::path_meta::PathMeta};
+use crate::{collections::delta_set::DeltaSet, crdt::u64_set::U64Set};
 
-impl Encodable for PathMeta {
+impl Encodable for U64Set {
     fn encode(&self, out: &mut dyn BufMut) {
         let payload_length: usize = self.entries.iter_live().map(Encodable::length).sum();
 
@@ -22,7 +22,7 @@ impl Encodable for PathMeta {
     }
 }
 
-impl Decodable for PathMeta {
+impl Decodable for U64Set {
     fn decode(input: &mut &[u8]) -> Result<Self, Error> {
         let mut payload = Header::decode_bytes(input, true)?;
         let mut entries = Vec::new();
@@ -32,7 +32,7 @@ impl Decodable for PathMeta {
 
         Ok(Self {
             entries: DeltaSet::try_from_elements(entries)
-                .ok_or(Error::Custom("duplicate PathMeta entry"))?,
+                .ok_or(Error::Custom("duplicate U64Set entry"))?,
             delta: None,
         })
     }
@@ -42,27 +42,24 @@ impl Decodable for PathMeta {
 mod tests {
     use alloy_rlp::{decode_exact, encode};
 
-    use crate::crdt::path_meta::PathDelta;
+    use crate::crdt::state::DeltaOp;
 
     use super::*;
 
     #[test]
     fn path_meta_storage_round_trip_ignores_delta() {
-        let dirty = PathMeta {
+        let dirty = U64Set {
             entries: DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap(),
-            delta: Some(PathDelta {
-                added: vec![40],
-                removed: vec![10],
-            }),
+            delta: Some(vec![DeltaOp::Add(40), DeltaOp::Sub(10)]),
         };
-        let clean = PathMeta {
+        let clean = U64Set {
             entries: dirty.entries.clone(),
             delta: None,
         };
 
         assert_eq!(encode(&dirty), encode(&clean));
         let encoded = encode(&dirty);
-        let decoded = decode_exact::<PathMeta>(&encoded).unwrap();
+        let decoded = decode_exact::<U64Set>(&encoded).unwrap();
 
         assert!(decoded == clean);
         assert_eq!(dirty.length(), encoded.len());

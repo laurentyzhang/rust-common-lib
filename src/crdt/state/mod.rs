@@ -6,7 +6,7 @@ pub mod numeric;
 pub mod tracked;
 pub mod value;
 
-pub use delta::Delta;
+pub use delta::{Delta, DeltaOp};
 pub use error::{NumericError, StateError};
 pub use numeric::Numeric;
 pub use tracked::Tracked;

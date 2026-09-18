@@ -121,3 +121,18 @@ impl CacheableCrdt<i64, i64> for I64 {
         std::mem::size_of::<Self>()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::I64;
+    use crate::crdt::state::{NumericError, StateError};
+
+    #[test]
+    fn constructor_validates_bounds_before_initial_value() {
+        assert!(I64::new(-10, 10).is_ok());
+        assert!(matches!(
+            I64::new(10, -10),
+            Err(StateError::I64(NumericError::InvalidLimits(_)))
+        ));
+    }
+}

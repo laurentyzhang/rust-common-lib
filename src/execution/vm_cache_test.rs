@@ -1,7 +1,7 @@
 use super::{Error, VmCache};
 use crate::crdt::{
     bytes::Bytes,
-    state::{Numeric, NumericError, StateError, Value},
+    state::{Delta, DeltaOp, Numeric, NumericError, StateError, Value},
     uint64::U64,
 };
 use crate::store::StoreError;
@@ -338,10 +338,10 @@ fn vm_cache_with_vm_cache_fallback() {
 
     assert!(vm_cache.size() == 3);
 
-    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(100).into());
+    let delta_result = vm_cache.add_delta(&1, Delta::U64(DeltaOp::Add(100)).into());
     assert!(delta_result.is_ok());
 
-    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(1).into());
+    let delta_result = vm_cache.add_delta(&1, Delta::U64(DeltaOp::Add(1)).into());
     assert!(matches!(
         delta_result,
         Err(Error::State(StateError::U64(
@@ -355,19 +355,19 @@ fn vm_cache_with_vm_cache_fallback() {
     applied = (&mut vm_cache).get(&2).expect("value should exist");
     assert_eq!(applied.as_ref().as_bytes(), Some(&[70, 71, 72][..]));
 
-    let mut delta = crate::crdt::state::Delta::U64Sub(10);
+    let mut delta = Delta::U64(DeltaOp::Sub(10));
     let delta_result = vm_cache.add_delta(&1, delta.into());
     assert!(delta_result.is_ok()); // This should fail because the key already exists with a different value.
     applied = (&mut vm_cache).get(&1).expect("value should exist");
     assert_eq!(applied.as_ref().as_u64(), Some(90));
 
-    let delta_add = crate::crdt::state::Delta::U64Add(1000);
+    let delta_add = Delta::U64(DeltaOp::Add(1000));
     let _ = vm_cache.add_delta(&1, delta_add.into());
 
-    let delta_sub = crate::crdt::state::Delta::U64Sub(999);
+    let delta_sub = Delta::U64(DeltaOp::Sub(999));
     let _ = vm_cache.add_delta(&1, delta_sub.into());
 
-    delta = crate::crdt::state::Delta::Bytes(vec![10, 11]);
+    delta = Delta::Bytes(vec![10, 11]);
     let delta_result = vm_cache.add_delta(&2, delta.into());
     assert!(delta_result.is_ok());
     applied = (&mut vm_cache).get(&2).expect("value should exist");
@@ -390,12 +390,80 @@ fn vm_cache_with_vm_cache_fallback() {
     applied = (&mut vm_cache).get(&2).expect("value should exist");
     assert_eq!(applied.as_ref().as_bytes(), Some(&[10, 11][..]));
 
-    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(5).into());
+    let delta_result = vm_cache.add_delta(&1, Delta::U64(DeltaOp::Add(5)).into());
     assert!(delta_result.is_ok());
 
     applied = (&mut vm_cache).get(&1).expect("value should exist");
     assert_eq!(applied.as_ref().as_u64(), Some(95));
 
-    // crate::crdt::state::Value::P
-    // vm_cache.insert(&1, crate::crdt::state::Value::U64(95).into());
+    assert_eq!(vm_cache.size(), 2);
+
+    let mut result = vm_cache.insert(&3, crate::crdt::u64_set::U64Set::new().unwrap().into());
+    assert!(result.is_ok());
+
+    result = vm_cache.add_delta(&3, Delta::U64Set(vec![DeltaOp::Add(11)]).into());
+    assert_eq!(matches!(result, Ok(())), true);
+
+    result = vm_cache.add_delta(&3, Delta::U64Set(vec![DeltaOp::Add(21)]).into());
+    assert_eq!(matches!(result, Ok(())), true);
+
+    result = vm_cache.add_delta(&3, Delta::U64Set(vec![DeltaOp::Add(31)]).into());
+    assert_eq!(matches!(result, Ok(())), true);
+    assert_eq!(vm_cache.size(), 3);
+
+    {
+        let value = (&mut vm_cache).get(&3).expect("value should exist");
+        let entries = value
+            .as_ref()
+            .as_u64_set()
+            .expect("value should be a U64Set");
+
+        assert_eq!(entries.get(&11), Some(&11));
+        assert_eq!(entries.get(&21), Some(&21));
+        assert_eq!(entries.get(&31), Some(&31));
+    }
+
+    let (_, transitions) = vm_cache.drain();
+    block_cache
+        .stage(transitions)
+        .expect("flush VM cache to block cache");
+    assert_eq!(block_cache.size(), 3);
+
+    let mut flushed_cache = VmCache::new_with_fallback(&block_cache);
+    {
+        let value = (&mut flushed_cache)
+            .get(&3)
+            .expect("flushed value should exist");
+        let entries = value
+            .as_ref()
+            .as_u64_set()
+            .expect("flushed value should be a U64Set");
+
+        assert_eq!(entries.get(&11), Some(&11));
+        assert_eq!(entries.get(&21), Some(&21));
+        assert_eq!(entries.get(&31), Some(&31));
+    }
+
+    flushed_cache
+        .add_delta(&3, Delta::U64Set(vec![DeltaOp::Add(41), DeltaOp::Sub(21)]))
+        .expect("update flushed U64Set");
+
+    let (_, transitions) = flushed_cache.drain();
+    block_cache
+        .stage(transitions)
+        .expect("flush updated VM cache to block cache");
+
+    let mut reread_cache = VmCache::new_with_fallback(&block_cache);
+    let value = (&mut reread_cache)
+        .get(&3)
+        .expect("updated flushed value should exist");
+    let entries = value
+        .as_ref()
+        .as_u64_set()
+        .expect("updated flushed value should be a U64Set");
+
+    assert_eq!(entries.get(&11), Some(&11));
+    assert_eq!(entries.get(&21), None);
+    assert_eq!(entries.get(&31), Some(&31));
+    assert_eq!(entries.get(&41), Some(&41));
 }

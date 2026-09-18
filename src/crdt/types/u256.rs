@@ -155,3 +155,15 @@ impl CacheableCrdt<AlloyU256, AlloyU256> for U256 {
         std::mem::size_of::<Self>()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::U256;
+    use alloy_primitives::U256 as AlloyU256;
+
+    #[test]
+    fn constructor_uses_lower_then_upper() {
+        assert!(U256::new(AlloyU256::ZERO, AlloyU256::from(100)).is_ok());
+        assert!(U256::new(AlloyU256::from(100), AlloyU256::ZERO).is_err());
+    }
+}

@@ -151,3 +151,14 @@ impl CacheableCrdt<u64, u64> for U64 {
         std::mem::size_of::<Self>()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::U64;
+
+    #[test]
+    fn constructor_uses_lower_then_upper() {
+        assert!(U64::new(0, 100).is_ok());
+        assert!(U64::new(100, 0).is_err());
+    }
+}

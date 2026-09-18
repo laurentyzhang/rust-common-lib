@@ -2,14 +2,16 @@ use alloy_primitives::U256 as AlloyU256;
 
 use crate::{
     collections::delta_set::DeltaSet,
-    crdt::{
-        bytes::Bytes,
-        int64::I64,
-        path_meta::{PathDelta, PathMeta},
-        u256::U256,
-        uint64::U64,
-    },
+    crdt::{bytes::Bytes, int64::I64, state::DeltaOp, u64_set::U64Set, u256::U256, uint64::U64},
 };
+
+fn set_delta(added: Vec<u64>, removed: Vec<u64>) -> Vec<DeltaOp<u64>> {
+    added
+        .into_iter()
+        .map(DeltaOp::Add)
+        .chain(removed.into_iter().map(DeltaOp::Sub))
+        .collect()
+}
 
 use super::{
     batch::{self, InternalEncode},
@@ -66,10 +68,7 @@ fn every_internal_type_round_trips() {
     );
     assert!(u256::decode(&encoded).unwrap() == u256_value);
 
-    let delta = PathDelta {
-        added: vec![40, 50],
-        removed: vec![10],
-    };
+    let delta = set_delta(vec![40, 50], vec![10]);
     let encoded = path_delta::encode(&delta).unwrap();
     assert_eq!(
         encoded.len() as u64,
@@ -80,7 +79,7 @@ fn every_internal_type_round_trips() {
     let mut entries = DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap();
     entries.remove(&20);
     entries.commit();
-    let path = PathMeta {
+    let path = U64Set {
         entries,
         delta: Some(delta),
     };
@@ -149,10 +148,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let delta = PathDelta {
-        added: vec![1],
-        removed: vec![2],
-    };
+    let delta = set_delta(vec![1], vec![2]);
     let mut output =
         vec![0xaa; usize::try_from(path_delta::encoded_size(&delta).unwrap()).unwrap() - 1];
     assert_eq!(
@@ -161,7 +157,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let path = PathMeta {
+    let path = U64Set {
         entries: DeltaSet::try_from_slots(vec![Some(1), None, Some(2)]).unwrap(),
         delta: Some(delta),
     };
@@ -195,7 +191,7 @@ fn malformed_input_is_rejected() {
     invalid_path.push(0b1111_1101);
     assert!(matches!(
         path_meta::decode(&invalid_path),
-        Err("invalid PathMeta bitmap")
+        Err("invalid U64Set bitmap")
     ));
 
     let mut duplicate_path = vec![0];
@@ -205,7 +201,7 @@ fn malformed_input_is_rejected() {
     duplicate_path.extend_from_slice(&7_u64.to_le_bytes());
     assert!(matches!(
         path_meta::decode(&duplicate_path),
-        Err("duplicate or unindexable PathMeta entry")
+        Err("duplicate or unindexable U64Set entry")
     ));
 
     assert!(path_delta::decode(&u64::MAX.to_le_bytes()).is_err());
@@ -262,21 +258,14 @@ fn every_truncated_encoding_is_rejected() {
         assert!(u256::decode(&u256_encoded[..end]).is_err());
     }
 
-    let delta_encoded = path_delta::encode(&PathDelta {
-        added: vec![1, 2],
-        removed: vec![3],
-    })
-    .unwrap();
+    let delta_encoded = path_delta::encode(&set_delta(vec![1, 2], vec![3])).unwrap();
     for end in 0..delta_encoded.len() {
         assert!(path_delta::decode(&delta_encoded[..end]).is_err());
     }
 
-    let path_encoded = path_meta::encode(&PathMeta {
+    let path_encoded = path_meta::encode(&U64Set {
         entries: DeltaSet::try_from_slots(vec![Some(1), None, Some(2)]).unwrap(),
-        delta: Some(PathDelta {
-            added: vec![3],
-            removed: vec![1],
-        }),
+        delta: Some(set_delta(vec![3], vec![1])),
     })
     .unwrap();
     for end in 0..path_encoded.len() {
@@ -335,10 +324,7 @@ fn primitive_encodings_match_golden_bytes() {
 
 #[test]
 fn path_and_batch_encodings_match_golden_bytes() {
-    let delta = PathDelta {
-        added: vec![1],
-        removed: vec![2],
-    };
+    let delta = set_delta(vec![1], vec![2]);
     let mut expected_delta = Vec::new();
     expected_delta.extend_from_slice(&1_u64.to_le_bytes());
     expected_delta.extend_from_slice(&1_u64.to_le_bytes());
@@ -346,7 +332,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_delta.extend_from_slice(&2_u64.to_le_bytes());
     assert_eq!(path_delta::encode(&delta).unwrap(), expected_delta);
 
-    let path = PathMeta {
+    let path = U64Set {
         entries: DeltaSet::try_from_slots(vec![Some(10), None, Some(30)]).unwrap(),
         delta: None,
     };

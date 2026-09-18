@@ -4,7 +4,7 @@ use crate::crdt::Crdt;
 #[derive(Clone, PartialEq)]
 pub enum Value<'a> {
     Bytes(std::borrow::Cow<'a, crate::crdt::bytes::Bytes>),
-    PathMeta(std::borrow::Cow<'a, crate::crdt::path_meta::PathMeta>),
+    U64Set(std::borrow::Cow<'a, crate::crdt::u64_set::U64Set>),
     Numeric(Numeric<'a>),
     None,
 }
@@ -13,7 +13,7 @@ impl<'a> Value<'a> {
     pub fn into_owned(self) -> Value<'static> {
         match self {
             Self::Bytes(value) => Value::Bytes(std::borrow::Cow::Owned(value.into_owned())),
-            Self::PathMeta(value) => Value::PathMeta(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U64Set(value) => Value::U64Set(std::borrow::Cow::Owned(value.into_owned())),
             Self::Numeric(value) => Value::Numeric(value.into_owned()),
             Self::None => Value::None,
         }
@@ -22,7 +22,7 @@ impl<'a> Value<'a> {
     pub fn borrowed(value: &'a Value<'_>) -> Self {
         match value {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),
-            Self::PathMeta(value) => Self::PathMeta(std::borrow::Cow::Borrowed(value.as_ref())),
+            Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::Numeric(value) => Self::Numeric(Numeric::borrowed(value)),
             Self::None => Self::None,
         }
@@ -61,9 +61,9 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn as_path(&self) -> Option<&crate::collections::delta_set::DeltaSet<u64>> {
+    pub fn as_u64_set(&self) -> Option<&crate::collections::delta_set::DeltaSet<u64>> {
         match self {
-            Self::PathMeta(value) => value.value(),
+            Self::U64Set(value) => value.value(),
             _ => None,
         }
     }
@@ -78,7 +78,7 @@ impl<'a> Value<'a> {
     pub fn is_commutative(&self) -> bool {
         match self {
             Self::Bytes(value) => value.is_commutative(),
-            Self::PathMeta(value) => value.is_commutative(),
+            Self::U64Set(value) => value.is_commutative(),
             Self::Numeric(_) => true,
             Self::None => false,
         }
@@ -91,7 +91,7 @@ impl<'a> Value<'a> {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 
-            (Self::PathMeta(value), Delta::PathMeta(delta)) => {
+            (Self::U64Set(value), Delta::U64Set(delta)) => {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 
@@ -109,7 +109,7 @@ impl<'a> Value<'a> {
                 self
             }
 
-            Self::PathMeta(value) => {
+            Self::U64Set(value) => {
                 value.to_mut().apply_delta();
                 self
             }

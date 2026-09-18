@@ -1,9 +1,5 @@
 use crate::crdt::{
-    bytes::Bytes,
-    int64::I64,
-    path_meta::{PathDelta, PathMeta},
-    u256::U256,
-    uint64::U64,
+    bytes::Bytes, int64::I64, state::DeltaOp, u64_set::U64Set, u256::U256, uint64::U64,
 };
 
 use super::{Result, Writer, bytes, int64, path_delta, path_meta, u256, uint64};
@@ -55,7 +51,7 @@ impl InternalEncode for U256 {
     }
 }
 
-impl InternalEncode for PathDelta {
+impl InternalEncode for Vec<DeltaOp<u64>> {
     fn encoded_size(&self) -> Result<u64> {
         path_delta::encoded_size(self)
     }
@@ -65,7 +61,7 @@ impl InternalEncode for PathDelta {
     }
 }
 
-impl InternalEncode for PathMeta {
+impl InternalEncode for U64Set {
     fn encoded_size(&self) -> Result<u64> {
         path_meta::encoded_size(self)
     }

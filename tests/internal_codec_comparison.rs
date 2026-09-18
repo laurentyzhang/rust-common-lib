@@ -3,13 +3,8 @@ use std::{hint::black_box, time::Instant};
 use alloy_primitives::U256 as AlloyU256;
 use alloy_rlp::{Decodable, Encodable, decode_exact, encode};
 use rust_common_lib::crdt::{
-    bytes::Bytes,
-    codecs::internal,
-    crdt::Crdt,
-    int64::I64,
-    path_meta::{PathDelta, PathMeta},
-    u256::U256,
-    uint64::U64,
+    bytes::Bytes, codecs::internal, crdt::Crdt, int64::I64, state::DeltaOp, u64_set::U64Set,
+    u256::U256, uint64::U64,
 };
 
 const ITERATIONS: usize = 10_000;
@@ -134,20 +129,17 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::u256::decode,
     );
 
-    let mut path = PathMeta::new().unwrap();
-    path.add_delta(&PathDelta {
-        added: (0..64).collect(),
-        removed: vec![],
-    })
-    .unwrap();
+    let mut path = U64Set::new().unwrap();
+    let initial_delta = (0..64).map(DeltaOp::Add).collect::<Vec<_>>();
+    path.add_delta(&initial_delta).unwrap();
     path.apply_delta();
-    path.add_delta(&PathDelta {
-        added: (100..132).collect(),
-        removed: (0..16).collect(),
-    })
-    .unwrap();
+    let pending_delta = (100..132)
+        .map(DeltaOp::Add)
+        .chain((0..16).map(DeltaOp::Sub))
+        .collect::<Vec<_>>();
+    path.add_delta(&pending_delta).unwrap();
     compare(
-        "PathMeta",
+        "U64Set",
         &path,
         internal::path_meta::encoded_size,
         internal::path_meta::encode,

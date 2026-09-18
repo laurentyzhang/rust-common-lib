@@ -146,9 +146,7 @@ where
 {
     fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
-            if !self.exists(&key) {
-                self.get_or_populate_tracked(&key).set(value)?;
-            }
+            self.get_or_populate_tracked(&key).set(value)?;
         }
         Ok(())
     }
