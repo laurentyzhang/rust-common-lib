@@ -102,7 +102,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             .map_err(Error::from)
     }
 
-    pub fn drain(&self) -> (Vec<(K, Tracked<'static>)>, Vec<(K, Value<'static>)>)
+    pub fn drain(&mut self) -> (Vec<(K, Tracked<'static>)>, Vec<(K, Value<'static>)>)
     where
         K: Clone,
     {
@@ -125,6 +125,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             })
             .collect();
 
+        self.cache.clear(); // Clear the local cache after draining.
         (access_records, transitions)
     }
 
