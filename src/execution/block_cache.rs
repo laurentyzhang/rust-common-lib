@@ -32,18 +32,27 @@ impl<'a, K> BlockCache<'a, K> {
     }
 }
 
-impl<'a, K> FallbackStore<'a, K, Value<'a>> for BlockCache<'a, K>
+impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for BlockCache<'cache, K>
 where
     K: std::hash::Hash + Eq,
+    'cache: 'value,
 {
     fn contains_key(&self, key: &K) -> bool {
-        self.cache.contains_key(key) || self.fallback.map_or(false, |f| f.contains_key(key))
+        match self.cache.get(key) {
+            Some(Value::None) => false,
+            Some(_) => true,
+            None => self
+                .fallback
+                .is_some_and(|fallback| fallback.contains_key(key)),
+        }
     }
 
-    fn get(&self, key: &K) -> Option<&Value<'a>> {
-        self.cache
-            .get(key)
-            .or_else(|| self.fallback.and_then(|f| f.get(key)))
+    fn get(&self, key: &K) -> Option<&Value<'value>> {
+        match self.cache.get(key) {
+            Some(Value::None) => None,
+            Some(value) => Some(value),
+            None => self.fallback.and_then(|fallback| fallback.get(key)),
+        }
     }
 }
 

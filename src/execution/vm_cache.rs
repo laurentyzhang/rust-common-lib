@@ -114,8 +114,15 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
 
         let transitions: Vec<(K, Value<'static>)> = access_records
             .iter()
-            .filter(|(_, tracked)| tracked.is_live())
-            .map(|(key, tracked)| ((*key).clone(), tracked.value().applied().into_owned()))
+            .filter(|(_, tracked)| !tracked.is_read_only() && !tracked.is_creation_cancelled())
+            .map(|(key, tracked)| {
+                let value = if tracked.is_tombstone() {
+                    Value::None
+                } else {
+                    tracked.value().applied().into_owned()
+                };
+                ((*key).clone(), value)
+            })
             .collect();
 
         (access_records, transitions)

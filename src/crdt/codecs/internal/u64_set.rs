@@ -1,6 +1,6 @@
 use crate::{collections::delta_set::DeltaSet, crdt::u64_set::U64Set};
 
-use super::{Reader, Result, Writer, path_delta};
+use super::{Reader, Result, Writer, delta_op};
 
 const DELTA: u8 = 1;
 
@@ -20,7 +20,7 @@ pub fn encoded_size(value: &U64Set) -> Result<u64> {
 
     if let Some(delta) = &value.delta {
         size = size
-            .checked_add(path_delta::encoded_size(delta)?)
+            .checked_add(delta_op::encoded_size(delta)?)
             .ok_or("encoded size overflow")?;
     }
     Ok(size)
@@ -57,7 +57,7 @@ pub fn encode_to(value: &U64Set, output: &mut [u8]) -> Result<u64> {
     }
 
     if let Some(delta) = &value.delta {
-        path_delta::write(delta, &mut writer)?;
+        delta_op::write(delta, &mut writer)?;
     }
 
     let written = 9u64
@@ -113,7 +113,7 @@ pub fn decode(input: &[u8]) -> Result<U64Set> {
     }
 
     let delta = if flags & DELTA != 0 {
-        Some(path_delta::read(&mut reader)?)
+        Some(delta_op::read(&mut reader)?)
     } else {
         None
     };

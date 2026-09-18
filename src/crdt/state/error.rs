@@ -14,8 +14,9 @@ pub enum StateError {
     I64(NumericError),
     U64(NumericError),
     U256(NumericError),
-    None,
+    CannotAddDeltaToMissingValue,
     TypeMismatch,
+    None,
 }
 
 impl NumericError {

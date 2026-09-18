@@ -4,6 +4,7 @@ use crate::crdt::{
     state::{Delta, DeltaOp, Numeric, NumericError, StateError, Value},
     uint64::U64,
 };
+use crate::execution::BlockCache;
 use crate::store::StoreError;
 use crate::store::cached::CachedStore;
 use crate::store::traits::{FallbackStore, WriteOnlyStore};
@@ -316,6 +317,112 @@ fn mutable_read_populates_only_the_outer_cache() {
 }
 
 #[test]
+fn drain_includes_all_accesses_but_only_dirty_transitions() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(10)), (2, numeric_u64(20))]);
+    let mut cache = VmCache::new_with_fallback(&fallback);
+
+    assert_eq!(
+        (&mut cache)
+            .get(&1)
+            .and_then(|value| value.as_ref().as_u64()),
+        Some(10)
+    );
+    cache
+        .add_delta(&2, Delta::U64(DeltaOp::Add(5)))
+        .expect("delta should succeed");
+    assert!((&mut cache).get(&3).is_none());
+
+    let (accesses, transitions) = cache.drain();
+    assert_eq!(accesses.len(), 3);
+    assert_eq!(transitions.len(), 1);
+    assert_eq!(transitions[0].0, 2);
+    assert_eq!(transitions[0].1.as_u64(), Some(25));
+}
+
+#[test]
+fn drain_is_repeatable_and_does_not_consume_pending_deltas() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(10))]);
+    let mut cache = VmCache::new_with_fallback(&fallback);
+    cache
+        .add_delta(&1, Delta::U64(DeltaOp::Add(5)))
+        .expect("delta should succeed");
+
+    let first = cache.drain().1;
+    let second = cache.drain().1;
+
+    assert_eq!(first.len(), 1);
+    assert_eq!(second.len(), 1);
+    assert_eq!(first[0].1.as_u64(), Some(15));
+    assert_eq!(second[0].1.as_u64(), Some(15));
+    assert_eq!(
+        (&mut cache)
+            .get(&1)
+            .and_then(|value| value.as_ref().as_u64()),
+        Some(15)
+    );
+}
+
+#[test]
+fn create_then_delete_produces_no_transition() {
+    let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
+    let mut block_cache = VmCache::new_with_fallback(&fallback);
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        vm_cache.insert(&1, numeric_u64(10)).unwrap();
+        vm_cache.delete(&1).unwrap();
+        vm_cache.drain().1
+    };
+
+    assert!(transitions.is_empty());
+    block_cache
+        .stage(transitions)
+        .expect("staging no transitions should succeed");
+
+    assert!(!block_cache.exists(&1));
+    assert!(block_cache.get(&1).is_none());
+    assert!(block_cache.drain().1.is_empty());
+}
+
+#[test]
+fn staged_tombstone_hides_fallback_and_can_be_recreated() {
+    let original = numeric_u64(10);
+    let replacement = numeric_u64(20);
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, original)]);
+    let mut cache = VmCache::new_with_fallback(&fallback);
+
+    cache.stage(vec![(1, Value::None)]).unwrap();
+    assert!(!cache.exists(&1));
+    assert!(cache.get(&1).is_none());
+
+    cache.stage(vec![(1, replacement.clone())]).unwrap();
+    assert!(cache.exists(&1));
+    assert!(cache.get(&1) == Some(&replacement));
+}
+
+#[test]
+fn deleted_value_rejects_deltas_even_though_tombstone_retains_old_value() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(10))]);
+    let mut cache = VmCache::new_with_fallback(&fallback);
+
+    cache.delete(&1).unwrap();
+    assert_eq!(
+        cache.add_delta(&1, Delta::U64(DeltaOp::Add(5))),
+        Err(Error::State(StateError::CannotAddDeltaToMissingValue))
+    );
+    assert!(!cache.exists(&1));
+    assert!(cache.get(&1).is_none());
+
+    let transitions = cache.drain().1;
+    assert_eq!(transitions.len(), 1);
+    assert!(matches!(transitions[0], (1, Value::None)));
+}
+
+#[test]
 fn vm_cache_with_vm_cache_fallback() {
     let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
     let mut block_cache = VmCache::new_with_fallback(&fallback);
@@ -454,14 +561,237 @@ fn vm_cache_with_vm_cache_fallback() {
         .expect("flush updated VM cache to block cache");
 
     let mut reread_cache = VmCache::new_with_fallback(&block_cache);
-    let value = (&mut reread_cache)
-        .get(&3)
-        .expect("updated flushed value should exist");
-    let entries = value
-        .as_ref()
-        .as_u64_set()
-        .expect("updated flushed value should be a U64Set");
+    {
+        let value = (&mut reread_cache)
+            .get(&3)
+            .expect("updated flushed value should exist");
+        let entries = value
+            .as_ref()
+            .as_u64_set()
+            .expect("updated flushed value should be a U64Set");
 
+        assert_eq!(entries.get(&11), Some(&11));
+        assert_eq!(entries.get(&21), None);
+        assert_eq!(entries.get(&31), Some(&31));
+        assert_eq!(entries.get(&41), Some(&41));
+    }
+
+    assert!(reread_cache.exists(&1));
+    reread_cache.delete(&1).expect("delete key 1");
+    assert!(!reread_cache.exists(&1));
+
+    let (_, transitions) = reread_cache.drain();
+    block_cache
+        .stage(transitions)
+        .expect("flush deleted key to block cache");
+
+    let mut deletion_check_cache = VmCache::new_with_fallback(&block_cache);
+    assert!(!deletion_check_cache.exists(&1));
+    assert!((&mut deletion_check_cache).get(&1).is_none());
+
+    deletion_check_cache
+        .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
+        .expect("recreate key 1 as bytes");
+    assert!(deletion_check_cache.exists(&1));
+
+    let (_, transitions) = deletion_check_cache.drain();
+    block_cache
+        .stage(transitions)
+        .expect("flush recreated key to block cache");
+
+    let mut recreation_check_cache = VmCache::new_with_fallback(&block_cache);
+    assert!(recreation_check_cache.exists(&1));
+    let value = (&mut recreation_check_cache)
+        .get(&1)
+        .expect("recreated value should exist");
+    assert_eq!(value.as_ref().as_bytes(), Some(&[80, 81, 82][..]));
+}
+
+#[test]
+fn vm_cache_with_block_cache_fallback() {
+    let mut fallback = CachedStore::<u64, Value<'_>>::new(8, None);
+    fallback.commit(vec![(4, numeric_u64(44))]);
+    let mut block_cache = BlockCache::new_with_fallback(Some(&fallback));
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+
+        assert!((&mut vm_cache).get(&7).is_none());
+        assert!(vm_cache.cache.contains_key(&7));
+        assert!(!block_cache.cache.contains_key(&7));
+
+        let fallback_value = (&mut vm_cache)
+            .get(&4)
+            .expect("fallback value should exist");
+        assert_eq!(fallback_value.as_ref().as_u64(), Some(44));
+        assert!(!block_cache.cache.contains_key(&4));
+
+        vm_cache
+            .insert(&1, U64::new(0, 100).unwrap().into())
+            .unwrap();
+        assert!(matches!(
+            vm_cache.insert(&1, Bytes::new(vec![1]).unwrap().into()),
+            Err(Error::Store(StoreError::ValueCannotBeRecreated))
+        ));
+        vm_cache
+            .insert(&2, Bytes::new(vec![70, 71, 72]).unwrap().into())
+            .unwrap();
+
+        vm_cache
+            .add_delta(&1, Delta::U64(DeltaOp::Add(100)))
+            .unwrap();
+        assert!(matches!(
+            vm_cache.add_delta(&1, Delta::U64(DeltaOp::Add(1))),
+            Err(Error::State(StateError::U64(
+                NumericError::AboveUpperLimit(_)
+            )))
+        ));
+        vm_cache
+            .add_delta(&1, Delta::U64(DeltaOp::Sub(10)))
+            .unwrap();
+        vm_cache.add_delta(&2, Delta::Bytes(vec![10, 11])).unwrap();
+
+        assert_eq!(
+            (&mut vm_cache)
+                .get(&1)
+                .expect("numeric value should exist")
+                .as_ref()
+                .as_u64(),
+            Some(90)
+        );
+        assert_eq!(
+            (&mut vm_cache)
+                .get(&2)
+                .expect("byte value should exist")
+                .as_ref()
+                .as_bytes(),
+            Some(&[10, 11][..])
+        );
+
+        vm_cache.drain().1
+    };
+    block_cache
+        .stage(transitions)
+        .expect("flush initial VM cache to block cache");
+    assert!(block_cache.contains_key(&1));
+    assert!(block_cache.contains_key(&2));
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        assert_eq!(
+            (&mut vm_cache)
+                .get(&1)
+                .expect("flushed numeric value should exist")
+                .as_ref()
+                .as_u64(),
+            Some(90)
+        );
+        assert_eq!(
+            (&mut vm_cache)
+                .get(&2)
+                .expect("flushed byte value should exist")
+                .as_ref()
+                .as_bytes(),
+            Some(&[10, 11][..])
+        );
+
+        vm_cache.add_delta(&1, Delta::U64(DeltaOp::Add(5))).unwrap();
+        vm_cache
+            .insert(&3, crate::crdt::u64_set::U64Set::new().unwrap().into())
+            .unwrap();
+        vm_cache
+            .add_delta(
+                &3,
+                Delta::U64Set(vec![DeltaOp::Add(11), DeltaOp::Add(21), DeltaOp::Add(31)]),
+            )
+            .unwrap();
+
+        vm_cache.drain().1
+    };
+    block_cache
+        .stage(transitions)
+        .expect("flush numeric and set updates to block cache");
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        assert_eq!(
+            (&mut vm_cache)
+                .get(&1)
+                .expect("updated numeric value should exist")
+                .as_ref()
+                .as_u64(),
+            Some(95)
+        );
+
+        {
+            let value = (&mut vm_cache).get(&3).expect("set should exist");
+            let entries = value.as_ref().as_u64_set().expect("value should be a set");
+            assert_eq!(entries.get(&11), Some(&11));
+            assert_eq!(entries.get(&21), Some(&21));
+            assert_eq!(entries.get(&31), Some(&31));
+        }
+
+        vm_cache
+            .add_delta(&3, Delta::U64Set(vec![DeltaOp::Add(41), DeltaOp::Sub(21)]))
+            .unwrap();
+
+        vm_cache.drain().1
+    };
+    block_cache
+        .stage(transitions)
+        .expect("flush updated set to block cache");
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        {
+            let value = (&mut vm_cache).get(&3).expect("updated set should exist");
+            let entries = value.as_ref().as_u64_set().expect("value should be a set");
+            assert_eq!(entries.get(&11), Some(&11));
+            assert_eq!(entries.get(&21), None);
+            assert_eq!(entries.get(&31), Some(&31));
+            assert_eq!(entries.get(&41), Some(&41));
+        }
+
+        assert!(vm_cache.exists(&1));
+        vm_cache.delete(&1).expect("delete key 1");
+        assert!(!vm_cache.exists(&1));
+
+        vm_cache.drain().1
+    };
+    block_cache
+        .stage(transitions)
+        .expect("flush deletion to block cache");
+    assert!(!block_cache.contains_key(&1));
+    assert!(block_cache.get(&1).is_none());
+
+    let transitions = {
+        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        assert!(!vm_cache.exists(&1));
+        assert!((&mut vm_cache).get(&1).is_none());
+
+        vm_cache
+            .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
+            .expect("recreate key 1 as bytes");
+
+        vm_cache.drain().1
+    };
+    block_cache
+        .stage(transitions)
+        .expect("flush recreated key to block cache");
+
+    let mut final_cache = VmCache::new_with_fallback(&block_cache);
+    assert_eq!(
+        (&mut final_cache)
+            .get(&1)
+            .expect("recreated key should exist")
+            .as_ref()
+            .as_bytes(),
+        Some(&[80, 81, 82][..])
+    );
+    let value = (&mut final_cache)
+        .get(&3)
+        .expect("set should remain present");
+    let entries = value.as_ref().as_u64_set().expect("value should be a set");
     assert_eq!(entries.get(&11), Some(&11));
     assert_eq!(entries.get(&21), None);
     assert_eq!(entries.get(&31), Some(&31));

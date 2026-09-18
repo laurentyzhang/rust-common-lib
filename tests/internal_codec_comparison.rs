@@ -141,9 +141,9 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
     compare(
         "U64Set",
         &path,
-        internal::path_meta::encoded_size,
-        internal::path_meta::encode,
-        internal::path_meta::encode_to,
-        internal::path_meta::decode,
+        internal::u64_set::encoded_size,
+        internal::u64_set::encode,
+        internal::u64_set::encode_to,
+        internal::u64_set::decode,
     );
 }

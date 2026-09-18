@@ -2,14 +2,14 @@ use super::{Delta, StateError, Value};
 use crate::store::traits::StoreError;
 
 pub struct Tracked<'a> {
-    value: Value<'a>,
-    reads: u32,
-    checks: u32, // Number of times the value has been checked for existence
-    writes: u32,
-    deltas: u32,
-    creates: u32, // Indicates if the tracked value is newly created and not yet committed
-    is_new: bool,
-    tombstone: bool,
+    pub(crate) value: Value<'a>,
+    pub(crate) reads: u32,
+    pub(crate) checks: u32, // Number of times the value has been checked for existence
+    pub(crate) writes: u32,
+    pub(crate) deltas: u32,
+    pub(crate) creates: u32, // Indicates if the tracked value is newly created and not yet committed
+    pub(crate) is_new: bool,
+    pub(crate) tombstone: bool,
 }
 
 impl<'a> Tracked<'a> {
@@ -111,7 +111,6 @@ impl<'a> Tracked<'a> {
         if !self.is_live() {
             return Err(StoreError::DeleteNonexistingEntry);
         }
-        self.value = Value::None;
         self.tombstone = true;
         Ok(())
     }
@@ -130,6 +129,10 @@ impl<'a> Tracked<'a> {
     }
 
     pub fn add_delta(&mut self, delta: Delta) -> Result<(), StateError> {
+        if !self.is_live() {
+            return Err(StateError::CannotAddDeltaToMissingValue);
+        }
+
         self.deltas += 1;
         self.value.add_delta(&delta)
     }
@@ -142,6 +145,14 @@ impl<'a> Tracked<'a> {
 
     pub fn has_delta(&self) -> bool {
         self.deltas > 0
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.writes == 0 && self.deltas == 0 && self.creates == 0 && !self.tombstone
+    }
+
+    pub fn is_creation_cancelled(&self) -> bool {
+        self.is_new() && self.is_tombstone()
     }
 
     pub fn is_live(&self) -> bool {
@@ -174,13 +185,16 @@ mod tests {
         let mut tracked = Tracked::new_empty();
         let _ = tracked.get();
         tracked.check();
-        assert!(tracked.add_delta(Delta::None).is_ok());
         tracked
             .set(Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(
                 U64::default(),
             ))))
             .unwrap();
+        assert!(tracked.add_delta(Delta::None).is_ok());
+        let deleted_value = tracked.value().clone();
         assert!(tracked.delete().is_ok());
+        assert!(tracked.is_tombstone());
+        assert!(tracked.value() == &deleted_value);
         let previous_writes = tracked.writes;
         let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
 
@@ -192,5 +206,20 @@ mod tests {
         assert_eq!(tracked.writes, previous_writes + 1);
         assert!(!tracked.is_tombstone());
         assert!(tracked.value() == &value);
+    }
+
+    #[test]
+    fn only_mutations_make_a_record_non_read_only() {
+        let mut tracked = Tracked::new_empty();
+        assert!(tracked.is_read_only());
+
+        assert!(tracked.get().is_none());
+        assert!(tracked.is_read_only());
+
+        tracked.check();
+        assert!(tracked.is_read_only());
+
+        tracked.set(U64::default().into()).unwrap();
+        assert!(!tracked.is_read_only());
     }
 }

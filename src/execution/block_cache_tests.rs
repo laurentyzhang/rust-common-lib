@@ -28,6 +28,15 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     assert!(cache.contains_key(&7));
     assert!((cache.get(&7)) == Some(&replacement));
     assert!((fallback.get(&7)) == Some(&original));
+
+    cache.stage(vec![(7, Value::None)]).unwrap();
+    assert!(!cache.contains_key(&7));
+    assert!(cache.get(&7).is_none());
+    assert!((fallback.get(&7)) == Some(&original));
+
+    cache.stage(vec![(7, replacement.clone())]).unwrap();
+    assert!(cache.contains_key(&7));
+    assert!((cache.get(&7)) == Some(&replacement));
 }
 
 #[test]

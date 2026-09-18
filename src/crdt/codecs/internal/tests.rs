@@ -15,7 +15,7 @@ fn set_delta(added: Vec<u64>, removed: Vec<u64>) -> Vec<DeltaOp<u64>> {
 
 use super::{
     batch::{self, InternalEncode},
-    bytes, int64, path_delta, path_meta, u256, uint64,
+    bytes, delta_op, int64, u64_set, u256, uint64,
 };
 
 #[test]
@@ -69,12 +69,12 @@ fn every_internal_type_round_trips() {
     assert!(u256::decode(&encoded).unwrap() == u256_value);
 
     let delta = set_delta(vec![40, 50], vec![10]);
-    let encoded = path_delta::encode(&delta).unwrap();
+    let encoded = delta_op::encode(&delta).unwrap();
     assert_eq!(
         encoded.len() as u64,
-        path_delta::encoded_size(&delta).unwrap()
+        delta_op::encoded_size(&delta).unwrap()
     );
-    assert!(path_delta::decode(&encoded).unwrap() == delta);
+    assert!(delta_op::decode(&encoded).unwrap() == delta);
 
     let mut entries = DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap();
     entries.remove(&20);
@@ -83,12 +83,9 @@ fn every_internal_type_round_trips() {
         entries,
         delta: Some(delta),
     };
-    let encoded = path_meta::encode(&path).unwrap();
-    assert_eq!(
-        encoded.len() as u64,
-        path_meta::encoded_size(&path).unwrap()
-    );
-    let decoded = path_meta::decode(&encoded).unwrap();
+    let encoded = u64_set::encode(&path).unwrap();
+    assert_eq!(encoded.len() as u64, u64_set::encoded_size(&path).unwrap());
+    let decoded = u64_set::decode(&encoded).unwrap();
     assert!(decoded == path);
     assert_eq!(decoded.entries.get_at(1), None);
     assert_eq!(decoded.entries.get_at(2), Some(&30));
@@ -150,9 +147,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
 
     let delta = set_delta(vec![1], vec![2]);
     let mut output =
-        vec![0xaa; usize::try_from(path_delta::encoded_size(&delta).unwrap()).unwrap() - 1];
+        vec![0xaa; usize::try_from(delta_op::encoded_size(&delta).unwrap()).unwrap() - 1];
     assert_eq!(
-        path_delta::encode_to(&delta, &mut output),
+        delta_op::encode_to(&delta, &mut output),
         Err("output buffer too small")
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
@@ -162,9 +159,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
         delta: Some(delta),
     };
     let mut output =
-        vec![0xaa; usize::try_from(path_meta::encoded_size(&path).unwrap()).unwrap() - 1];
+        vec![0xaa; usize::try_from(u64_set::encoded_size(&path).unwrap()).unwrap() - 1];
     assert_eq!(
-        path_meta::encode_to(&path, &mut output),
+        u64_set::encode_to(&path, &mut output),
         Err("output buffer too small")
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
@@ -190,7 +187,7 @@ fn malformed_input_is_rejected() {
     invalid_path.extend_from_slice(&3_u64.to_le_bytes());
     invalid_path.push(0b1111_1101);
     assert!(matches!(
-        path_meta::decode(&invalid_path),
+        u64_set::decode(&invalid_path),
         Err("invalid U64Set bitmap")
     ));
 
@@ -200,11 +197,11 @@ fn malformed_input_is_rejected() {
     duplicate_path.extend_from_slice(&7_u64.to_le_bytes());
     duplicate_path.extend_from_slice(&7_u64.to_le_bytes());
     assert!(matches!(
-        path_meta::decode(&duplicate_path),
+        u64_set::decode(&duplicate_path),
         Err("duplicate or unindexable U64Set entry")
     ));
 
-    assert!(path_delta::decode(&u64::MAX.to_le_bytes()).is_err());
+    assert!(delta_op::decode(&u64::MAX.to_le_bytes()).is_err());
 
     let valid = I64 {
         value: 1,
@@ -258,18 +255,18 @@ fn every_truncated_encoding_is_rejected() {
         assert!(u256::decode(&u256_encoded[..end]).is_err());
     }
 
-    let delta_encoded = path_delta::encode(&set_delta(vec![1, 2], vec![3])).unwrap();
+    let delta_encoded = delta_op::encode(&set_delta(vec![1, 2], vec![3])).unwrap();
     for end in 0..delta_encoded.len() {
-        assert!(path_delta::decode(&delta_encoded[..end]).is_err());
+        assert!(delta_op::decode(&delta_encoded[..end]).is_err());
     }
 
-    let path_encoded = path_meta::encode(&U64Set {
+    let path_encoded = u64_set::encode(&U64Set {
         entries: DeltaSet::try_from_slots(vec![Some(1), None, Some(2)]).unwrap(),
         delta: Some(set_delta(vec![3], vec![1])),
     })
     .unwrap();
     for end in 0..path_encoded.len() {
-        assert!(path_meta::decode(&path_encoded[..end]).is_err());
+        assert!(u64_set::decode(&path_encoded[..end]).is_err());
     }
 }
 
@@ -330,7 +327,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_delta.extend_from_slice(&1_u64.to_le_bytes());
     expected_delta.extend_from_slice(&1_u64.to_le_bytes());
     expected_delta.extend_from_slice(&2_u64.to_le_bytes());
-    assert_eq!(path_delta::encode(&delta).unwrap(), expected_delta);
+    assert_eq!(delta_op::encode(&delta).unwrap(), expected_delta);
 
     let path = U64Set {
         entries: DeltaSet::try_from_slots(vec![Some(10), None, Some(30)]).unwrap(),
@@ -341,7 +338,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_path.push(0b0000_0101);
     expected_path.extend_from_slice(&10_u64.to_le_bytes());
     expected_path.extend_from_slice(&30_u64.to_le_bytes());
-    assert_eq!(path_meta::encode(&path).unwrap(), expected_path);
+    assert_eq!(u64_set::encode(&path).unwrap(), expected_path);
 
     let bytes_value = Bytes {
         delta: Some(vec![0xaa].into_boxed_slice()),

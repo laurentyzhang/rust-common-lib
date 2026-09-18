@@ -1,8 +1,13 @@
 use crate::crdt::{
-    bytes::Bytes, int64::I64, state::DeltaOp, u64_set::U64Set, u256::U256, uint64::U64,
+    bytes::Bytes,
+    int64::I64,
+    state::{DeltaOp, Tracked},
+    u64_set::U64Set,
+    u256::U256,
+    uint64::U64,
 };
 
-use super::{Result, Writer, bytes, int64, path_delta, path_meta, u256, uint64};
+use super::{Result, Writer, bytes, delta_op, int64, tracked, u64_set, u256, uint64};
 
 const PARALLEL_THRESHOLD: usize = 2_048;
 
@@ -53,21 +58,31 @@ impl InternalEncode for U256 {
 
 impl InternalEncode for Vec<DeltaOp<u64>> {
     fn encoded_size(&self) -> Result<u64> {
-        path_delta::encoded_size(self)
+        delta_op::encoded_size(self)
     }
 
     fn encode_to(&self, output: &mut [u8]) -> Result<u64> {
-        path_delta::encode_to(self, output)
+        delta_op::encode_to(self, output)
     }
 }
 
 impl InternalEncode for U64Set {
     fn encoded_size(&self) -> Result<u64> {
-        path_meta::encoded_size(self)
+        u64_set::encoded_size(self)
     }
 
     fn encode_to(&self, output: &mut [u8]) -> Result<u64> {
-        path_meta::encode_to(self, output)
+        u64_set::encode_to(self, output)
+    }
+}
+
+impl InternalEncode for Tracked<'_> {
+    fn encoded_size(&self) -> Result<u64> {
+        tracked::encoded_size(self)
+    }
+
+    fn encode_to(&self, output: &mut [u8]) -> Result<u64> {
+        tracked::encode_to(self, output)
     }
 }
 
