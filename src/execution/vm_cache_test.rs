@@ -38,7 +38,7 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
     for _ in 0..2 {
         assert_eq!(
             cache.delete(&7),
-            Err(Error::Store(StoreError::EntryNotFound))
+            Err(Error::Store(StoreError::DeleteNonexistingEntry))
         );
     }
 
@@ -46,7 +46,7 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
     assert_eq!(cache.delete(&7), Ok(()));
     assert_eq!(
         cache.delete(&7),
-        Err(Error::Store(StoreError::EntryNotFound))
+        Err(Error::Store(StoreError::DeleteNonexistingEntry))
     );
     assert!((&mut cache).get(&7).is_none());
     assert!((cache).get(&7).is_none());
@@ -137,7 +137,7 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
     for key in [7, 8] {
         assert_eq!(
             outer.delete(&key),
-            Err(Error::Store(StoreError::EntryNotFound))
+            Err(Error::Store(StoreError::DeleteNonexistingEntry))
         );
         assert!(outer.insert(&key, replacement.clone()).is_ok());
     }
@@ -187,7 +187,7 @@ fn short_operation_sequences_match_value_existence_model() {
                         let expected_result = if expected.take().is_some() {
                             Ok(())
                         } else {
-                            Err(Error::Store(StoreError::EntryNotFound))
+                            Err(Error::Store(StoreError::DeleteNonexistingEntry))
                         };
                         assert_eq!(
                             cache.delete(&7),
@@ -230,7 +230,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
     // Deleting the missing value fails.
     assert_eq!(
         cache.delete(&key),
-        Err(Error::Store(StoreError::EntryNotFound))
+        Err(Error::Store(StoreError::DeleteNonexistingEntry))
     );
 
     // Create a valid value and read it back.
@@ -252,7 +252,7 @@ fn deleting_a_previously_read_missing_key_returns_entry_not_found() {
     assert!(cache.cache.contains_key(&key));
     assert_eq!(
         cache.delete(&key),
-        Err(Error::Store(StoreError::EntryNotFound))
+        Err(Error::Store(StoreError::DeleteNonexistingEntry))
     );
     assert!(!cache.exists(&key));
 }
@@ -379,13 +379,23 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(matches!(block_cache_stage, Ok(())));
     assert_eq!(block_cache.size(), 2);
 
+    // Another round of testing with a new VM cache backed by the block cache.
     vm_cache = VmCache::new_with_fallback(&block_cache);
     assert_eq!(vm_cache.size(), 0);
 
     // Get values from the new VM cache after it has been initialized with the block cache.
     let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
-    assert_eq!(applied.as_ref().as_u64(), Some(100));
+    assert_eq!(applied.as_ref().as_u64(), Some(90));
 
     applied = (&mut vm_cache).get(&2).expect("value should exist");
-    assert_eq!(applied.as_ref().as_bytes(), Some(&[70, 71, 72][..]));
+    assert_eq!(applied.as_ref().as_bytes(), Some(&[10, 11][..]));
+
+    let delta_result = vm_cache.add_delta(&1, crate::crdt::state::Delta::U64Add(5).into());
+    assert!(delta_result.is_ok());
+
+    applied = (&mut vm_cache).get(&1).expect("value should exist");
+    assert_eq!(applied.as_ref().as_u64(), Some(95));
+
+    // crate::crdt::state::Value::P
+    // vm_cache.insert(&1, crate::crdt::state::Value::U64(95).into());
 }

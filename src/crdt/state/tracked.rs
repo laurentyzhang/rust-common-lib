@@ -90,11 +90,16 @@ impl<'a> Tracked<'a> {
         }
 
         let is_live = self.is_live();
+        let was_tombstone = self.tombstone;
         self.value = value;
         self.tombstone = false;
 
         if !is_live {
-            self.creates += 1; // Having a none value    
+            if was_tombstone {
+                self.writes += 1;
+            } else {
+                self.creates += 1;
+            }
             return Ok(());
         }
         self.writes += 1;
