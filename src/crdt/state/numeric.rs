@@ -1,4 +1,4 @@
-use super::{Delta, DeltaOp, StateError};
+use super::{Delta, StateError};
 use crate::crdt::Crdt;
 
 #[derive(Clone, PartialEq)]
@@ -17,7 +17,7 @@ impl<'a> Numeric<'a> {
         }
     }
 
-    pub fn borrowed(value: &'a Numeric<'_>) -> Self {
+    pub fn from_borrowed(value: &'a Numeric<'_>) -> Self {
         match value {
             Self::I64(value) => Self::I64(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U64(value) => Self::U64(std::borrow::Cow::Borrowed(value.as_ref())),
@@ -25,22 +25,26 @@ impl<'a> Numeric<'a> {
         }
     }
 
+    pub fn delta(&self) -> Delta {
+        match self {
+            Self::I64(value) => value
+                .delta()
+                .map_or(Delta::None, |delta| Delta::I64(*delta)),
+            Self::U64(value) => value
+                .delta()
+                .map_or(Delta::None, |delta| Delta::U64(delta.clone())),
+            Self::U256(value) => value
+                .delta()
+                .map_or(Delta::None, |delta| Delta::U256(delta.clone())),
+        }
+    }
+
     pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
             (Self::I64(value), Delta::I64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U64(value), Delta::U64(DeltaOp::Add(delta))) => {
-                value.to_mut().add_delta(delta).map(|_| ())
-            }
-            (Self::U256(value), Delta::U256(DeltaOp::Add(delta))) => {
-                value.to_mut().add_delta(delta).map(|_| ())
-            }
-            (Self::U64(value), Delta::U64(DeltaOp::Sub(delta))) => {
-                value.to_mut().sub_delta(delta).map(|_| ())
-            }
-            (Self::U256(value), Delta::U256(DeltaOp::Sub(delta))) => {
-                value.to_mut().sub_delta(delta).map(|_| ())
-            }
+            (Self::U64(value), Delta::U64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
+            (Self::U256(value), Delta::U256(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
             _ => Err(StateError::TypeMismatch),
         }
     }
@@ -64,7 +68,7 @@ impl<'a> Numeric<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crdt::state::{NumericError, Value};
+    use crate::crdt::state::{DeltaOp, NumericError, Value};
 
     macro_rules! unsigned_delta_tests {
         ($module:ident, $crdt:ty, $number:ty, $variant:ident, $error:ident, $accessor:ident, $codec:ident) => {
@@ -156,33 +160,33 @@ mod tests {
                         limits: (n(5), n(15)),
                         ..Default::default()
                     };
-                    value.sub_delta(&n(5)).unwrap();
+                    value.add_delta(&DeltaOp::Sub(n(5))).unwrap();
                     let before = value.clone();
                     assert!(matches!(
-                        value.sub_delta(&n(1)),
+                        value.add_delta(&DeltaOp::Sub(n(1))),
                         Err(StateError::$error(NumericError::BelowLowerLimit(_)))
                     ));
                     assert!(value == before);
-                    value.add_delta(&n(10)).unwrap();
+                    value.add_delta(&DeltaOp::Add(n(10))).unwrap();
                     let before = value.clone();
                     assert!(matches!(
-                        value.add_delta(&n(1)),
+                        value.add_delta(&DeltaOp::Add(n(1))),
                         Err(StateError::$error(NumericError::AboveUpperLimit(_)))
                     ));
                     assert!(value == before);
                     value.apply_delta();
                     assert_eq!(value.value(), Some(&n(15)));
-                    assert!(!value.delta_subtract);
+                    assert_eq!(value.delta, None);
                 }
 
                 #[test]
                 fn subtraction_survives_internal_codec_but_storage_omits_pending_delta() {
                     use crate::crdt::codecs::internal::$codec as codec;
                     let mut value = <$crdt>::default();
-                    value.add_delta(&<$number>::MAX).unwrap();
+                    value.add_delta(&DeltaOp::Add(<$number>::MAX)).unwrap();
                     value.apply_delta();
                     let clean = value.clone();
-                    value.sub_delta(&<$number>::MAX).unwrap();
+                    value.add_delta(&DeltaOp::Sub(<$number>::MAX)).unwrap();
                     let encoded = codec::encode(&value).unwrap();
                     assert_eq!(encoded[0], 15);
                     let mut decoded = codec::decode(&encoded).unwrap();

@@ -13,7 +13,7 @@ const U64_SET: u8 = 5;
 
 const IS_NEW: u8 = 1;
 const TOMBSTONE: u8 = 2;
-const HEADER_SIZE: u64 = 22;
+const HEADER_SIZE: u64 = 30;
 
 fn value_tag(value: &Value<'_>) -> u8 {
     match value {
@@ -69,6 +69,7 @@ pub fn encode_to(value: &Tracked<'_>, output: &mut [u8]) -> Result<u64> {
     let mut writer = Writer::new(output);
     writer.write_u8(value_tag(&value.value))?;
     writer.write_u8(u8::from(value.is_new) * IS_NEW | u8::from(value.tombstone) * TOMBSTONE)?;
+    writer.write_u64(value.id)?;
     writer.write_u32(value.reads)?;
     writer.write_u32(value.checks)?;
     writer.write_u32(value.writes)?;
@@ -99,6 +100,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<'static>> {
         return Err("invalid Tracked flags");
     }
 
+    let id = reader.read_u64()?;
     let reads = reader.read_u32()?;
     let checks = reader.read_u32()?;
     let writes = reader.read_u32()?;
@@ -119,6 +121,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<'static>> {
     };
 
     let tracked = Tracked {
+        id,
         value,
         reads,
         checks,
@@ -142,6 +145,7 @@ mod tests {
 
     fn tracked(value: Value<'static>) -> Tracked<'static> {
         Tracked {
+            id: 42,
             value,
             reads: 1,
             checks: 2,
@@ -154,6 +158,7 @@ mod tests {
     }
 
     fn assert_same(actual: &Tracked<'_>, expected: &Tracked<'_>) {
+        assert_eq!(actual.id, expected.id);
         assert!(actual.value == expected.value);
         assert_eq!(actual.reads, expected.reads);
         assert_eq!(actual.checks, expected.checks);

@@ -2,6 +2,7 @@ pub trait Crdt<T: ?Sized + PartialEq, D: ?Sized + PartialEq>: Clone + PartialEq 
     type Error;
 
     fn value(&self) -> Option<&T>;
+    fn delta(&self) -> Option<&D>;
     fn add_delta(&mut self, delta: &D) -> Result<&D, Self::Error>;
     fn apply_delta(&mut self) -> &Self;
     fn limits(&self) -> Option<(&T, &T)>;

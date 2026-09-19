@@ -45,11 +45,13 @@ pub fn decode(input: &[u8]) -> Result<I64> {
     } else {
         0
     };
+
     let delta = if flags & DELTA != 0 {
         reader.read_i64()?
     } else {
         0
     };
+
     let limits = if flags & LIMITS != 0 {
         (reader.read_i64()?, reader.read_i64()?)
     } else {

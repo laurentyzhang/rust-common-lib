@@ -28,6 +28,10 @@ impl Crdt<[u8], [u8]> for Bytes {
         self.delta.as_deref()
     }
 
+    fn delta(&self) -> Option<&[u8]> {
+        self.delta.as_deref()
+    }
+
     fn add_delta(&mut self, delta: &[u8]) -> Result<&[u8], Self::Error> {
         let stored = self.delta.insert(delta.into());
         Ok(stored)

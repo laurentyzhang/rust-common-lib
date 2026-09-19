@@ -55,8 +55,7 @@ impl Decodable for U64 {
 
         Ok(Self {
             value: if has_value == 1 { value } else { 0 },
-            delta: 0,
-            delta_subtract: false,
+            delta: None,
             limits: if has_limits == 1 {
                 (lower, upper)
             } else {
@@ -68,6 +67,7 @@ impl Decodable for U64 {
 
 #[cfg(test)]
 mod tests {
+    use crate::crdt::state::DeltaOp;
     use alloy_rlp::{decode_exact, encode};
 
     use super::*;
@@ -76,14 +76,13 @@ mod tests {
     fn u64_storage_round_trip_ignores_delta() {
         let dirty = U64 {
             value: 100,
-            delta: 25,
-            delta_subtract: false,
+            delta: Some(DeltaOp::Add(25)),
             limits: (0, 1_000),
         };
+
         let clean = U64 {
             value: dirty.value,
-            delta: 0,
-            delta_subtract: false,
+            delta: None,
             limits: dirty.limits,
         };
 

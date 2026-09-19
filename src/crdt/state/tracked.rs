@@ -2,6 +2,7 @@ use super::{Delta, StateError, Value};
 use crate::store::traits::StoreError;
 
 pub struct Tracked<'a> {
+    pub(crate) id: u64,
     pub(crate) value: Value<'a>,
     pub(crate) reads: u32,
     pub(crate) checks: u32, // Number of times the value has been checked for existence
@@ -13,8 +14,51 @@ pub struct Tracked<'a> {
 }
 
 impl<'a> Tracked<'a> {
+    pub fn new_owned_empty(id: u64) -> Self {
+        Self {
+            id,
+            value: Value::None,
+            reads: 0,
+            checks: 0,
+            writes: 0,
+            deltas: 0,
+            creates: 0,
+            is_new: false,
+            tombstone: false,
+        }
+    }
+
+    pub fn new_owned(value: Value<'static>, id: u64) -> Self {
+        Self {
+            id,
+            value,
+            reads: 0,
+            checks: 0,
+            writes: 0,
+            deltas: 0,
+            creates: 1,
+            is_new: true,
+            tombstone: false,
+        }
+    }
+
+    pub fn new_borrowed(value: Value<'a>, id: u64) -> Self {
+        Self {
+            id,
+            value,
+            reads: 0,
+            checks: 0,
+            writes: 0, // Start with 1 write since we are borrowing an existing value
+            deltas: 0,
+            creates: 0,
+            is_new: false,
+            tombstone: false,
+        }
+    }
+
     pub fn owned_clone(&self) -> Tracked<'static> {
         Tracked {
+            id: self.id,
             value: self.value.clone().into_owned(),
             reads: self.reads,
             checks: self.checks,
@@ -28,6 +72,7 @@ impl<'a> Tracked<'a> {
 
     pub fn into_owned(self) -> Tracked<'static> {
         Tracked {
+            id: self.id,
             value: self.value.into_owned(),
             reads: self.reads,
             checks: self.checks,
@@ -39,45 +84,6 @@ impl<'a> Tracked<'a> {
         }
     }
 
-    pub fn new_empty() -> Self {
-        Self {
-            value: Value::None,
-            reads: 0,
-            checks: 0,
-            writes: 0,
-            deltas: 0,
-            creates: 0,
-            is_new: true,
-            tombstone: false,
-        }
-    }
-
-    pub fn new_owned(value: Value<'static>) -> Self {
-        Self {
-            value,
-            reads: 0,
-            checks: 0,
-            writes: 0,
-            deltas: 0,
-            creates: 1,
-            is_new: true,
-            tombstone: false,
-        }
-    }
-
-    pub fn new_borrowed(value: Value<'a>) -> Self {
-        Self {
-            value,
-            reads: 0,
-            checks: 0,
-            writes: 0, // Start with 1 write since we are borrowing an existing value
-            deltas: 0,
-            creates: 0,
-            is_new: false,
-            tombstone: false,
-        }
-    }
-
     /// Borrow the underlying value without recording a read.
     pub fn value(&self) -> &Value<'a> {
         &self.value
@@ -86,24 +92,26 @@ impl<'a> Tracked<'a> {
     /// Replace the value while preserving access history and recording a write.
     pub fn set(&mut self, value: Value<'a>) -> Result<(), StoreError> {
         if matches!(value, Value::None) {
-            return self.delete();
+            return Err(StoreError::SetNoneToValue);
         }
 
-        let is_live = self.is_live();
-        let was_tombstone = self.tombstone;
-        self.value = value;
-        self.tombstone = false;
+        if self.is_live() {
+            self.writes += 1;
+            return Err(StoreError::ValueCannotBeRecreated);
+        }
 
-        if !is_live {
-            if was_tombstone {
-                self.writes += 1;
-            } else {
-                self.creates += 1;
-            }
+        self.value = value;
+
+        // Revive a previously deleted value.
+        if self.tombstone {
+            self.tombstone = false;
+            self.writes += 1;
             return Ok(());
         }
-        self.writes += 1;
-        Ok(())
+
+        self.is_new = true; // This is necessary. 
+        self.creates += 1;
+        return Ok(());
     }
 
     pub fn delete(&mut self) -> Result<(), StoreError> {
@@ -182,14 +190,9 @@ mod tests {
 
     #[test]
     fn write_preserves_history_and_clears_tombstone() {
-        let mut tracked = Tracked::new_empty();
+        let mut tracked = Tracked::new_owned(U64::default().into(), 7);
         let _ = tracked.get();
         tracked.check();
-        tracked
-            .set(Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(
-                U64::default(),
-            ))))
-            .unwrap();
         assert!(tracked.add_delta(Delta::None).is_ok());
         let deleted_value = tracked.value().clone();
         assert!(tracked.delete().is_ok());
@@ -209,17 +212,42 @@ mod tests {
     }
 
     #[test]
+    fn constructors_record_id_and_origin() {
+        let owned = Tracked::new_owned(U64::default().into(), 11);
+        assert_eq!(owned.id, 11);
+        assert!(owned.is_new());
+        assert_eq!(owned.creates, 1);
+
+        let value: Value<'static> = U64::default().into();
+        let borrowed = Tracked::new_borrowed(Value::from_borrowed(&value), 12);
+        assert_eq!(borrowed.id, 12);
+        assert!(!borrowed.is_new());
+        assert_eq!(borrowed.creates, 0);
+    }
+
+    #[test]
     fn only_mutations_make_a_record_non_read_only() {
-        let mut tracked = Tracked::new_empty();
+        let mut tracked = Tracked::new_borrowed(U64::default().into(), 7);
         assert!(tracked.is_read_only());
 
-        assert!(tracked.get().is_none());
+        assert!(tracked.get().is_some());
         assert!(tracked.is_read_only());
 
         tracked.check();
         assert!(tracked.is_read_only());
 
-        tracked.set(U64::default().into()).unwrap();
+        assert_eq!(
+            tracked.set(U64::default().into()),
+            Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
+        );
         assert!(!tracked.is_read_only());
+    }
+
+    #[test]
+    fn ownership_conversions_preserve_id() {
+        let tracked = Tracked::new_owned(U64::default().into(), 42);
+
+        assert_eq!(tracked.owned_clone().id, 42);
+        assert_eq!(tracked.into_owned().id, 42);
     }
 }

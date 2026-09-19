@@ -8,8 +8,8 @@ const LIMITS: u8 = 4;
 // Existing additive encodings retain their original flags and layout.
 const SUBTRACT: u8 = 8;
 
-pub fn encoded_size(_: &U64) -> Result<u64> {
-    Ok(33)
+pub fn encoded_size(value: &U64) -> Result<u64> {
+    Ok(25 + u64::from(value.delta.is_some()) * 8)
 }
 
 pub fn encode(value: &U64) -> Result<Vec<u8>> {
@@ -27,9 +27,20 @@ pub fn encode_to(value: &U64, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
-    writer.write_u8(VALUE | DELTA | LIMITS | if value.delta_subtract { SUBTRACT } else { 0 })?;
+    let delta_flags = match value.delta {
+        Some(crate::crdt::state::DeltaOp::Add(_)) => DELTA,
+        Some(crate::crdt::state::DeltaOp::Sub(_)) => DELTA | SUBTRACT,
+        None => 0,
+    };
+    writer.write_u8(VALUE | LIMITS | delta_flags)?;
     writer.write_u64(value.value)?;
-    writer.write_u64(value.delta)?;
+    if let Some(delta) = &value.delta {
+        writer.write_u64(match delta {
+            crate::crdt::state::DeltaOp::Add(value) | crate::crdt::state::DeltaOp::Sub(value) => {
+                *value
+            }
+        })?;
+    }
     writer.write_u64(value.limits.0)?;
     writer.write_u64(value.limits.1)?;
     Ok(writer.finish() as u64)
@@ -49,11 +60,17 @@ pub fn decode(input: &[u8]) -> Result<U64> {
     } else {
         0
     };
+
     let delta = if flags & DELTA != 0 {
-        reader.read_u64()?
+        Some(if flags & SUBTRACT != 0 {
+            crate::crdt::state::DeltaOp::Sub(reader.read_u64()?)
+        } else {
+            crate::crdt::state::DeltaOp::Add(reader.read_u64()?)
+        })
     } else {
-        0
+        None
     };
+
     let limits = if flags & LIMITS != 0 {
         (reader.read_u64()?, reader.read_u64()?)
     } else {
@@ -64,7 +81,6 @@ pub fn decode(input: &[u8]) -> Result<U64> {
     Ok(U64 {
         value,
         delta,
-        delta_subtract: flags & SUBTRACT != 0,
         limits,
     })
 }

@@ -60,8 +60,7 @@ impl Decodable for U256 {
             } else {
                 AlloyU256::ZERO
             },
-            delta: AlloyU256::ZERO,
-            delta_subtract: false,
+            delta: None,
             limits: if has_limits == 1 {
                 (lower, upper)
             } else {
@@ -73,6 +72,7 @@ impl Decodable for U256 {
 
 #[cfg(test)]
 mod tests {
+    use crate::crdt::state::DeltaOp;
     use alloy_rlp::{decode_exact, encode};
 
     use super::*;
@@ -81,14 +81,13 @@ mod tests {
     fn u256_storage_round_trip_ignores_delta() {
         let dirty = U256 {
             value: AlloyU256::from(1_u64) << 200,
-            delta: AlloyU256::from(25),
-            delta_subtract: false,
+            delta: Some(DeltaOp::Add(AlloyU256::from(25))),
             limits: (AlloyU256::ZERO, AlloyU256::MAX),
         };
+
         let clean = U256 {
             value: dirty.value,
-            delta: AlloyU256::ZERO,
-            delta_subtract: false,
+            delta: None,
             limits: dirty.limits,
         };
 

@@ -1,5 +1,6 @@
 use super::{Error, VmCache};
 use crate::crdt::{
+    Crdt,
     bytes::Bytes,
     state::{Delta, DeltaOp, Numeric, NumericError, StateError, Value},
     uint64::U64,
@@ -8,6 +9,8 @@ use crate::execution::BlockCache;
 use crate::store::StoreError;
 use crate::store::cached::CachedStore;
 use crate::store::traits::{FallbackStore, WriteOnlyStore};
+
+const CACHE_ID: u64 = 17;
 
 fn numeric_u64(number: u64) -> Value<'static> {
     Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
@@ -19,7 +22,7 @@ fn numeric_u64(number: u64) -> Value<'static> {
 #[test]
 fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     assert!((cache).get(&7).is_none());
     assert!(!cache.exists(&7));
     assert!(cache.cache.is_empty());
@@ -35,7 +38,7 @@ fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
 #[test]
 fn deleting_without_reading_and_deleting_twice_report_missing_values() {
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     for _ in 0..2 {
         assert_eq!(
             cache.delete(&7),
@@ -57,7 +60,7 @@ fn deleting_without_reading_and_deleting_twice_report_missing_values() {
 #[test]
 fn rejected_duplicate_creation_preserves_the_original_value() {
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     let original = numeric_u64(42);
     assert!(cache.insert(&7, original.clone()).is_ok());
     for replacement in [original.clone(), numeric_u64(u64::MAX)] {
@@ -75,7 +78,7 @@ fn rejected_duplicate_creation_preserves_the_original_value() {
 #[test]
 fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     let key = String::new();
     let other_key = String::from("other");
     let other_value = numeric_u64(17);
@@ -100,7 +103,7 @@ fn local_deletion_and_recreation_do_not_modify_fallback() {
         let replacement = numeric_u64(42);
         let mut fallback = CachedStore::new(4, None);
         fallback.commit(vec![(7, original.clone())]);
-        let mut cache = VmCache::new_with_fallback(&fallback);
+        let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
         assert!(cache.exists(&7));
         if read_first {
             assert!((&mut cache).get(&7).as_deref() == Some(&original));
@@ -124,10 +127,10 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
     let replacement = numeric_u64(42);
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(7, original.clone())]);
-    let mut inner = VmCache::new_with_fallback(&fallback);
+    let mut inner = VmCache::new_with_fallback(CACHE_ID, &fallback);
     assert_eq!(inner.delete(&7), Ok(()));
     assert!((&mut inner).get(&8).is_none());
-    let mut outer = VmCache::new_with_fallback(&inner);
+    let mut outer = VmCache::new_with_fallback(CACHE_ID, &inner);
 
     for key in [7, 8] {
         assert!(!outer.exists(&key));
@@ -162,7 +165,7 @@ fn short_operation_sequences_match_value_existence_model() {
             if let Some(value) = &expected {
                 fallback.commit(vec![(7, value.clone())]);
             }
-            let mut cache = VmCache::new_with_fallback(&fallback);
+            let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
             let mut operations = sequence;
             for step in 0..5 {
                 let operation = operations % 4;
@@ -222,7 +225,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
     let key = 7;
     let expected = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     // Reading a missing key returns no value and creates a tracking record.
     assert!((&mut cache).get(&key).is_none());
@@ -247,7 +250,7 @@ fn missing_key_can_be_created_read_and_deleted_after_failed_delete() {
 fn deleting_a_previously_read_missing_key_returns_entry_not_found() {
     let key = 7;
     let fallback = CachedStore::new(4, None);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     assert!((&mut cache).get(&key).is_none());
     assert!(cache.cache.contains_key(&key));
@@ -263,7 +266,7 @@ fn create_handles_existing_records_and_rejects_live_values() {
     let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(1, value.clone())]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     assert!(matches!(
         cache.insert(&1, value.clone()),
@@ -291,7 +294,7 @@ fn receiver_mutability_selects_cache_population() {
     let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(key, value.clone())]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     assert!((&cache).get(&key) == Some(&value));
     assert!(cache.cache.is_empty());
@@ -308,8 +311,8 @@ fn mutable_read_populates_only_the_outer_cache() {
     let value = Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(key, value.clone())]);
-    let inner = VmCache::new_with_fallback(&fallback);
-    let mut outer = VmCache::new_with_fallback(&inner);
+    let inner = VmCache::new_with_fallback(CACHE_ID, &fallback);
+    let mut outer = VmCache::new_with_fallback(CACHE_ID, &inner);
 
     assert!((&mut outer).get(&key).as_deref() == Some(&value));
     assert!(outer.cache.contains_key(&key));
@@ -320,7 +323,7 @@ fn mutable_read_populates_only_the_outer_cache() {
 fn drain_includes_all_accesses_but_only_dirty_transitions() {
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(1, numeric_u64(10)), (2, numeric_u64(20))]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     assert_eq!(
         (&mut cache)
@@ -335,16 +338,18 @@ fn drain_includes_all_accesses_but_only_dirty_transitions() {
 
     let (accesses, transitions) = cache.drain();
     assert_eq!(accesses.len(), 3);
+    assert!(accesses.iter().all(|(_, tracked)| tracked.id == CACHE_ID));
     assert_eq!(transitions.len(), 1);
     assert_eq!(transitions[0].0, 2);
     assert_eq!(transitions[0].1.as_u64(), Some(25));
+    assert_eq!(cache.size(), 0);
 }
 
 #[test]
-fn drain_is_repeatable_and_does_not_consume_pending_deltas() {
+fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(1, numeric_u64(10))]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     cache
         .add_delta(&1, Delta::U64(DeltaOp::Add(5)))
         .expect("delta should succeed");
@@ -353,24 +358,23 @@ fn drain_is_repeatable_and_does_not_consume_pending_deltas() {
     let second = cache.drain().1;
 
     assert_eq!(first.len(), 1);
-    assert_eq!(second.len(), 1);
+    assert!(second.is_empty());
     assert_eq!(first[0].1.as_u64(), Some(15));
-    assert_eq!(second[0].1.as_u64(), Some(15));
     assert_eq!(
         (&mut cache)
             .get(&1)
             .and_then(|value| value.as_ref().as_u64()),
-        Some(15)
+        Some(10)
     );
 }
 
 #[test]
 fn create_then_delete_produces_no_transition() {
     let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
-    let mut block_cache = VmCache::new_with_fallback(&fallback);
+    let mut block_cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
         vm_cache.insert(&1, numeric_u64(10)).unwrap();
         vm_cache.delete(&1).unwrap();
         vm_cache.drain().1
@@ -392,7 +396,7 @@ fn staged_tombstone_hides_fallback_and_can_be_recreated() {
     let replacement = numeric_u64(20);
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(1, original)]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     cache.stage(vec![(1, Value::None)]).unwrap();
     assert!(!cache.exists(&1));
@@ -404,10 +408,76 @@ fn staged_tombstone_hides_fallback_and_can_be_recreated() {
 }
 
 #[test]
+fn stage_creates_a_missing_value() {
+    let fallback = CachedStore::new(4, None);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+    let value = numeric_u64(10);
+
+    cache.stage(vec![(1, value.clone())]).unwrap();
+
+    assert!(cache.exists(&1));
+    assert!((&mut cache).get(&1).as_deref() == Some(&value));
+}
+
+#[test]
+fn stage_adds_a_delta_to_an_existing_value() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(10))]);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+    let mut update = U64::default();
+    update.add_delta(&DeltaOp::Add(5)).unwrap();
+
+    cache.stage(vec![(1, update.into())]).unwrap();
+
+    assert_eq!(
+        (&mut cache)
+            .get(&1)
+            .and_then(|value| value.as_ref().as_u64()),
+        Some(15)
+    );
+}
+
+#[test]
+fn stage_deletes_an_existing_value() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(10))]);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+
+    cache.stage(vec![(1, Value::None)]).unwrap();
+
+    assert!(!cache.exists(&1));
+    assert!((&mut cache).get(&1).is_none());
+}
+
+#[test]
+fn stage_returns_delta_errors_without_changing_the_value() {
+    let mut fallback = CachedStore::new(4, None);
+    fallback.commit(vec![(1, numeric_u64(u64::MAX))]);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+    let mut update = U64::default();
+    update.add_delta(&DeltaOp::Add(1)).unwrap();
+
+    let result = cache.stage(vec![(1, update.into())]);
+
+    assert!(matches!(
+        result,
+        Err(StoreError::State(StateError::U64(
+            NumericError::Overflow { .. }
+        )))
+    ));
+    assert_eq!(
+        (&mut cache)
+            .get(&1)
+            .and_then(|value| value.as_ref().as_u64()),
+        Some(u64::MAX)
+    );
+}
+
+#[test]
 fn deleted_value_rejects_deltas_even_though_tombstone_retains_old_value() {
     let mut fallback = CachedStore::new(4, None);
     fallback.commit(vec![(1, numeric_u64(10))]);
-    let mut cache = VmCache::new_with_fallback(&fallback);
+    let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
     cache.delete(&1).unwrap();
     assert_eq!(
@@ -425,8 +495,8 @@ fn deleted_value_rejects_deltas_even_though_tombstone_retains_old_value() {
 #[test]
 fn vm_cache_with_vm_cache_fallback() {
     let fallback = CachedStore::<u64, Value<'_>>::new(4, None);
-    let mut block_cache = VmCache::new_with_fallback(&fallback);
-    let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+    let mut block_cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+    let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
 
     assert!((&mut vm_cache).get(&7u64).is_none());
     assert!(vm_cache.cache.contains_key(&7u64));
@@ -487,7 +557,7 @@ fn vm_cache_with_vm_cache_fallback() {
     assert_eq!(block_cache.size(), 2);
 
     // Another round of testing with a new VM cache backed by the block cache.
-    vm_cache = VmCache::new_with_fallback(&block_cache);
+    vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     assert_eq!(vm_cache.size(), 0);
 
     // Get values from the new VM cache after it has been initialized with the block cache.
@@ -536,7 +606,7 @@ fn vm_cache_with_vm_cache_fallback() {
         .expect("flush VM cache to block cache");
     assert_eq!(block_cache.size(), 3);
 
-    let mut flushed_cache = VmCache::new_with_fallback(&block_cache);
+    let mut flushed_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     {
         let value = (&mut flushed_cache)
             .get(&3)
@@ -560,7 +630,7 @@ fn vm_cache_with_vm_cache_fallback() {
         .stage(transitions)
         .expect("flush updated VM cache to block cache");
 
-    let mut reread_cache = VmCache::new_with_fallback(&block_cache);
+    let mut reread_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     {
         let value = (&mut reread_cache)
             .get(&3)
@@ -585,7 +655,7 @@ fn vm_cache_with_vm_cache_fallback() {
         .stage(transitions)
         .expect("flush deleted key to block cache");
 
-    let mut deletion_check_cache = VmCache::new_with_fallback(&block_cache);
+    let mut deletion_check_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     assert!(!deletion_check_cache.exists(&1));
     assert!((&mut deletion_check_cache).get(&1).is_none());
 
@@ -599,7 +669,7 @@ fn vm_cache_with_vm_cache_fallback() {
         .stage(transitions)
         .expect("flush recreated key to block cache");
 
-    let mut recreation_check_cache = VmCache::new_with_fallback(&block_cache);
+    let mut recreation_check_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     assert!(recreation_check_cache.exists(&1));
     let value = (&mut recreation_check_cache)
         .get(&1)
@@ -614,7 +684,7 @@ fn vm_cache_with_block_cache_fallback() {
     let mut block_cache = BlockCache::new_with_fallback(Some(&fallback));
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
 
         assert!((&mut vm_cache).get(&7).is_none());
         assert!(vm_cache.cache.contains_key(&7));
@@ -677,7 +747,7 @@ fn vm_cache_with_block_cache_fallback() {
     assert!(block_cache.contains_key(&2));
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
         assert_eq!(
             (&mut vm_cache)
                 .get(&1)
@@ -713,7 +783,7 @@ fn vm_cache_with_block_cache_fallback() {
         .expect("flush numeric and set updates to block cache");
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
         assert_eq!(
             (&mut vm_cache)
                 .get(&1)
@@ -742,7 +812,7 @@ fn vm_cache_with_block_cache_fallback() {
         .expect("flush updated set to block cache");
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
         {
             let value = (&mut vm_cache).get(&3).expect("updated set should exist");
             let entries = value.as_ref().as_u64_set().expect("value should be a set");
@@ -765,7 +835,7 @@ fn vm_cache_with_block_cache_fallback() {
     assert!(block_cache.get(&1).is_none());
 
     let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(&block_cache);
+        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
         assert!(!vm_cache.exists(&1));
         assert!((&mut vm_cache).get(&1).is_none());
 
@@ -779,7 +849,7 @@ fn vm_cache_with_block_cache_fallback() {
         .stage(transitions)
         .expect("flush recreated key to block cache");
 
-    let mut final_cache = VmCache::new_with_fallback(&block_cache);
+    let mut final_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
     assert_eq!(
         (&mut final_cache)
             .get(&1)

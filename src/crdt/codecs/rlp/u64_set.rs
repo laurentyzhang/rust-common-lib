@@ -52,6 +52,7 @@ mod tests {
             entries: DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap(),
             delta: Some(vec![DeltaOp::Add(40), DeltaOp::Sub(10)]),
         };
+
         let clean = U64Set {
             entries: dirty.entries.clone(),
             delta: None,

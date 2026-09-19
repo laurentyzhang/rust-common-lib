@@ -19,20 +19,15 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn borrowed(value: &'a Value<'_>) -> Self {
+    pub fn from_borrowed(value: &'a Value<'_>) -> Self {
         match value {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
-            Self::Numeric(value) => Self::Numeric(Numeric::borrowed(value)),
+            Self::Numeric(value) => Self::Numeric(Numeric::from_borrowed(value)),
             Self::None => Self::None,
         }
     }
 
-    pub fn applied(&self) -> Self {
-        let mut applied = self.clone();
-        applied.apply_delta();
-        applied
-    }
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Numeric(Numeric::I64(value)) => value.value().copied(),
@@ -84,6 +79,19 @@ impl<'a> Value<'a> {
         }
     }
 
+    pub fn delta(&self) -> Delta {
+        match self {
+            Self::Bytes(value) => value
+                .delta()
+                .map_or(Delta::None, |delta| Delta::Bytes(delta.to_vec())),
+            Self::U64Set(value) => value
+                .delta()
+                .map_or(Delta::None, |delta| Delta::U64Set(delta.to_vec())),
+            Self::Numeric(value) => value.delta(),
+            Self::None => Delta::None,
+        }
+    }
+
     pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
@@ -120,5 +128,11 @@ impl<'a> Value<'a> {
             }
             Self::None => self,
         }
+    }
+
+    pub fn applied(&self) -> Self {
+        let mut applied = self.clone();
+        applied.apply_delta();
+        applied
     }
 }

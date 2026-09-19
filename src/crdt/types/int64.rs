@@ -28,7 +28,7 @@ impl From<I64> for Value<'static> {
 
 impl I64 {
     pub fn new(lower: i64, upper: i64) -> Result<Self, StateError> {
-        Self::check_limits(lower, upper, 0)?;
+        Self::check_against_limits(lower, upper, 0)?;
         Ok(Self {
             value: 0,
             delta: 0,
@@ -36,7 +36,7 @@ impl I64 {
         })
     }
 
-    fn check_limits(lower: i64, upper: i64, value: i64) -> Result<(), StateError> {
+    fn check_against_limits(lower: i64, upper: i64, value: i64) -> Result<(), StateError> {
         if lower > upper {
             Err(StateError::I64(NumericError::invalid_limits(
                 &lower, &upper,
@@ -53,6 +53,27 @@ impl I64 {
             Ok(())
         }
     }
+
+    fn try_delta(&self, delta: &i64) -> Result<i64, StateError> {
+        let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
+            if *delta < 0 {
+                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
+            } else {
+                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
+            }
+        })?;
+
+        let projected = self.value.checked_add(accumulated).ok_or_else(|| {
+            if accumulated < 0 {
+                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
+            } else {
+                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
+            }
+        })?;
+
+        Self::check_against_limits(self.limits.0, self.limits.1, projected)?;
+        Ok(accumulated)
+    }
 }
 
 impl Crdt<i64, i64> for I64 {
@@ -62,35 +83,12 @@ impl Crdt<i64, i64> for I64 {
         Some(&self.value)
     }
 
+    fn delta(&self) -> Option<&i64> {
+        Some(&self.delta)
+    }
+
     fn add_delta(&mut self, delta: &i64) -> Result<&i64, Self::Error> {
-        let accumulated = self.delta.checked_add(*delta).ok_or_else(|| {
-            if *delta < 0 {
-                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
-            } else {
-                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
-            }
-        })?;
-        let projected = self.value.checked_add(accumulated).ok_or_else(|| {
-            if accumulated < 0 {
-                StateError::I64(NumericError::underflow(&self.value, &self.delta, delta))
-            } else {
-                StateError::I64(NumericError::overflow(&self.value, &self.delta, delta))
-            }
-        })?;
-
-        let (lower, upper) = self.limits;
-        if projected < lower {
-            return Err(StateError::I64(NumericError::below_lower_limit(
-                &projected, &lower, &upper,
-            )));
-        }
-        if projected > upper {
-            return Err(StateError::I64(NumericError::above_upper_limit(
-                &projected, &lower, &upper,
-            )));
-        }
-
-        self.delta = accumulated;
+        self.delta = self.try_delta(delta)?;
         Ok(&self.delta)
     }
 

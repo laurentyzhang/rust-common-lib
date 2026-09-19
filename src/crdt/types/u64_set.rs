@@ -37,6 +37,10 @@ impl Crdt<DeltaSet<u64>, [DeltaOp<u64>]> for U64Set {
         Some(&self.entries)
     }
 
+    fn delta(&self) -> Option<&[DeltaOp<u64>]> {
+        self.delta.as_deref()
+    }
+
     fn add_delta(&mut self, delta: &[DeltaOp<u64>]) -> Result<&[DeltaOp<u64>], StateError> {
         let pending = self.delta.get_or_insert_default();
 

@@ -10,8 +10,8 @@ const LIMITS: u8 = 4;
 // Existing additive encodings retain their original flags and layout.
 const SUBTRACT: u8 = 8;
 
-pub fn encoded_size(_: &U256) -> Result<u64> {
-    Ok(129)
+pub fn encoded_size(value: &U256) -> Result<u64> {
+    Ok(97 + u64::from(value.delta.is_some()) * 32)
 }
 
 pub fn encode(value: &U256) -> Result<Vec<u8>> {
@@ -29,9 +29,21 @@ pub fn encode_to(value: &U256, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
-    writer.write_u8(VALUE | DELTA | LIMITS | if value.delta_subtract { SUBTRACT } else { 0 })?;
+    let delta_flags = match value.delta {
+        Some(crate::crdt::state::DeltaOp::Add(_)) => DELTA,
+        Some(crate::crdt::state::DeltaOp::Sub(_)) => DELTA | SUBTRACT,
+        None => 0,
+    };
+    writer.write_u8(VALUE | LIMITS | delta_flags)?;
     writer.write_bytes(&value.value.to_le_bytes::<32>())?;
-    writer.write_bytes(&value.delta.to_le_bytes::<32>())?;
+    if let Some(delta) = &value.delta {
+        let delta = match delta {
+            crate::crdt::state::DeltaOp::Add(value) | crate::crdt::state::DeltaOp::Sub(value) => {
+                value
+            }
+        };
+        writer.write_bytes(&delta.to_le_bytes::<32>())?;
+    }
     writer.write_bytes(&value.limits.0.to_le_bytes::<32>())?;
     writer.write_bytes(&value.limits.1.to_le_bytes::<32>())?;
     Ok(writer.finish() as u64)
@@ -51,11 +63,17 @@ pub fn decode(input: &[u8]) -> Result<U256> {
     } else {
         AlloyU256::ZERO
     };
+
     let delta = if flags & DELTA != 0 {
-        AlloyU256::from_le_bytes(reader.read_array::<32>()?)
+        Some(if flags & SUBTRACT != 0 {
+            crate::crdt::state::DeltaOp::Sub(AlloyU256::from_le_bytes(reader.read_array::<32>()?))
+        } else {
+            crate::crdt::state::DeltaOp::Add(AlloyU256::from_le_bytes(reader.read_array::<32>()?))
+        })
     } else {
-        AlloyU256::ZERO
+        None
     };
+
     let limits = if flags & LIMITS != 0 {
         (
             AlloyU256::from_le_bytes(reader.read_array::<32>()?),
@@ -69,7 +87,6 @@ pub fn decode(input: &[u8]) -> Result<U256> {
     Ok(U256 {
         value,
         delta,
-        delta_subtract: flags & SUBTRACT != 0,
         limits,
     })
 }

@@ -104,9 +104,9 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
     );
 
     let mut uint64 = U64::default();
-    uint64.add_delta(&1_000).unwrap();
+    uint64.add_delta(&DeltaOp::Add(1_000)).unwrap();
     uint64.apply_delta();
-    uint64.add_delta(&250).unwrap();
+    uint64.add_delta(&DeltaOp::Add(250)).unwrap();
     compare(
         "U64",
         &uint64,
@@ -117,9 +117,10 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
     );
 
     let mut u256 = U256::default();
-    u256.add_delta(&AlloyU256::from(1_000)).unwrap();
+    u256.add_delta(&DeltaOp::Add(AlloyU256::from(1_000)))
+        .unwrap();
     u256.apply_delta();
-    u256.add_delta(&AlloyU256::from(250)).unwrap();
+    u256.add_delta(&DeltaOp::Add(AlloyU256::from(250))).unwrap();
     compare(
         "U256",
         &u256,

@@ -8,21 +8,24 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub struct VmCache<'a, K> {
+    pub(super) id: u64,
     pub(super) cache: HashMap<K, Tracked<'a>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
 impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
-    pub fn new() -> Self {
+    pub fn new(id: u64) -> Self {
         Self {
+            id,
             cache: HashMap::new(),
             fallback: None,
         }
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(fallback: &'a dyn FallbackStore<'a, K, Value<'a>>) -> Self {
+    pub fn new_with_fallback(id: u64, fallback: &'a dyn FallbackStore<'a, K, Value<'a>>) -> Self {
         Self {
+            id,
             cache: HashMap::new(),
             fallback: Some(fallback),
         }
@@ -137,11 +140,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
         let fallback = self.fallback.as_ref();
 
         self.cache.entry(key.clone()).or_insert_with(|| {
-            fallback
-                .and_then(|fallback| fallback.get(key))
-                .map_or_else(Tracked::new_empty, |value| {
-                    Tracked::new_borrowed(value.clone())
-                })
+            fallback.and_then(|fallback| fallback.get(key)).map_or_else(
+                || Tracked::new_owned_empty(self.id),
+                |value| Tracked::new_borrowed(value.clone(), self.id),
+            )
         })
     }
 }
@@ -154,7 +156,18 @@ where
 {
     fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
-            self.get_or_populate_tracked(&key).set(value)?;
+            if matches!(value, Value::None) {
+                self.get_or_populate_tracked(&key).delete()?;
+                continue;
+            }
+
+            // Update
+            if self.exists(&key) {
+                let tracked = self.get_or_populate_tracked(&key);
+                tracked.add_delta(value.delta())?;
+                continue;
+            }
+            self.cache.insert(key, Tracked::new_owned(value, self.id));
         }
         Ok(())
     }

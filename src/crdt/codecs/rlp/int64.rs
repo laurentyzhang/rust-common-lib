@@ -87,6 +87,7 @@ mod tests {
             delta: 25,
             limits: (-1_000, 1_000),
         };
+
         let clean = I64 {
             value: dirty.value,
             delta: 0,
