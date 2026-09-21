@@ -1,0 +1,48 @@
+use super::cache::VmCache;
+use crate::committer::traits::TransitionWriter;
+use crate::crdt::state::{Delta, Tracked, Value};
+use crate::store::traits::StoreError;
+
+pub struct VmCacheWriter<'a, K> {
+    vm_cache: VmCache<'a, K>,
+}
+
+impl<'a, K> VmCacheWriter<'a, K> {
+    pub fn new(vm_cache: VmCache<'a, K>) -> Self {
+        Self { vm_cache }
+    }
+
+    pub fn into_inner(self) -> VmCache<'a, K> {
+        self.vm_cache
+    }
+}
+
+/// A write-only store implementation for the execution cache.
+/// Useful for using the execution cache as the fallback store for another execution cache.
+impl<'a, K> TransitionWriter<K, Value<'static>> for VmCacheWriter<'a, K>
+where
+    K: std::hash::Hash + Eq + Clone,
+{
+    fn flush(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
+        for (key, value) in updates {
+            if matches!(value, Value::None) {
+                self.vm_cache.get_or_populate_tracked(&key).delete()?;
+                continue;
+            }
+
+            // Update
+            if self.vm_cache.exists(&key) {
+                let delta = value.delta();
+                if !matches!(delta, Delta::None) {
+                    let tracked = self.vm_cache.get_or_populate_tracked(&key);
+                    tracked.add_delta(delta)?;
+                    continue;
+                }
+            }
+            self.vm_cache
+                .cache
+                .insert(key, Tracked::new_owned(value, self.vm_cache.id));
+        }
+        Ok(())
+    }
+}

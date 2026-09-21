@@ -3,11 +3,13 @@
 pub mod delta;
 pub mod error;
 pub mod numeric;
+pub mod output;
 pub mod tracked;
 pub mod value;
 
 pub use delta::{Delta, DeltaOp};
 pub use error::{NumericError, StateError};
 pub use numeric::Numeric;
+pub use output::TransactionOutput;
 pub use tracked::Tracked;
 pub use value::Value;

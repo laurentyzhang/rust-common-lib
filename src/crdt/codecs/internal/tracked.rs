@@ -37,21 +37,21 @@ fn value_size(value: &Value<'_>) -> Result<u64> {
     }
 }
 
-fn validate(value: &Tracked<'_>) -> Result<()> {
+fn validate(value: &Tracked<Value<'_>>) -> Result<()> {
     if value.tombstone && matches!(value.value, Value::None) {
         return Err("tombstone must retain a value");
     }
     Ok(())
 }
 
-pub fn encoded_size(value: &Tracked<'_>) -> Result<u64> {
+pub fn encoded_size(value: &Tracked<Value<'_>>) -> Result<u64> {
     validate(value)?;
     HEADER_SIZE
         .checked_add(value_size(&value.value)?)
         .ok_or("encoded size overflow")
 }
 
-pub fn encode(value: &Tracked<'_>) -> Result<Vec<u8>> {
+pub fn encode(value: &Tracked<Value<'_>>) -> Result<Vec<u8>> {
     let size =
         usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
@@ -59,7 +59,7 @@ pub fn encode(value: &Tracked<'_>) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub fn encode_to(value: &Tracked<'_>, output: &mut [u8]) -> Result<u64> {
+pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
     let size = encoded_size(value)?;
     let size_usize = usize::try_from(size).map_err(|_| "encoded size exceeds usize::MAX")?;
     if (output.len() as u64) < size {
@@ -92,7 +92,7 @@ pub fn encode_to(value: &Tracked<'_>, output: &mut [u8]) -> Result<u64> {
     Ok(size)
 }
 
-pub fn decode(input: &[u8]) -> Result<Tracked<'static>> {
+pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
     let mut reader = Reader::new(input);
     let tag = reader.read_u8()?;
     let flags = reader.read_u8()?;
@@ -143,7 +143,7 @@ mod tests {
 
     use super::*;
 
-    fn tracked(value: Value<'static>) -> Tracked<'static> {
+    fn tracked(value: Value<'static>) -> Tracked<Value<'static>> {
         Tracked {
             id: 42,
             value,
@@ -157,7 +157,7 @@ mod tests {
         }
     }
 
-    fn assert_same(actual: &Tracked<'_>, expected: &Tracked<'_>) {
+    fn assert_same(actual: &Tracked<Value<'_>>, expected: &Tracked<Value<'_>>) {
         assert_eq!(actual.id, expected.id);
         assert!(actual.value == expected.value);
         assert_eq!(actual.reads, expected.reads);

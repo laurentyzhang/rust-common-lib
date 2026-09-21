@@ -3,6 +3,7 @@ use crate::crdt::state::Numeric;
 use crate::crdt::state::Value;
 use crate::crdt::state::{NumericError, StateError};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 #[derive(Clone, PartialEq)]
 pub struct I64 {
     pub(crate) value: i64,
@@ -34,6 +35,18 @@ impl I64 {
             delta: 0,
             limits: (lower, upper),
         })
+    }
+
+    pub fn delta_abs_u64(&self) -> u64 {
+        self.delta.unsigned_abs()
+    }
+
+    pub fn delta_abs_u256(&self) -> alloy_primitives::U256 {
+        alloy_primitives::U256::from(self.delta_abs_u64())
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        self.delta.cmp(&other.delta)
     }
 
     fn check_against_limits(lower: i64, upper: i64, value: i64) -> Result<(), StateError> {

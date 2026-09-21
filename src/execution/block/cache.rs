@@ -1,10 +1,10 @@
 use crate::collections;
 use crate::crdt::state::Value;
-use crate::store::traits::{FallbackStore, WriteOnlyStore};
+use crate::store::traits::FallbackStore;
 
 /// A cache for storing all state transitions within a block.
 pub struct BlockCache<'a, K> {
-    pub(super) cache: collections::shard_map::ShardMap<K, Value<'a>>,
+    pub(in crate::execution) cache: collections::shard_map::ShardMap<K, Value<'a>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
@@ -34,7 +34,7 @@ impl<'a, K> BlockCache<'a, K> {
 
 impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for BlockCache<'cache, K>
 where
-    K: std::hash::Hash + Eq,
+    K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,
 {
     fn contains_key(&self, key: &K) -> bool {
@@ -56,21 +56,6 @@ where
     }
 }
 
-impl<'a, K> WriteOnlyStore<K, Value<'a>> for BlockCache<'a, K>
-where
-    K: std::hash::Hash + Eq + Send + Sync,
-{
-    fn stage(
-        &mut self,
-        updates: Vec<(K, Value<'a>)>,
-    ) -> Result<(), crate::store::traits::StoreError> {
-        self.cache.apply_batch(updates);
-        Ok(())
-    }
-
-    fn commit(&mut self, _: Vec<(K, Value<'a>)>) {} // Place holder
-}
-
 #[cfg(test)]
-#[path = "block_cache_tests.rs"]
+#[path = "tests.rs"]
 mod block_cache_tests;

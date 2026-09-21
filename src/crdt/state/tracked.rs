@@ -1,9 +1,9 @@
 use super::{Delta, StateError, Value};
 use crate::store::traits::StoreError;
 
-pub struct Tracked<'a> {
+pub struct Tracked<T> {
     pub(crate) id: u64,
-    pub(crate) value: Value<'a>,
+    pub(crate) value: T,
     pub(crate) reads: u32,
     pub(crate) checks: u32, // Number of times the value has been checked for existence
     pub(crate) writes: u32,
@@ -13,7 +13,35 @@ pub struct Tracked<'a> {
     pub(crate) tombstone: bool,
 }
 
-impl<'a> Tracked<'a> {
+impl<T> Tracked<T> {
+    pub fn clone_with_value<U>(&self, value: U) -> Tracked<U> {
+        Tracked {
+            id: self.id,
+            value,
+            reads: self.reads,
+            checks: self.checks,
+            writes: self.writes,
+            deltas: self.deltas,
+            creates: self.creates,
+            is_new: self.is_new,
+            tombstone: self.tombstone,
+        }
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.writes == 0 && self.deltas == 0 && self.creates == 0 && !self.tombstone
+    }
+
+    pub fn is_tombstone(&self) -> bool {
+        self.tombstone
+    }
+
+    pub fn is_new(&self) -> bool {
+        self.is_new
+    }
+}
+
+impl<'a> Tracked<Value<'a>> {
     pub fn new_owned_empty(id: u64) -> Self {
         Self {
             id,
@@ -56,7 +84,7 @@ impl<'a> Tracked<'a> {
         }
     }
 
-    pub fn owned_clone(&self) -> Tracked<'static> {
+    pub fn owned_clone(&self) -> Tracked<Value<'static>> {
         Tracked {
             id: self.id,
             value: self.value.clone().into_owned(),
@@ -70,7 +98,7 @@ impl<'a> Tracked<'a> {
         }
     }
 
-    pub fn into_owned(self) -> Tracked<'static> {
+    pub fn into_owned(self) -> Tracked<Value<'static>> {
         Tracked {
             id: self.id,
             value: self.value.into_owned(),
@@ -155,10 +183,6 @@ impl<'a> Tracked<'a> {
         self.deltas > 0
     }
 
-    pub fn is_read_only(&self) -> bool {
-        self.writes == 0 && self.deltas == 0 && self.creates == 0 && !self.tombstone
-    }
-
     pub fn is_creation_cancelled(&self) -> bool {
         self.is_new() && self.is_tombstone()
     }
@@ -167,16 +191,8 @@ impl<'a> Tracked<'a> {
         !self.is_tombstone() && !self.is_none()
     }
 
-    pub fn is_tombstone(&self) -> bool {
-        self.tombstone
-    }
-
     pub fn is_none(&self) -> bool {
         matches!(self.value, Value::None)
-    }
-
-    pub fn is_new(&self) -> bool {
-        self.is_new
     }
 }
 

@@ -1,6 +1,7 @@
 use crate::crdt::state::{DeltaOp, Numeric, Value};
 use alloy_primitives::U256 as AlloyU256;
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::{NumericError, StateError};
@@ -29,6 +30,35 @@ impl From<U256> for Value<'static> {
 }
 
 impl U256 {
+    pub fn delta_abs_u64(&self) -> u64 {
+        let delta = self.delta_abs_u256();
+
+        if delta > AlloyU256::from(u64::MAX) {
+            u64::MAX
+        } else {
+            delta.as_limbs()[0]
+        }
+    }
+
+    pub fn delta_abs_u256(&self) -> AlloyU256 {
+        match &self.delta {
+            Some(DeltaOp::Add(delta)) | Some(DeltaOp::Sub(delta)) => *delta,
+            None => AlloyU256::ZERO,
+        }
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match (&self.delta, &other.delta) {
+            (Some(DeltaOp::Sub(left)), Some(DeltaOp::Sub(right))) => right.cmp(left),
+            (Some(DeltaOp::Sub(left)), _) if *left != AlloyU256::ZERO => Ordering::Less,
+            (_, Some(DeltaOp::Sub(right))) if *right != AlloyU256::ZERO => Ordering::Greater,
+            (Some(DeltaOp::Add(left)), Some(DeltaOp::Add(right))) => left.cmp(right),
+            (Some(DeltaOp::Add(left)), _) => left.cmp(&AlloyU256::ZERO),
+            (_, Some(DeltaOp::Add(right))) => AlloyU256::ZERO.cmp(right),
+            _ => Ordering::Equal,
+        }
+    }
+
     pub fn new(lower: AlloyU256, upper: AlloyU256) -> Result<Self, StateError> {
         Self::check_against_limits(lower, upper, AlloyU256::ZERO)?;
         Ok(Self {

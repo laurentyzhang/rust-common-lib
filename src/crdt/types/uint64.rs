@@ -1,6 +1,7 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, Value};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 #[derive(Clone, PartialEq)]
 pub struct U64 {
@@ -26,6 +27,29 @@ impl From<U64> for Value<'static> {
 }
 
 impl U64 {
+    pub fn delta_abs_u64(&self) -> u64 {
+        match &self.delta {
+            Some(DeltaOp::Add(delta)) | Some(DeltaOp::Sub(delta)) => *delta,
+            None => 0,
+        }
+    }
+
+    pub fn delta_abs_u256(&self) -> alloy_primitives::U256 {
+        alloy_primitives::U256::from(self.delta_abs_u64())
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match (&self.delta, &other.delta) {
+            (Some(DeltaOp::Sub(left)), Some(DeltaOp::Sub(right))) => right.cmp(left),
+            (Some(DeltaOp::Sub(left)), _) if *left != 0 => Ordering::Less,
+            (_, Some(DeltaOp::Sub(right))) if *right != 0 => Ordering::Greater,
+            (Some(DeltaOp::Add(left)), Some(DeltaOp::Add(right))) => left.cmp(right),
+            (Some(DeltaOp::Add(left)), _) => left.cmp(&0),
+            (_, Some(DeltaOp::Add(right))) => 0.cmp(right),
+            _ => Ordering::Equal,
+        }
+    }
+
     fn update_delta(&mut self, operation: DeltaOp<u64>) -> Result<&DeltaOp<u64>, StateError> {
         self.delta = Some(self.try_delta(&operation)?);
         Ok(self.delta.as_ref().unwrap())

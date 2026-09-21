@@ -1,6 +1,6 @@
-mod block_cache;
+mod block;
 mod error;
-mod vm_cache;
-pub use block_cache::BlockCache;
+mod vm;
+pub use block::{BlockCache, BlockCacheWriter};
 pub use error::Error;
-pub use vm_cache::VmCache;
+pub use vm::{VmCache, VmCacheWriter};

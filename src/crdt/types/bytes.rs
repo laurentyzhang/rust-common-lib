@@ -1,6 +1,7 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::{StateError, Value};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 #[derive(Clone, PartialEq, Default)]
 pub struct Bytes {
@@ -18,6 +19,15 @@ impl Bytes {
         Ok(Self {
             delta: Some(data.into_boxed_slice()),
         })
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match (self.delta.as_deref(), other.delta.as_deref()) {
+            (Some(left), Some(right)) => left.len().cmp(&right.len()).then_with(|| left.cmp(right)),
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+        }
     }
 }
 
@@ -64,6 +74,7 @@ impl CacheableCrdt<[u8], [u8]> for Bytes {
 mod tests {
     use super::Bytes;
     use crate::crdt::crdt::{CacheableCrdt, Crdt};
+    use std::cmp::Ordering;
 
     #[test]
     fn default_has_no_value_or_delta() {
@@ -126,5 +137,22 @@ mod tests {
 
         bytes.add_delta(&[4, 5]).expect("replace delta");
         assert_eq!(bytes.cache_weight(), base + 2);
+    }
+
+    #[test]
+    fn compare_uses_length_then_lexicographic_order() {
+        let short = Bytes::new(vec![b'z']).unwrap();
+        let long = Bytes::new(vec![b'a', b'a']).unwrap();
+        let left = Bytes::new(vec![b'a', b'b']).unwrap();
+        let right = Bytes::new(vec![b'a', b'c']).unwrap();
+        let no_delta = Bytes::default();
+
+        assert_eq!(short.compare(&long), Ordering::Less);
+        assert_eq!(left.compare(&right), Ordering::Less);
+        assert_eq!(right.compare(&left), Ordering::Greater);
+        assert_eq!(left.compare(&left), Ordering::Equal);
+        assert_eq!(left.compare(&no_delta), Ordering::Less);
+        assert_eq!(no_delta.compare(&left), Ordering::Greater);
+        assert_eq!(no_delta.compare(&no_delta), Ordering::Equal);
     }
 }

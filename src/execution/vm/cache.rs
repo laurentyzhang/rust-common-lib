@@ -1,15 +1,15 @@
-use super::Error;
 use crate::crdt::state::Delta;
+use crate::crdt::state::Value::Numeric;
 use crate::crdt::state::{Tracked, Value};
+use crate::execution::error::Error;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
-use crate::store::traits::WriteOnlyStore;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub struct VmCache<'a, K> {
     pub(super) id: u64,
-    pub(super) cache: HashMap<K, Tracked<'a>>,
+    pub(super) cache: HashMap<K, Tracked<Value<'a>>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
@@ -105,14 +105,19 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             .map_err(Error::from)
     }
 
-    pub fn drain(&mut self) -> (Vec<(K, Tracked<'static>)>, Vec<(K, Value<'static>)>)
+    pub fn drain(&mut self) -> (Vec<(K, Tracked<Value<'static>>)>, Vec<(K, Value<'static>)>)
     where
         K: Clone,
     {
-        let access_records: Vec<(K, Tracked<'static>)> = self
+        let access_records: Vec<(K, Tracked<Value<'static>>)> = self
             .cache
             .iter()
-            .map(|(key, tracked)| ((*key).clone(), tracked.owned_clone()))
+            .map(|(key, tracked)| {
+                if let Value::Numeric(_) = tracked.value() {
+                    return ((*key).clone(), tracked.owned_clone());
+                }
+                ((*key).clone(), tracked.clone_with_value(Value::None))
+            })
             .collect();
 
         let transitions: Vec<(K, Value<'static>)> = access_records
@@ -133,7 +138,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
-    fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<'a>
+    pub(super) fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<Value<'a>>
     where
         K: Clone,
     {
@@ -148,39 +153,11 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 }
 
-/// A write-only store implementation for the execution cache.
-/// Useful for using the execution cache as the fallback store for another execution cache.
-impl<'a, K> WriteOnlyStore<K, Value<'static>> for VmCache<'a, K>
-where
-    K: std::hash::Hash + Eq + Clone,
-{
-    fn stage(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
-        for (key, value) in updates {
-            if matches!(value, Value::None) {
-                self.get_or_populate_tracked(&key).delete()?;
-                continue;
-            }
-
-            // Update
-            if self.exists(&key) {
-                let tracked = self.get_or_populate_tracked(&key);
-                tracked.add_delta(value.delta())?;
-                continue;
-            }
-            self.cache.insert(key, Tracked::new_owned(value, self.id));
-        }
-        Ok(())
-    }
-
-    /// Apply local deltas for the supplied keys; incoming values are unused.
-    fn commit(&mut self, _: Vec<(K, Value<'static>)>) {}
-}
-
 /// VmCache as the fallback store for another VmCache,
 /// allowing for a layered caching mechanism.
 impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for VmCache<'cache, K>
 where
-    K: std::hash::Hash + Eq,
+    K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,
 {
     /// Check for a live value locally or in the fallback.
@@ -208,5 +185,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "vm_cache_test.rs"]
-mod vm_cache_test;
+#[path = "tests.rs"]
+mod tests;

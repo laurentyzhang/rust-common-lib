@@ -22,3 +22,7 @@ harness = false
 [[bench]]
 name = "hasher_comparison"
 harness = false
+
+[[bench]]
+name = "accumulator_sorting"
+harness = false

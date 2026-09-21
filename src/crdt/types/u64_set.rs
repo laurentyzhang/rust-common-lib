@@ -2,6 +2,7 @@ use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
 use crate::crdt::state::{DeltaOp, StateError, Value};
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 #[derive(Clone, PartialEq)]
 pub struct U64Set {
@@ -27,6 +28,15 @@ impl From<U64Set> for Value<'static> {
 impl U64Set {
     pub fn new() -> Result<Self, StateError> {
         Ok(Self::default())
+    }
+
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match (&self.delta, &other.delta) {
+            (Some(left), Some(right)) => left.len().cmp(&right.len()),
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+        }
     }
 }
 
@@ -93,6 +103,7 @@ mod tests {
     use super::U64Set;
     use crate::crdt::crdt::Crdt;
     use crate::crdt::state::DeltaOp;
+    use std::cmp::Ordering;
 
     #[test]
     fn default_is_empty() {
@@ -163,5 +174,25 @@ mod tests {
         assert_eq!(entries.get(&20), Some(&20));
         assert_eq!(entries.get(&30), Some(&30));
         assert_eq!(entries.get(&40), None);
+    }
+
+    #[test]
+    fn compare_uses_operation_count_and_places_none_last() {
+        let mut one_operation = U64Set::default();
+        one_operation.add_delta(&[DeltaOp::Add(1)]).unwrap();
+
+        let mut two_operations = U64Set::default();
+        two_operations
+            .add_delta(&[DeltaOp::Add(1), DeltaOp::Sub(2)])
+            .unwrap();
+
+        let no_delta = U64Set::default();
+
+        assert_eq!(one_operation.compare(&two_operations), Ordering::Less);
+        assert_eq!(two_operations.compare(&one_operation), Ordering::Greater);
+        assert_eq!(one_operation.compare(&one_operation), Ordering::Equal);
+        assert_eq!(one_operation.compare(&no_delta), Ordering::Less);
+        assert_eq!(no_delta.compare(&one_operation), Ordering::Greater);
+        assert_eq!(no_delta.compare(&no_delta), Ordering::Equal);
     }
 }

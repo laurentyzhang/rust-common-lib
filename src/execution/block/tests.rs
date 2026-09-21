@@ -1,10 +1,36 @@
-use super::BlockCache;
+use crate::committer::traits::TransitionWriter;
+use crate::execution::{BlockCache, BlockCacheWriter};
+
 use crate::crdt::{
     state::{Numeric, Value},
     uint64::U64,
 };
-use crate::store::cached::CachedStore;
-use crate::store::traits::{FallbackStore, WriteOnlyStore};
+use crate::store::traits::FallbackStore;
+use crate::store::{CachedStoreWriter, cache::CachedStore};
+
+fn write_cached<'a, K, V>(
+    store: CachedStore<'a, K, V>,
+    updates: Vec<(K, V)>,
+) -> CachedStore<'a, K, V>
+where
+    K: Eq + std::hash::Hash,
+{
+    let mut writer = CachedStoreWriter::new(store);
+    writer.flush(updates).unwrap();
+    writer.into_inner()
+}
+
+fn write_block<'a, K>(
+    cache: BlockCache<'a, K>,
+    updates: Vec<(K, Value<'static>)>,
+) -> BlockCache<'a, K>
+where
+    K: Eq + std::hash::Hash + Clone + Send,
+{
+    let mut writer = BlockCacheWriter::new(cache);
+    writer.flush(updates).unwrap();
+    writer.into_inner()
+}
 
 fn numeric_u64(number: u64) -> Value<'static> {
     Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
@@ -18,23 +44,23 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     let original = numeric_u64(17);
     let replacement = numeric_u64(42);
     let mut fallback = CachedStore::new(4, None);
-    fallback.commit(vec![(7, original.clone())]);
+    fallback = write_cached(fallback, vec![(7, original.clone())]);
 
     let mut cache = BlockCache::new_with_fallback(Some(&fallback));
     assert!(cache.contains_key(&7));
     assert!((cache.get(&7)) == Some(&original));
 
-    cache.stage(vec![(7, replacement.clone())]).unwrap();
+    cache = write_block(cache, vec![(7, replacement.clone())]);
     assert!(cache.contains_key(&7));
     assert!((cache.get(&7)) == Some(&replacement));
     assert!((fallback.get(&7)) == Some(&original));
 
-    cache.stage(vec![(7, Value::None)]).unwrap();
+    cache = write_block(cache, vec![(7, Value::None)]);
     assert!(!cache.contains_key(&7));
     assert!(cache.get(&7).is_none());
     assert!((fallback.get(&7)) == Some(&original));
 
-    cache.stage(vec![(7, replacement.clone())]).unwrap();
+    cache = write_block(cache, vec![(7, replacement.clone())]);
     assert!(cache.contains_key(&7));
     assert!((cache.get(&7)) == Some(&replacement));
 }
@@ -44,9 +70,7 @@ fn staged_updates_are_available_to_the_cache_even_without_fallback() {
     let mut cache = BlockCache::new();
     let value = numeric_u64(99);
 
-    cache
-        .stage(vec![(1, value.clone()), (2, numeric_u64(3))])
-        .unwrap();
+    cache = write_block(cache, vec![(1, value.clone()), (2, numeric_u64(3))]);
 
     assert!(cache.contains_key(&1));
     assert!(cache.contains_key(&2));

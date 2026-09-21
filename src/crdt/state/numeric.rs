@@ -39,6 +39,22 @@ impl<'a> Numeric<'a> {
         }
     }
 
+    pub fn delta_abs_u64(&self) -> u64 {
+        match self {
+            Self::I64(value) => value.delta_abs_u64(),
+            Self::U64(value) => value.delta_abs_u64(),
+            Self::U256(value) => value.delta_abs_u64(),
+        }
+    }
+
+    pub fn delta_abs_u256(&self) -> alloy_primitives::U256 {
+        match self {
+            Self::I64(value) => value.delta_abs_u256(),
+            Self::U64(value) => value.delta_abs_u256(),
+            Self::U256(value) => value.delta_abs_u256(),
+        }
+    }
+
     pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
         match (self, delta) {
             (_, Delta::None) => Ok(()),
