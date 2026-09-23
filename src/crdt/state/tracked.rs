@@ -10,10 +10,19 @@ pub struct Tracked<T> {
     pub(crate) deltas: u32,
     pub(crate) creates: u32, // Indicates if the tracked value is newly created and not yet committed
     pub(crate) is_new: bool,
+    pub(crate) preexisting: bool,
     pub(crate) tombstone: bool,
 }
 
 impl<T> Tracked<T> {
+    pub fn value(&self) -> &T {
+        &self.value
+    }
+
+    pub fn into_value(self) -> T {
+        self.value
+    }
+
     pub fn clone_with_value<U>(&self, value: U) -> Tracked<U> {
         Tracked {
             id: self.id,
@@ -24,6 +33,7 @@ impl<T> Tracked<T> {
             deltas: self.deltas,
             creates: self.creates,
             is_new: self.is_new,
+            preexisting: self.preexisting,
             tombstone: self.tombstone,
         }
     }
@@ -52,6 +62,7 @@ impl<'a> Tracked<Value<'a>> {
             deltas: 0,
             creates: 0,
             is_new: false,
+            preexisting: false,
             tombstone: false,
         }
     }
@@ -66,6 +77,7 @@ impl<'a> Tracked<Value<'a>> {
             deltas: 0,
             creates: 1,
             is_new: true,
+            preexisting: false,
             tombstone: false,
         }
     }
@@ -80,6 +92,7 @@ impl<'a> Tracked<Value<'a>> {
             deltas: 0,
             creates: 0,
             is_new: false,
+            preexisting: true,
             tombstone: false,
         }
     }
@@ -95,6 +108,7 @@ impl<'a> Tracked<Value<'a>> {
             tombstone: self.tombstone,
             creates: self.creates,
             is_new: self.is_new,
+            preexisting: self.preexisting,
         }
     }
 
@@ -109,12 +123,8 @@ impl<'a> Tracked<Value<'a>> {
             tombstone: self.tombstone,
             creates: self.creates,
             is_new: self.is_new,
+            preexisting: self.preexisting,
         }
-    }
-
-    /// Borrow the underlying value without recording a read.
-    pub fn value(&self) -> &Value<'a> {
-        &self.value
     }
 
     /// Replace the value while preserving access history and recording a write.
@@ -229,15 +239,21 @@ mod tests {
 
     #[test]
     fn constructors_record_id_and_origin() {
+        let empty = Tracked::new_owned_empty(10);
+        assert!(!empty.preexisting);
+
         let owned = Tracked::new_owned(U64::default().into(), 11);
         assert_eq!(owned.id, 11);
         assert!(owned.is_new());
+        assert!(!owned.preexisting);
         assert_eq!(owned.creates, 1);
 
         let value: Value<'static> = U64::default().into();
         let borrowed = Tracked::new_borrowed(Value::from_borrowed(&value), 12);
         assert_eq!(borrowed.id, 12);
         assert!(!borrowed.is_new());
+        assert!(borrowed.preexisting);
+        assert!(borrowed.clone_with_value(Value::None).preexisting);
         assert_eq!(borrowed.creates, 0);
     }
 
@@ -261,9 +277,15 @@ mod tests {
 
     #[test]
     fn ownership_conversions_preserve_id() {
-        let tracked = Tracked::new_owned(U64::default().into(), 42);
+        let value: Value<'static> = U64::default().into();
+        let tracked = Tracked::new_borrowed(Value::from_borrowed(&value), 42);
+        let cloned = tracked.owned_clone();
 
-        assert_eq!(tracked.owned_clone().id, 42);
-        assert_eq!(tracked.into_owned().id, 42);
+        assert_eq!(cloned.id, 42);
+        assert!(cloned.preexisting);
+
+        let owned = tracked.into_owned();
+        assert_eq!(owned.id, 42);
+        assert!(owned.preexisting);
     }
 }

@@ -13,6 +13,7 @@ const U64_SET: u8 = 5;
 
 const IS_NEW: u8 = 1;
 const TOMBSTONE: u8 = 2;
+const PREEXISTING: u8 = 4;
 const HEADER_SIZE: u64 = 30;
 
 fn value_tag(value: &Value<'_>) -> u8 {
@@ -68,7 +69,11 @@ pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
 
     let mut writer = Writer::new(output);
     writer.write_u8(value_tag(&value.value))?;
-    writer.write_u8(u8::from(value.is_new) * IS_NEW | u8::from(value.tombstone) * TOMBSTONE)?;
+    writer.write_u8(
+        u8::from(value.is_new) * IS_NEW
+            | u8::from(value.tombstone) * TOMBSTONE
+            | u8::from(value.preexisting) * PREEXISTING,
+    )?;
     writer.write_u64(value.id)?;
     writer.write_u32(value.reads)?;
     writer.write_u32(value.checks)?;
@@ -96,7 +101,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
     let mut reader = Reader::new(input);
     let tag = reader.read_u8()?;
     let flags = reader.read_u8()?;
-    if flags & !(IS_NEW | TOMBSTONE) != 0 {
+    if flags & !(IS_NEW | TOMBSTONE | PREEXISTING) != 0 {
         return Err("invalid Tracked flags");
     }
 
@@ -129,6 +134,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
         deltas,
         creates,
         is_new: flags & IS_NEW != 0,
+        preexisting: flags & PREEXISTING != 0,
         tombstone: flags & TOMBSTONE != 0,
     };
     validate(&tracked)?;
@@ -153,6 +159,7 @@ mod tests {
             deltas: 4,
             creates: 5,
             is_new: true,
+            preexisting: false,
             tombstone: false,
         }
     }
@@ -166,6 +173,7 @@ mod tests {
         assert_eq!(actual.deltas, expected.deltas);
         assert_eq!(actual.creates, expected.creates);
         assert_eq!(actual.is_new, expected.is_new);
+        assert_eq!(actual.preexisting, expected.preexisting);
         assert_eq!(actual.tombstone, expected.tombstone);
     }
 
@@ -193,6 +201,9 @@ mod tests {
     #[test]
     fn tombstone_round_trips_with_retained_value() {
         let mut expected = tracked(U64::new(0, 100).unwrap().into());
+        expected.creates = 0;
+        expected.is_new = false;
+        expected.preexisting = true;
         expected.tombstone = true;
 
         assert_same(&decode(&encode(&expected).unwrap()).unwrap(), &expected);
@@ -214,7 +225,7 @@ mod tests {
         );
 
         let mut invalid_flags = encoded;
-        invalid_flags[1] = 4;
+        invalid_flags[1] = 8;
         assert_eq!(decode(&invalid_flags).err(), Some("invalid Tracked flags"));
     }
 

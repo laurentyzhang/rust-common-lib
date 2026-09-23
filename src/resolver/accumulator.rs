@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::comparison::ComparableNumeric;
-use crate::crdt::state::{Numeric, TransactionOutput};
+use crate::crdt::state::{Numeric, Tracked, TransactionOutput};
 
 pub struct Accumulator<K> {
-    entries: Vec<Option<Numeric<'static>>>,
+    entries: Vec<Option<Tracked<Numeric<'static>>>>,
     by_key: HashMap<K, Vec<(u64, usize)>>,
 }
 
@@ -16,7 +16,7 @@ impl<K> Accumulator<K> {
         }
     }
 
-    pub fn import(&mut self, numeric_trans: TransactionOutput<K, Numeric<'static>>)
+    pub fn import(&mut self, numeric_trans: TransactionOutput<K, Tracked<Numeric<'static>>>)
     where
         K: std::cmp::Eq + std::hash::Hash,
     {
@@ -31,7 +31,7 @@ impl<K> Accumulator<K> {
     }
 
     pub fn accumulate(&mut self) -> Vec<u64> {
-        self.sort_entries();
+        self.sort_transactions();
 
         let mut rejected = HashSet::new();
 
@@ -44,7 +44,7 @@ impl<K> Accumulator<K> {
             };
 
             let first_ind = key_entries[first].1;
-            let mut accumulated = self.entries[first_ind].take().unwrap();
+            let mut accumulated = self.entries[first_ind].take().unwrap().into_value();
 
             key_entries
                 .iter()
@@ -54,7 +54,7 @@ impl<K> Accumulator<K> {
                         return;
                     };
 
-                    if accumulated.add_delta(&value.delta()).is_err() {
+                    if accumulated.add_delta(&value.value().delta()).is_err() {
                         rejected.insert(*tx_id);
                     }
                 });
@@ -65,15 +65,19 @@ impl<K> Accumulator<K> {
         rejected
     }
 
-    fn sort_entries(&mut self) {
+    fn sort_transactions(&mut self) {
         let entries = &self.entries;
 
         self.by_key.values_mut().for_each(|key_entries| {
             key_entries.sort_unstable_by(|(left_tx_id, left_ind), (right_tx_id, right_ind)| {
-                let left =
-                    ComparableNumeric::new(entries[*left_ind].as_ref().unwrap(), *left_tx_id);
-                let right =
-                    ComparableNumeric::new(entries[*right_ind].as_ref().unwrap(), *right_tx_id);
+                let left = ComparableNumeric::new(
+                    entries[*left_ind].as_ref().unwrap().value(),
+                    *left_tx_id,
+                );
+                let right = ComparableNumeric::new(
+                    entries[*right_ind].as_ref().unwrap().value(),
+                    *right_tx_id,
+                );
 
                 left.compare(&right)
             });
@@ -84,7 +88,12 @@ impl<K> Accumulator<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crdt::{Crdt, int64::I64, state::DeltaOp, u256::U256};
+    use crate::crdt::{
+        Crdt,
+        int64::I64,
+        state::{DeltaOp, Value},
+        u256::U256,
+    };
     use std::borrow::Cow;
 
     fn u256_value(delta: alloy_primitives::U256) -> Numeric<'static> {
@@ -112,11 +121,19 @@ mod tests {
     fn execution<K>(
         tx_id: u64,
         records: Vec<(K, Numeric<'static>)>,
-    ) -> TransactionOutput<K, Numeric<'static>> {
+    ) -> TransactionOutput<K, Tracked<Numeric<'static>>> {
         TransactionOutput {
             tx_id,
             gas_used: 0,
-            records,
+            records: records
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        key,
+                        Tracked::<Value<'static>>::new_owned_empty(tx_id).clone_with_value(value),
+                    )
+                })
+                .collect(),
         }
     }
 
