@@ -1,7 +1,7 @@
 use rayon::prelude::*;
 use std::collections::HashMap;
 
-use crate::crdt::state::{Numeric, Tracked, TransactionOutput, Value};
+use crate::crdt::state::{Marker, Numeric, Tracked, TransactionOutput, Value};
 
 pub struct ConflictDetector<K> {
     numerics_trans: Vec<TransactionOutput<K, Tracked<Numeric<'static>>>>,
@@ -34,10 +34,10 @@ impl<K> ConflictDetector<K> {
         let mut numerics_trans = Vec::new();
 
         for (key, mut tracked) in records {
-            if matches!(tracked.value, Value::Numeric(_)) {
-                if let Value::Numeric(value) = std::mem::replace(&mut tracked.value, Value::None) {
-                    numerics_trans.push((key.clone(), tracked.clone_with_value(value)));
-                }
+            if let Value::Numeric(value) =
+                std::mem::replace(&mut tracked.value, Value::Marker(Marker::Stripped))
+            {
+                numerics_trans.push((key.clone(), tracked.clone_with_values(value.clone(), value)));
             }
 
             self.transitions
@@ -59,7 +59,10 @@ impl<K> ConflictDetector<K> {
         }
     }
 
-    pub fn detect_conflicts(&mut self) {
+    pub fn detect_conflicts(&mut self)
+    where
+        K: Sync,
+    {
         self.sort_transactions();
     }
 
@@ -73,24 +76,20 @@ impl<K> ConflictDetector<K> {
                 let right = &right.value;
 
                 (
-                    left.preexisting,
-                    left.is_new,
+                    left.is_preexisting(),
+                    left.is_created(),
                     left.writes,
-                    left.creates,
-                    left.tombstone,
                     left.deltas,
-                    left.checks,
+                    left.existence_checks,
                     left.reads,
                     left.id,
                 )
                     .cmp(&(
-                        right.preexisting,
-                        right.is_new,
+                        right.is_preexisting(),
+                        right.is_created(),
                         right.writes,
-                        right.creates,
-                        right.tombstone,
                         right.deltas,
-                        right.checks,
+                        right.existence_checks,
                         right.reads,
                         right.id,
                     ))

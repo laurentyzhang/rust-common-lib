@@ -40,4 +40,14 @@ where
                 .and_then(|fallback| (**fallback).get(key)),
         }
     }
+
+    fn get_raw(&self, key: &K) -> Option<&V> {
+        match self.cache.peek(key) {
+            Some(value) => Some(value),
+            None => self
+                .fallback
+                .as_ref()
+                .and_then(|fallback| (**fallback).get_raw(key)),
+        }
+    }
 }

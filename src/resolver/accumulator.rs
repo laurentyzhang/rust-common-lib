@@ -130,7 +130,8 @@ mod tests {
                 .map(|(key, value)| {
                     (
                         key,
-                        Tracked::<Value<'static>>::new_owned_empty(tx_id).clone_with_value(value),
+                        Tracked::<Value<'static>>::new_owned_empty(tx_id)
+                            .clone_with_values(value.clone(), value),
                     )
                 })
                 .collect(),
@@ -158,7 +159,7 @@ mod tests {
             90,
             vec![(1, u256_value(saturated + alloy_primitives::U256::from(1)))],
         ));
-        accumulator.sort_entries();
+        accumulator.sort_transactions();
 
         let tx_ids = accumulator.by_key[&1]
             .iter()
@@ -208,7 +209,7 @@ mod tests {
             )],
         ));
 
-        accumulator.sort_entries();
+        accumulator.sort_transactions();
 
         let tx_ids = accumulator.by_key[&1]
             .iter()

@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::crdt::state::Value;
+use crate::crdt::state::{Marker, Value};
 use crate::store::traits::FallbackStore;
 
 /// A cache for storing all state transitions within a block.
@@ -39,7 +39,9 @@ where
 {
     fn contains_key(&self, key: &K) -> bool {
         match self.cache.get(key) {
-            Some(Value::None) => false,
+            Some(Value::Marker(
+                Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped,
+            )) => false,
             Some(_) => true,
             None => self
                 .fallback
@@ -49,9 +51,18 @@ where
 
     fn get(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
-            Some(Value::None) => None,
+            Some(Value::Marker(
+                Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped,
+            )) => None,
             Some(value) => Some(value),
             None => self.fallback.and_then(|fallback| fallback.get(key)),
+        }
+    }
+
+    fn get_raw(&self, key: &K) -> Option<&Value<'value>> {
+        match self.cache.get(key) {
+            Some(value) => Some(value),
+            None => self.fallback.and_then(|fallback| fallback.get_raw(key)),
         }
     }
 }

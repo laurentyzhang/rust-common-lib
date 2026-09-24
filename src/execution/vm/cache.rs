@@ -1,6 +1,5 @@
 use crate::crdt::state::Delta;
-use crate::crdt::state::Value::Numeric;
-use crate::crdt::state::{Tracked, Value};
+use crate::crdt::state::{Marker, Tracked, Value};
 use crate::execution::error::Error;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
@@ -59,8 +58,11 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     where
         K: Clone,
     {
-        if matches!(value, Value::None) {
-            return Err(StoreError::ValueCannotBeNone.into());
+        if matches!(
+            value,
+            Value::Marker(Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped)
+        ) {
+            return Err(StoreError::ValueCannotBeStripped.into());
         }
 
         let tracked = self.get_or_populate_tracked(key);
@@ -89,8 +91,14 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             None => self
                 .fallback
                 .as_ref()
-                .map_or(false, |fallback: &&dyn FallbackStore<K, Value<'a>>| {
-                    (**fallback).contains_key(key)
+                .and_then(|fallback: &&dyn FallbackStore<K, Value<'a>>| (**fallback).get_raw(key))
+                .is_some_and(|value| {
+                    !matches!(
+                        value,
+                        Value::Marker(
+                            Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped
+                        )
+                    )
                 }),
         }
     }
@@ -109,27 +117,36 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     where
         K: Clone,
     {
+        let transitions: Vec<(K, Value<'static>)> = self
+            .cache
+            .iter()
+            .filter(|(_, tracked)| !tracked.is_read_only() && !tracked.is_creation_cancelled())
+            .map(|(key, tracked)| ((*key).clone(), tracked.value().applied().into_owned()))
+            .collect();
+
         let access_records: Vec<(K, Tracked<Value<'static>>)> = self
             .cache
             .iter()
             .map(|(key, tracked)| {
-                if let Value::Numeric(_) = tracked.value() {
-                    return ((*key).clone(), tracked.owned_clone());
-                }
-                ((*key).clone(), tracked.clone_with_value(Value::None))
-            })
-            .collect();
-
-        let transitions: Vec<(K, Value<'static>)> = access_records
-            .iter()
-            .filter(|(_, tracked)| !tracked.is_read_only() && !tracked.is_creation_cancelled())
-            .map(|(key, tracked)| {
-                let value = if tracked.is_tombstone() {
-                    Value::None
-                } else {
-                    tracked.value().applied().into_owned()
+                let strip_original = |value: &Value<'_>| match value {
+                    Value::Marker(Marker::None) => Value::Marker(Marker::None),
+                    Value::Marker(Marker::Missing) => Value::Marker(Marker::Missing),
+                    _ => Value::Marker(Marker::Stripped),
                 };
-                ((*key).clone(), value)
+                let strip_value = |value: &Value<'_>| match value {
+                    Value::Numeric(_) => value.clone().into_owned(),
+                    Value::Marker(Marker::None) => Value::Marker(Marker::None),
+                    Value::Marker(Marker::Missing) => Value::Marker(Marker::Missing),
+                    Value::Marker(Marker::Deleted) => Value::Marker(Marker::Deleted),
+                    _ => Value::Marker(Marker::Stripped),
+                };
+                (
+                    (*key).clone(),
+                    tracked.clone_with_values(
+                        strip_original(tracked.original()),
+                        strip_value(tracked.value()),
+                    ),
+                )
             })
             .collect();
 
@@ -145,10 +162,12 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
         let fallback = self.fallback.as_ref();
 
         self.cache.entry(key.clone()).or_insert_with(|| {
-            fallback.and_then(|fallback| fallback.get(key)).map_or_else(
-                || Tracked::new_owned_empty(self.id),
-                |value| Tracked::new_borrowed(value.clone(), self.id),
-            )
+            fallback
+                .and_then(|fallback| fallback.get_raw(key))
+                .map_or_else(
+                    || Tracked::new_owned_empty(self.id),
+                    |value| Tracked::new_borrowed(value, self.id),
+                )
         })
     }
 }
@@ -165,7 +184,7 @@ where
         self.exists(key)
     }
 
-    /// Read without tracking; local tombstones hide fallback values.
+    /// Read without tracking; local deletions hide fallback values.
     fn get(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
             Some(tracked) => {
@@ -180,6 +199,16 @@ where
                 .fallback
                 .as_ref()
                 .and_then(|fallback| fallback.get(key)),
+        }
+    }
+
+    fn get_raw(&self, key: &K) -> Option<&Value<'value>> {
+        match self.cache.get(key) {
+            Some(tracked) => Some(tracked.value()),
+            None => self
+                .fallback
+                .as_ref()
+                .and_then(|fallback| fallback.get_raw(key)),
         }
     }
 }

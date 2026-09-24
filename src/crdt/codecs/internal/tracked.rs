@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::crdt::state::{Numeric, Tracked, Value};
+use crate::crdt::state::{Marker, Numeric, Tracked, Value};
 
 use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
 
@@ -10,26 +10,31 @@ const I64: u8 = 2;
 const U64: u8 = 3;
 const U256: u8 = 4;
 const U64_SET: u8 = 5;
+const DELETED: u8 = 6;
+const DEFAULT: u8 = 7;
+const STRIPPED: u8 = 8;
+const MISSING: u8 = 9;
 
-const IS_NEW: u8 = 1;
-const TOMBSTONE: u8 = 2;
-const PREEXISTING: u8 = 4;
-const HEADER_SIZE: u64 = 30;
+const HEADER_SIZE: u64 = 34;
 
 fn value_tag(value: &Value<'_>) -> u8 {
     match value {
-        Value::None => NONE,
+        Value::Marker(Marker::None) => NONE,
         Value::Bytes(_) => BYTES,
         Value::Numeric(Numeric::I64(_)) => I64,
         Value::Numeric(Numeric::U64(_)) => U64,
         Value::Numeric(Numeric::U256(_)) => U256,
         Value::U64Set(_) => U64_SET,
+        Value::Marker(Marker::Deleted) => DELETED,
+        Value::Marker(Marker::Default) => DEFAULT,
+        Value::Marker(Marker::Stripped) => STRIPPED,
+        Value::Marker(Marker::Missing) => MISSING,
     }
 }
 
 fn value_size(value: &Value<'_>) -> Result<u64> {
     match value {
-        Value::None => Ok(0),
+        Value::Marker(_) => Ok(0),
         Value::Bytes(value) => bytes::encoded_size(value),
         Value::Numeric(Numeric::I64(value)) => int64::encoded_size(value),
         Value::Numeric(Numeric::U64(value)) => uint64::encoded_size(value),
@@ -38,17 +43,23 @@ fn value_size(value: &Value<'_>) -> Result<u64> {
     }
 }
 
-fn validate(value: &Tracked<Value<'_>>) -> Result<()> {
-    if value.tombstone && matches!(value.value, Value::None) {
-        return Err("tombstone must retain a value");
+fn encode_value_to(value: &Value<'_>, output: &mut [u8]) -> Result<u64> {
+    match value {
+        Value::Marker(_) => Ok(0),
+        Value::Bytes(value) => bytes::encode_to(value, output),
+        Value::Numeric(Numeric::I64(value)) => int64::encode_to(value, output),
+        Value::Numeric(Numeric::U64(value)) => uint64::encode_to(value, output),
+        Value::Numeric(Numeric::U256(value)) => u256::encode_to(value, output),
+        Value::U64Set(value) => u64_set::encode_to(value, output),
     }
-    Ok(())
 }
 
 pub fn encoded_size(value: &Tracked<Value<'_>>) -> Result<u64> {
-    validate(value)?;
+    let original_size = value_size(&value.original)?;
+    let value_size = value_size(&value.value)?;
     HEADER_SIZE
-        .checked_add(value_size(&value.value)?)
+        .checked_add(original_size)
+        .and_then(|size| size.checked_add(value_size))
         .ok_or("encoded size overflow")
 }
 
@@ -68,30 +79,24 @@ pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
     }
 
     let mut writer = Writer::new(output);
+    let original_size = value_size(&value.original)?;
+    writer.write_u8(value_tag(&value.original))?;
     writer.write_u8(value_tag(&value.value))?;
-    writer.write_u8(
-        u8::from(value.is_new) * IS_NEW
-            | u8::from(value.tombstone) * TOMBSTONE
-            | u8::from(value.preexisting) * PREEXISTING,
-    )?;
+    writer.write_u64(original_size)?;
     writer.write_u64(value.id)?;
     writer.write_u32(value.reads)?;
-    writer.write_u32(value.checks)?;
+    writer.write_u32(value.existence_checks)?;
     writer.write_u32(value.writes)?;
     writer.write_u32(value.deltas)?;
-    writer.write_u32(value.creates)?;
     let header_size = writer.finish();
 
     let payload = &mut output[header_size..size_usize];
-    let written = match &value.value {
-        Value::None => 0,
-        Value::Bytes(value) => bytes::encode_to(value, payload)?,
-        Value::Numeric(Numeric::I64(value)) => int64::encode_to(value, payload)?,
-        Value::Numeric(Numeric::U64(value)) => uint64::encode_to(value, payload)?,
-        Value::Numeric(Numeric::U256(value)) => u256::encode_to(value, payload)?,
-        Value::U64Set(value) => u64_set::encode_to(value, payload)?,
-    };
-    if HEADER_SIZE + written != size {
+    let original_size_usize =
+        usize::try_from(original_size).map_err(|_| "encoded size exceeds usize::MAX")?;
+    let (original_payload, value_payload) = payload.split_at_mut(original_size_usize);
+    let original_written = encode_value_to(&value.original, original_payload)?;
+    let value_written = encode_value_to(&value.value, value_payload)?;
+    if HEADER_SIZE + original_written + value_written != size {
         return Err("encoded size mismatch");
     }
     Ok(size)
@@ -99,46 +104,55 @@ pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
 
 pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
     let mut reader = Reader::new(input);
-    let tag = reader.read_u8()?;
-    let flags = reader.read_u8()?;
-    if flags & !(IS_NEW | TOMBSTONE | PREEXISTING) != 0 {
-        return Err("invalid Tracked flags");
-    }
-
+    let original_tag = reader.read_u8()?;
+    let value_tag = reader.read_u8()?;
+    let original_size = reader.read_u64()?;
     let id = reader.read_u64()?;
     let reads = reader.read_u32()?;
-    let checks = reader.read_u32()?;
+    let existence_checks = reader.read_u32()?;
     let writes = reader.read_u32()?;
     let deltas = reader.read_u32()?;
-    let creates = reader.read_u32()?;
     let payload = reader.read_bytes(reader.remaining())?;
     reader.finish()?;
 
+    let original_size =
+        usize::try_from(original_size).map_err(|_| "encoded size exceeds usize::MAX")?;
+    if original_size > payload.len() {
+        return Err("invalid original value size");
+    }
+    let (original_payload, value_payload) = payload.split_at(original_size);
+    let original = decode_value(original_tag, original_payload)?;
+    let value = decode_value(value_tag, value_payload)?;
+
+    let tracked = Tracked {
+        id,
+        original,
+        value,
+        reads,
+        existence_checks,
+        writes,
+        deltas,
+    };
+    Ok(tracked)
+}
+
+fn decode_value(tag: u8, payload: &[u8]) -> Result<Value<'static>> {
     let value = match tag {
-        NONE if payload.is_empty() => Value::None,
+        NONE if payload.is_empty() => Value::Marker(Marker::None),
         NONE => return Err("trailing bytes"),
         BYTES => Value::Bytes(Cow::Owned(bytes::decode(payload)?)),
         I64 => Value::Numeric(Numeric::I64(Cow::Owned(int64::decode(payload)?))),
         U64 => Value::Numeric(Numeric::U64(Cow::Owned(uint64::decode(payload)?))),
         U256 => Value::Numeric(Numeric::U256(Cow::Owned(u256::decode(payload)?))),
         U64_SET => Value::U64Set(Cow::Owned(u64_set::decode(payload)?)),
+        DELETED if payload.is_empty() => Value::Marker(Marker::Deleted),
+        DEFAULT if payload.is_empty() => Value::Marker(Marker::Default),
+        STRIPPED if payload.is_empty() => Value::Marker(Marker::Stripped),
+        MISSING if payload.is_empty() => Value::Marker(Marker::Missing),
+        DELETED | DEFAULT | STRIPPED | MISSING => return Err("trailing bytes"),
         _ => return Err("invalid Tracked value tag"),
     };
-
-    let tracked = Tracked {
-        id,
-        value,
-        reads,
-        checks,
-        writes,
-        deltas,
-        creates,
-        is_new: flags & IS_NEW != 0,
-        preexisting: flags & PREEXISTING != 0,
-        tombstone: flags & TOMBSTONE != 0,
-    };
-    validate(&tracked)?;
-    Ok(tracked)
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -149,38 +163,33 @@ mod tests {
 
     use super::*;
 
-    fn tracked(value: Value<'static>) -> Tracked<Value<'static>> {
+    fn tracked(original: Value<'static>, value: Value<'static>) -> Tracked<Value<'static>> {
         Tracked {
             id: 42,
+            original,
             value,
             reads: 1,
-            checks: 2,
+            existence_checks: 2,
             writes: 3,
             deltas: 4,
-            creates: 5,
-            is_new: true,
-            preexisting: false,
-            tombstone: false,
         }
     }
 
     fn assert_same(actual: &Tracked<Value<'_>>, expected: &Tracked<Value<'_>>) {
         assert_eq!(actual.id, expected.id);
+        assert!(actual.original == expected.original);
         assert!(actual.value == expected.value);
         assert_eq!(actual.reads, expected.reads);
-        assert_eq!(actual.checks, expected.checks);
+        assert_eq!(actual.existence_checks, expected.existence_checks);
         assert_eq!(actual.writes, expected.writes);
         assert_eq!(actual.deltas, expected.deltas);
-        assert_eq!(actual.creates, expected.creates);
-        assert_eq!(actual.is_new, expected.is_new);
-        assert_eq!(actual.preexisting, expected.preexisting);
-        assert_eq!(actual.tombstone, expected.tombstone);
     }
 
     #[test]
     fn every_value_type_round_trips() {
         let values = vec![
-            Value::None,
+            Value::Marker(Marker::Default),
+            Value::Marker(Marker::Stripped),
             Bytes::new(vec![1, 2, 3]).unwrap().into(),
             I64::new(-10, 10).unwrap().into(),
             U64::new(0, 100).unwrap().into(),
@@ -191,7 +200,7 @@ mod tests {
         ];
 
         for value in values {
-            let expected = tracked(value);
+            let expected = tracked(Value::Marker(Marker::Stripped), value);
             let encoded = encode(&expected).unwrap();
             assert_eq!(encoded.len() as u64, encoded_size(&expected).unwrap());
             assert_same(&decode(&encoded).unwrap(), &expected);
@@ -199,19 +208,28 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_round_trips_with_retained_value() {
-        let mut expected = tracked(U64::new(0, 100).unwrap().into());
-        expected.creates = 0;
-        expected.is_new = false;
-        expected.preexisting = true;
-        expected.tombstone = true;
+    fn marker_states_round_trip() {
+        let deleted = tracked(
+            Value::Marker(Marker::Stripped),
+            Value::Marker(Marker::Deleted),
+        );
+        let missing = tracked(
+            Value::Marker(Marker::Missing),
+            Value::Marker(Marker::Missing),
+        );
+        let none = tracked(Value::Marker(Marker::None), Value::Marker(Marker::None));
 
-        assert_same(&decode(&encode(&expected).unwrap()).unwrap(), &expected);
+        assert_same(&decode(&encode(&deleted).unwrap()).unwrap(), &deleted);
+        assert_same(&decode(&encode(&missing).unwrap()).unwrap(), &missing);
+        assert_same(&decode(&encode(&none).unwrap()).unwrap(), &none);
     }
 
     #[test]
     fn malformed_and_truncated_encodings_are_rejected() {
-        let expected = tracked(Bytes::new(vec![1, 2, 3]).unwrap().into());
+        let expected = tracked(
+            Value::Marker(Marker::Missing),
+            Bytes::new(vec![1, 2, 3]).unwrap().into(),
+        );
         let encoded = encode(&expected).unwrap();
         for end in 0..encoded.len() {
             assert!(decode(&encoded[..end]).is_err());
@@ -224,14 +242,20 @@ mod tests {
             Some("invalid Tracked value tag")
         );
 
-        let mut invalid_flags = encoded;
-        invalid_flags[1] = 8;
-        assert_eq!(decode(&invalid_flags).err(), Some("invalid Tracked flags"));
+        let mut invalid_value_tag = encoded;
+        invalid_value_tag[1] = u8::MAX;
+        assert_eq!(
+            decode(&invalid_value_tag).err(),
+            Some("invalid Tracked value tag")
+        );
     }
 
     #[test]
     fn short_buffer_is_rejected_without_writing() {
-        let value = tracked(Bytes::new(vec![1, 2, 3]).unwrap().into());
+        let value = tracked(
+            Value::Marker(Marker::Missing),
+            Bytes::new(vec![1, 2, 3]).unwrap().into(),
+        );
         let mut output = vec![0xaa; encoded_size(&value).unwrap() as usize - 1];
 
         assert_eq!(

@@ -2,7 +2,7 @@ use crate::committer::{Committer, traits::TransitionWriter};
 use crate::crdt::{
     Crdt,
     bytes::Bytes,
-    state::{Delta, DeltaOp, Numeric, NumericError, StateError, Value},
+    state::{Delta, DeltaOp, Marker, Numeric, NumericError, StateError, Value},
     uint64::U64,
 };
 use crate::execution::{BlockCache, BlockCacheWriter, Error, VmCache, VmCacheWriter};
@@ -123,7 +123,7 @@ fn rejected_duplicate_creation_preserves_the_original_value() {
 }
 
 #[test]
-fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
+fn created_values_can_be_deleted_and_created_again() {
     let fallback = CachedStore::new(4, None);
     let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
     let key = String::new();
@@ -136,15 +136,12 @@ fn recreation_with_owned_keys_keeps_other_keys_unchanged() {
         assert!((&mut cache).get(&key).as_deref() == Some(&expected));
         assert_eq!(cache.delete(&key), Ok(()));
         assert!((&mut cache).get(&key).is_none());
-        // assert!((&cache).get(&key).is_none());
-        // assert!(!cache.exists(&key));
-        // assert!((&mut cache).get(&other_key) == Some(&other_value));
-        // assert!(cache.exists(&other_key));
     }
+    assert!((&mut cache).get(&other_key).as_deref() == Some(&other_value));
 }
 
 #[test]
-fn local_deletion_and_recreation_do_not_modify_fallback() {
+fn local_deletion_is_permanent_and_does_not_modify_fallback() {
     for read_first in [false, true] {
         let original = numeric_u64(17);
         let replacement = numeric_u64(42);
@@ -161,15 +158,17 @@ fn local_deletion_and_recreation_do_not_modify_fallback() {
         assert!((&mut cache).get(&7).is_none());
         assert!(fallback.get(&7) == Some(&original));
 
-        assert!(cache.insert(&7, replacement.clone()).is_ok());
-        assert!((&cache).get(&7) == Some(&replacement));
-        assert!((&mut cache).get(&7).as_deref() == Some(&replacement));
+        assert_eq!(
+            cache.insert(&7, replacement),
+            Err(Error::Store(StoreError::ValueCannotBeRecreated))
+        );
+        assert!((&cache).get(&7).is_none());
         assert!(fallback.get(&7) == Some(&original));
     }
 }
 
 #[test]
-fn outer_cache_respects_inner_tombstones_and_missing_records() {
+fn outer_cache_distinguishes_inner_deletions_from_missing_records() {
     let original = numeric_u64(17);
     let replacement = numeric_u64(42);
     let mut fallback = CachedStore::new(4, None);
@@ -185,19 +184,15 @@ fn outer_cache_respects_inner_tombstones_and_missing_records() {
         assert!((&mut outer).get(&key).is_none());
     }
 
-    for key in [7, 8] {
-        assert_eq!(
-            outer.delete(&key),
-            Err(Error::Store(StoreError::DeleteNonexistingEntry))
-        );
-        assert!(outer.insert(&key, replacement.clone()).is_ok());
-    }
-
-    for key in [7, 8] {
-        assert!((&outer).get(&key) == Some(&replacement));
-        assert!(!inner.exists(&key));
-        assert!((&inner).get(&key).is_none());
-    }
+    assert_eq!(
+        outer.insert(&7, replacement.clone()),
+        Err(Error::Store(StoreError::ValueCannotBeRecreated))
+    );
+    assert!(outer.insert(&8, replacement.clone()).is_ok());
+    assert!((&outer).get(&7).is_none());
+    assert!((&outer).get(&8) == Some(&replacement));
+    assert!(!inner.exists(&7));
+    assert!((&inner).get(&7).is_none());
 
     assert!(fallback.get(&7) == Some(&original));
 }
@@ -213,6 +208,8 @@ fn short_operation_sequences_match_value_existence_model() {
                 fallback = write_cached(fallback, vec![(7, value.clone())]);
             }
             let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
+            let mut created = false;
+            let mut permanently_deleted = false;
             let mut operations = sequence;
             for step in 0..5 {
                 let operation = operations % 4;
@@ -221,7 +218,7 @@ fn short_operation_sequences_match_value_existence_model() {
                     0 | 1 => {
                         let value = numeric_u64(if operation == 0 { 0 } else { u64::MAX });
                         let result = cache.insert(&7, value.clone());
-                        if expected.is_some() {
+                        if expected.is_some() || permanently_deleted {
                             assert!(
                                 matches!(
                                     result,
@@ -232,10 +229,16 @@ fn short_operation_sequences_match_value_existence_model() {
                         } else {
                             assert!(result.is_ok(), "sequence {sequence}, step {step}");
                             expected = Some(value);
+                            created = true;
                         }
                     }
                     2 => {
                         let expected_result = if expected.take().is_some() {
+                            if created {
+                                created = false;
+                            } else {
+                                permanently_deleted = true;
+                            }
                             Ok(())
                         } else {
                             Err(Error::Store(StoreError::DeleteNonexistingEntry))
@@ -436,20 +439,22 @@ fn create_then_delete_produces_no_transition() {
 }
 
 #[test]
-fn staged_tombstone_hides_fallback_and_can_be_recreated() {
+fn staged_deletion_hides_fallback_and_cannot_be_recreated() {
     let original = numeric_u64(10);
     let replacement = numeric_u64(20);
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, original)]);
     let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
-    cache = write_vm(cache, vec![(1, Value::None)]);
+    cache = write_vm(cache, vec![(1, Value::Marker(Marker::Deleted))]);
     assert!(!cache.exists(&1));
     assert!(cache.get(&1).is_none());
 
-    cache = write_vm(cache, vec![(1, replacement.clone())]);
-    assert!(cache.exists(&1));
-    assert!(cache.get(&1) == Some(&replacement));
+    let mut writer = VmCacheWriter::new(cache);
+    assert_eq!(
+        commit(&mut writer, vec![(1, replacement)]),
+        Err(StoreError::ValueCannotBeRecreated)
+    );
 }
 
 #[test]
@@ -488,7 +493,7 @@ fn stage_deletes_an_existing_value() {
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
 
-    cache = write_vm(cache, vec![(1, Value::None)]);
+    cache = write_vm(cache, vec![(1, Value::Marker(Marker::Deleted))]);
 
     assert!(!cache.exists(&1));
     assert!((&mut cache).get(&1).is_none());
@@ -521,7 +526,7 @@ fn stage_returns_delta_errors_without_changing_the_value() {
 }
 
 #[test]
-fn deleted_value_rejects_deltas_even_though_tombstone_retains_old_value() {
+fn deleted_value_is_discarded_and_rejects_deltas() {
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmCache::new_with_fallback(CACHE_ID, &fallback);
@@ -536,7 +541,10 @@ fn deleted_value_rejects_deltas_even_though_tombstone_retains_old_value() {
 
     let transitions = cache.drain().1;
     assert_eq!(transitions.len(), 1);
-    assert!(matches!(transitions[0], (1, Value::None)));
+    assert!(matches!(
+        transitions[0],
+        (1, Value::Marker(Marker::Deleted))
+    ));
 }
 
 #[test]
@@ -699,20 +707,10 @@ fn vm_cache_with_vm_cache_fallback() {
     assert!(!deletion_check_cache.exists(&1));
     assert!((&mut deletion_check_cache).get(&1).is_none());
 
-    deletion_check_cache
-        .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
-        .expect("recreate key 1 as bytes");
-    assert!(deletion_check_cache.exists(&1));
-
-    let (_, transitions) = deletion_check_cache.drain();
-    block_cache = write_vm(block_cache, transitions);
-
-    let mut recreation_check_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
-    assert!(recreation_check_cache.exists(&1));
-    let value = (&mut recreation_check_cache)
-        .get(&1)
-        .expect("recreated value should exist");
-    assert_eq!(value.as_ref().as_bytes(), Some(&[80, 81, 82][..]));
+    assert_eq!(
+        deletion_check_cache.insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into()),
+        Err(Error::Store(StoreError::ValueCannotBeRecreated))
+    );
 }
 
 #[test]
@@ -864,27 +862,12 @@ fn vm_cache_with_block_cache_fallback() {
     assert!(!block_cache.contains_key(&1));
     assert!(block_cache.get(&1).is_none());
 
-    let transitions = {
-        let mut vm_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
-        assert!(!vm_cache.exists(&1));
-        assert!((&mut vm_cache).get(&1).is_none());
-
-        vm_cache
-            .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
-            .expect("recreate key 1 as bytes");
-
-        vm_cache.drain().1
-    };
-    block_cache = write_block(block_cache, transitions);
-
     let mut final_cache = VmCache::new_with_fallback(CACHE_ID, &block_cache);
+    assert!(!final_cache.exists(&1));
+    assert!((&mut final_cache).get(&1).is_none());
     assert_eq!(
-        (&mut final_cache)
-            .get(&1)
-            .expect("recreated key should exist")
-            .as_ref()
-            .as_bytes(),
-        Some(&[80, 81, 82][..])
+        final_cache.insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into()),
+        Err(Error::Store(StoreError::ValueCannotBeRecreated))
     );
     let value = (&mut final_cache)
         .get(&3)
