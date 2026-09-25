@@ -29,10 +29,7 @@ where
                 self.vm_cache.get_or_populate_tracked(&key).delete()?;
                 continue;
             }
-            if matches!(
-                value,
-                Value::Marker(Marker::None | Marker::Missing | Marker::Stripped)
-            ) {
+            if matches!(value, Value::Marker(Marker::Missing | Marker::Stripped)) {
                 return Err(StoreError::ValueCannotBeStripped);
             }
 

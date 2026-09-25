@@ -2,7 +2,7 @@
 
 pub mod delta;
 pub mod error;
-pub mod marker;
+pub mod markers;
 pub mod numeric;
 pub mod op;
 pub mod output;
@@ -11,8 +11,12 @@ pub mod value;
 
 pub use delta::{Delta, DeltaOp};
 pub use error::{NumericError, StateError};
-pub use marker::Marker;
+pub use markers::Marker;
 pub use numeric::Numeric;
 pub use output::TransactionOutput;
 pub use tracked::Tracked;
 pub use value::Value;
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

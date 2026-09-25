@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use super::comparison::ComparableNumeric;
-use crate::crdt::state::{Numeric, Tracked, TransactionOutput};
+use crate::crdt::state::{Numeric, Tracked, TransactionOutput, numeric::ComparableNumeric};
 
 pub struct Accumulator<K> {
     entries: Vec<Option<Tracked<Numeric<'static>>>>,
@@ -44,7 +43,7 @@ impl<K> Accumulator<K> {
             };
 
             let first_ind = key_entries[first].1;
-            let mut accumulated = self.entries[first_ind].take().unwrap().into_value();
+            let mut accumulated = self.entries[first_ind].take().unwrap().into_current();
 
             key_entries
                 .iter()
@@ -54,7 +53,7 @@ impl<K> Accumulator<K> {
                         return;
                     };
 
-                    if accumulated.add_delta(&value.value().delta()).is_err() {
+                    if accumulated.add_delta(&value.current().delta()).is_err() {
                         rejected.insert(*tx_id);
                     }
                 });
@@ -70,16 +69,10 @@ impl<K> Accumulator<K> {
 
         self.by_key.values_mut().for_each(|key_entries| {
             key_entries.sort_unstable_by(|(left_tx_id, left_ind), (right_tx_id, right_ind)| {
-                let left = ComparableNumeric::new(
-                    entries[*left_ind].as_ref().unwrap().value(),
-                    *left_tx_id,
-                );
-                let right = ComparableNumeric::new(
-                    entries[*right_ind].as_ref().unwrap().value(),
-                    *right_tx_id,
-                );
+                let left = ComparableNumeric::new(entries[*left_ind].as_ref().unwrap().current());
+                let right = ComparableNumeric::new(entries[*right_ind].as_ref().unwrap().current());
 
-                left.compare(&right)
+                left.compare_by(&right, || left_tx_id.cmp(right_tx_id))
             });
         });
     }
@@ -131,7 +124,7 @@ mod tests {
                     (
                         key,
                         Tracked::<Value<'static>>::new_owned_empty(tx_id)
-                            .clone_with_values(value.clone(), value),
+                            .clone_with_states(value.clone(), value),
                     )
                 })
                 .collect(),

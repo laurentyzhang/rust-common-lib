@@ -4,7 +4,6 @@ use crate::crdt::state::{Marker, Numeric, Tracked, Value};
 
 use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
 
-const NONE: u8 = 0;
 const BYTES: u8 = 1;
 const I64: u8 = 2;
 const U64: u8 = 3;
@@ -19,7 +18,6 @@ const HEADER_SIZE: u64 = 34;
 
 fn value_tag(value: &Value<'_>) -> u8 {
     match value {
-        Value::Marker(Marker::None) => NONE,
         Value::Bytes(_) => BYTES,
         Value::Numeric(Numeric::I64(_)) => I64,
         Value::Numeric(Numeric::U64(_)) => U64,
@@ -54,49 +52,49 @@ fn encode_value_to(value: &Value<'_>, output: &mut [u8]) -> Result<u64> {
     }
 }
 
-pub fn encoded_size(value: &Tracked<Value<'_>>) -> Result<u64> {
-    let original_size = value_size(&value.original)?;
-    let value_size = value_size(&value.value)?;
+pub fn encoded_size(tracked: &Tracked<Value<'_>>) -> Result<u64> {
+    let original_size = value_size(&tracked.original)?;
+    let current_size = value_size(&tracked.current)?;
     HEADER_SIZE
         .checked_add(original_size)
-        .and_then(|size| size.checked_add(value_size))
+        .and_then(|size| size.checked_add(current_size))
         .ok_or("encoded size overflow")
 }
 
-pub fn encode(value: &Tracked<Value<'_>>) -> Result<Vec<u8>> {
+pub fn encode(tracked: &Tracked<Value<'_>>) -> Result<Vec<u8>> {
     let size =
-        usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
+        usize::try_from(encoded_size(tracked)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
-    encode_to(value, &mut output)?;
+    encode_to(tracked, &mut output)?;
     Ok(output)
 }
 
-pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
-    let size = encoded_size(value)?;
+pub fn encode_to(tracked: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
+    let size = encoded_size(tracked)?;
     let size_usize = usize::try_from(size).map_err(|_| "encoded size exceeds usize::MAX")?;
     if (output.len() as u64) < size {
         return Err("output buffer too small");
     }
 
     let mut writer = Writer::new(output);
-    let original_size = value_size(&value.original)?;
-    writer.write_u8(value_tag(&value.original))?;
-    writer.write_u8(value_tag(&value.value))?;
+    let original_size = value_size(&tracked.original)?;
+    writer.write_u8(value_tag(&tracked.original))?;
+    writer.write_u8(value_tag(&tracked.current))?;
     writer.write_u64(original_size)?;
-    writer.write_u64(value.id)?;
-    writer.write_u32(value.reads)?;
-    writer.write_u32(value.existence_checks)?;
-    writer.write_u32(value.writes)?;
-    writer.write_u32(value.deltas)?;
+    writer.write_u64(tracked.id)?;
+    writer.write_u32(tracked.reads.count())?;
+    writer.write_u32(tracked.existence_checks.count())?;
+    writer.write_u32(tracked.writes.count())?;
+    writer.write_u32(tracked.deltas.count())?;
     let header_size = writer.finish();
 
     let payload = &mut output[header_size..size_usize];
     let original_size_usize =
         usize::try_from(original_size).map_err(|_| "encoded size exceeds usize::MAX")?;
-    let (original_payload, value_payload) = payload.split_at_mut(original_size_usize);
-    let original_written = encode_value_to(&value.original, original_payload)?;
-    let value_written = encode_value_to(&value.value, value_payload)?;
-    if HEADER_SIZE + original_written + value_written != size {
+    let (original_payload, current_payload) = payload.split_at_mut(original_size_usize);
+    let original_written = encode_value_to(&tracked.original, original_payload)?;
+    let current_written = encode_value_to(&tracked.current, current_payload)?;
+    if HEADER_SIZE + original_written + current_written != size {
         return Err("encoded size mismatch");
     }
     Ok(size)
@@ -105,7 +103,7 @@ pub fn encode_to(value: &Tracked<Value<'_>>, output: &mut [u8]) -> Result<u64> {
 pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
     let mut reader = Reader::new(input);
     let original_tag = reader.read_u8()?;
-    let value_tag = reader.read_u8()?;
+    let current_tag = reader.read_u8()?;
     let original_size = reader.read_u64()?;
     let id = reader.read_u64()?;
     let reads = reader.read_u32()?;
@@ -120,26 +118,24 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Value<'static>>> {
     if original_size > payload.len() {
         return Err("invalid original value size");
     }
-    let (original_payload, value_payload) = payload.split_at(original_size);
+    let (original_payload, current_payload) = payload.split_at(original_size);
     let original = decode_value(original_tag, original_payload)?;
-    let value = decode_value(value_tag, value_payload)?;
+    let current = decode_value(current_tag, current_payload)?;
 
     let tracked = Tracked {
         id,
         original,
-        value,
-        reads,
-        existence_checks,
-        writes,
-        deltas,
+        current,
+        reads: reads.into(),
+        existence_checks: existence_checks.into(),
+        writes: writes.into(),
+        deltas: deltas.into(),
     };
     Ok(tracked)
 }
 
 fn decode_value(tag: u8, payload: &[u8]) -> Result<Value<'static>> {
     let value = match tag {
-        NONE if payload.is_empty() => Value::Marker(Marker::None),
-        NONE => return Err("trailing bytes"),
         BYTES => Value::Bytes(Cow::Owned(bytes::decode(payload)?)),
         I64 => Value::Numeric(Numeric::I64(Cow::Owned(int64::decode(payload)?))),
         U64 => Value::Numeric(Numeric::U64(Cow::Owned(uint64::decode(payload)?))),
@@ -163,22 +159,22 @@ mod tests {
 
     use super::*;
 
-    fn tracked(original: Value<'static>, value: Value<'static>) -> Tracked<Value<'static>> {
+    fn tracked(original: Value<'static>, current: Value<'static>) -> Tracked<Value<'static>> {
         Tracked {
             id: 42,
             original,
-            value,
-            reads: 1,
-            existence_checks: 2,
-            writes: 3,
-            deltas: 4,
+            current,
+            reads: 1.into(),
+            existence_checks: 2.into(),
+            writes: 3.into(),
+            deltas: 4.into(),
         }
     }
 
     fn assert_same(actual: &Tracked<Value<'_>>, expected: &Tracked<Value<'_>>) {
         assert_eq!(actual.id, expected.id);
         assert!(actual.original == expected.original);
-        assert!(actual.value == expected.value);
+        assert!(actual.current == expected.current);
         assert_eq!(actual.reads, expected.reads);
         assert_eq!(actual.existence_checks, expected.existence_checks);
         assert_eq!(actual.writes, expected.writes);
@@ -217,11 +213,9 @@ mod tests {
             Value::Marker(Marker::Missing),
             Value::Marker(Marker::Missing),
         );
-        let none = tracked(Value::Marker(Marker::None), Value::Marker(Marker::None));
 
         assert_same(&decode(&encode(&deleted).unwrap()).unwrap(), &deleted);
         assert_same(&decode(&encode(&missing).unwrap()).unwrap(), &missing);
-        assert_same(&decode(&encode(&none).unwrap()).unwrap(), &none);
     }
 
     #[test]

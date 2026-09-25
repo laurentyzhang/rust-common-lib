@@ -39,9 +39,7 @@ where
 {
     fn contains_key(&self, key: &K) -> bool {
         match self.cache.get(key) {
-            Some(Value::Marker(
-                Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped,
-            )) => false,
+            Some(Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)) => false,
             Some(_) => true,
             None => self
                 .fallback
@@ -51,9 +49,7 @@ where
 
     fn get(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
-            Some(Value::Marker(
-                Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped,
-            )) => None,
+            Some(Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)) => None,
             Some(value) => Some(value),
             None => self.fallback.and_then(|fallback| fallback.get(key)),
         }

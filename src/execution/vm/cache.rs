@@ -1,5 +1,5 @@
 use crate::crdt::state::Delta;
-use crate::crdt::state::{Marker, Tracked, Value};
+use crate::crdt::state::{Marker, Tracked, Value, markers};
 use crate::execution::error::Error;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
@@ -60,7 +60,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     {
         if matches!(
             value,
-            Value::Marker(Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped)
+            Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)
         ) {
             return Err(StoreError::ValueCannotBeStripped.into());
         }
@@ -95,9 +95,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
                 .is_some_and(|value| {
                     !matches!(
                         value,
-                        Value::Marker(
-                            Marker::None | Marker::Missing | Marker::Deleted | Marker::Stripped
-                        )
+                        Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)
                     )
                 }),
         }
@@ -117,40 +115,19 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     where
         K: Clone,
     {
-        let transitions: Vec<(K, Value<'static>)> = self
-            .cache
-            .iter()
-            .filter(|(_, tracked)| !tracked.is_read_only() && !tracked.is_creation_cancelled())
-            .map(|(key, tracked)| ((*key).clone(), tracked.value().applied().into_owned()))
-            .collect();
+        let mut access_records = Vec::with_capacity(self.cache.len());
+        let mut transitions = Vec::new();
 
-        let access_records: Vec<(K, Tracked<Value<'static>>)> = self
-            .cache
-            .iter()
-            .map(|(key, tracked)| {
-                let strip_original = |value: &Value<'_>| match value {
-                    Value::Marker(Marker::None) => Value::Marker(Marker::None),
-                    Value::Marker(Marker::Missing) => Value::Marker(Marker::Missing),
-                    _ => Value::Marker(Marker::Stripped),
-                };
-                let strip_value = |value: &Value<'_>| match value {
-                    Value::Numeric(_) => value.clone().into_owned(),
-                    Value::Marker(Marker::None) => Value::Marker(Marker::None),
-                    Value::Marker(Marker::Missing) => Value::Marker(Marker::Missing),
-                    Value::Marker(Marker::Deleted) => Value::Marker(Marker::Deleted),
-                    _ => Value::Marker(Marker::Stripped),
-                };
-                (
-                    (*key).clone(),
-                    tracked.clone_with_values(
-                        strip_original(tracked.original()),
-                        strip_value(tracked.value()),
-                    ),
-                )
-            })
-            .collect();
+        for (key, tracked) in self.cache.drain() {
+            if !tracked.is_read_only() && !tracked.is_creation_cancelled() {
+                transitions.push((key.clone(), tracked.current().applied().into_owned()));
+            }
 
-        self.cache.clear(); // Clear the local cache after draining.
+            let original = markers::from_value(tracked.original());
+            let current = markers::from_value(tracked.current());
+            access_records.push((key, tracked.clone_with_states(original, current)));
+        }
+
         (access_records, transitions)
     }
 
@@ -189,7 +166,7 @@ where
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {
-                    Some(tracked.value())
+                    Some(tracked.current())
                 } else {
                     None
                 }
@@ -204,7 +181,7 @@ where
 
     fn get_raw(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
-            Some(tracked) => Some(tracked.value()),
+            Some(tracked) => Some(tracked.current()),
             None => self
                 .fallback
                 .as_ref()

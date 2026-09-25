@@ -35,9 +35,9 @@ impl<K> ConflictDetector<K> {
 
         for (key, mut tracked) in records {
             if let Value::Numeric(value) =
-                std::mem::replace(&mut tracked.value, Value::Marker(Marker::Stripped))
+                std::mem::replace(&mut tracked.current, Value::Marker(Marker::Stripped))
             {
-                numerics_trans.push((key.clone(), tracked.clone_with_values(value.clone(), value)));
+                numerics_trans.push((key.clone(), tracked.clone_with_states(value.clone(), value)));
             }
 
             self.transitions

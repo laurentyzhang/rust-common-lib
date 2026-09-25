@@ -1,27 +1,5 @@
-use crate::crdt::state::{Numeric, Value};
+use crate::crdt::state::Value;
 use std::cmp::Ordering;
-
-pub(super) struct ComparableNumeric<'a> {
-    value: &'a Numeric<'static>,
-    tx_id: u64,
-}
-
-impl<'a> ComparableNumeric<'a> {
-    pub(super) fn new(value: &'a Numeric<'static>, tx_id: u64) -> Self {
-        Self { value, tx_id }
-    }
-
-    pub(super) fn compare(&self, other: &Self) -> Ordering {
-        let ordering = match (self.value, other.value) {
-            (Numeric::I64(left), Numeric::I64(right)) => left.compare(right),
-            (Numeric::U64(left), Numeric::U64(right)) => left.compare(right),
-            (Numeric::U256(left), Numeric::U256(right)) => left.compare(right),
-            _ => unreachable!("a key cannot have different numeric types"),
-        };
-
-        ordering.then_with(|| self.tx_id.cmp(&other.tx_id))
-    }
-}
 
 pub(super) struct ComparableNonNumeric<'a> {
     value: &'a Value<'static>,

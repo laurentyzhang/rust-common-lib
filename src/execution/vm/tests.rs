@@ -352,7 +352,7 @@ fn receiver_mutability_selects_cache_population() {
     assert!((&mut cache).get(&key).as_deref() == Some(&value));
     assert!(cache.cache.contains_key(&key));
     let tracked = cache.cache.get(&key).unwrap();
-    assert!(tracked.value() == fallback.get(&key).unwrap());
+    assert!(tracked.current() == fallback.get(&key).unwrap());
 }
 
 #[test]
