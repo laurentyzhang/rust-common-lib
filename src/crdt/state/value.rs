@@ -1,12 +1,18 @@
-use super::{Delta, Marker, Numeric, StateError};
+use super::{Delta, Numeric, StateError};
 use crate::crdt::Crdt;
+
+#[derive(Clone, PartialEq)]
+pub struct Values<T0, T1> {
+    pub(crate) original: T0,
+    pub(crate) current: T1,
+}
 
 #[derive(Clone, PartialEq)]
 pub enum Value<'a> {
     Bytes(std::borrow::Cow<'a, crate::crdt::bytes::Bytes>),
     U64Set(std::borrow::Cow<'a, crate::crdt::u64_set::U64Set>),
     Numeric(Numeric<'a>),
-    Marker(Marker),
+    None,
 }
 
 impl<'a> Value<'a> {
@@ -15,7 +21,7 @@ impl<'a> Value<'a> {
             Self::Bytes(value) => Value::Bytes(std::borrow::Cow::Owned(value.into_owned())),
             Self::U64Set(value) => Value::U64Set(std::borrow::Cow::Owned(value.into_owned())),
             Self::Numeric(value) => Value::Numeric(value.into_owned()),
-            Self::Marker(marker) => Value::Marker(marker),
+            Self::None => Value::None,
         }
     }
 
@@ -24,7 +30,7 @@ impl<'a> Value<'a> {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::Numeric(value) => Self::Numeric(Numeric::from_borrowed(value)),
-            Self::Marker(marker) => Self::Marker(*marker),
+            Self::None => Self::None,
         }
     }
 
@@ -75,7 +81,7 @@ impl<'a> Value<'a> {
             Self::Bytes(value) => value.is_commutative(),
             Self::U64Set(value) => value.is_commutative(),
             Self::Numeric(_) => true,
-            Self::Marker(_) => false,
+            Self::None => false,
         }
     }
 
@@ -88,7 +94,7 @@ impl<'a> Value<'a> {
                 .delta()
                 .map_or(Delta::None, |delta| Delta::U64Set(delta.to_vec())),
             Self::Numeric(value) => value.delta(),
-            Self::Marker(_) => Delta::None,
+            Self::None => Delta::None,
         }
     }
 
@@ -125,7 +131,7 @@ impl<'a> Value<'a> {
                 value.apply_delta();
                 self
             }
-            Self::Marker(_) => self,
+            Self::None => self,
         }
     }
 

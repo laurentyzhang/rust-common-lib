@@ -1,6 +1,7 @@
 use crate::crdt::state::Delta;
-use crate::crdt::state::{Marker, Tracked, Value, markers};
+use crate::crdt::state::{Status, Tracked, Value, status};
 use crate::execution::error::Error;
+use crate::resolver::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
 use std::borrow::Cow;
@@ -8,7 +9,7 @@ use std::collections::HashMap;
 
 pub struct VmCache<'a, K> {
     pub(super) id: u64,
-    pub(super) cache: HashMap<K, Tracked<Value<'a>>>,
+    pub(super) cache: HashMap<K, Tracked<Value<'a>, Value<'a>>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
 }
 
@@ -58,10 +59,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     where
         K: Clone,
     {
-        if matches!(
-            value,
-            Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)
-        ) {
+        if matches!(value, Value::None) {
             return Err(StoreError::ValueCannotBeStripped.into());
         }
 
@@ -92,12 +90,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
                 .fallback
                 .as_ref()
                 .and_then(|fallback: &&dyn FallbackStore<K, Value<'a>>| (**fallback).get_raw(key))
-                .is_some_and(|value| {
-                    !matches!(
-                        value,
-                        Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)
-                    )
-                }),
+                .is_some_and(|value| !matches!(value, Value::None)),
         }
     }
 
@@ -111,7 +104,12 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             .map_err(Error::from)
     }
 
-    pub fn drain(&mut self) -> (Vec<(K, Tracked<Value<'static>>)>, Vec<(K, Value<'static>)>)
+    pub fn drain(
+        &mut self,
+    ) -> (
+        Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
+        Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
+    )
     where
         K: Clone,
     {
@@ -119,20 +117,30 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
         let mut transitions = Vec::new();
 
         for (key, tracked) in self.cache.drain() {
+            let states = status::strip(&tracked.value);
+
             if !tracked.is_read_only() && !tracked.is_creation_cancelled() {
-                transitions.push((key.clone(), tracked.current().applied().into_owned()));
+                transitions.push(ExecutionOutput {
+                    id: self.id,
+                    key: key.clone(),
+                    gas_used: 0,
+                    data: tracked.clone_with_states(states.clone()),
+                });
             }
 
-            let original = markers::from_value(tracked.original());
-            let current = markers::from_value(tracked.current());
-            access_records.push((key, tracked.clone_with_states(original, current)));
+            access_records.push(ExecutionOutput {
+                id: self.id,
+                key,
+                gas_used: 0,
+                data: tracked.clone_with_states(states),
+            });
         }
 
         (access_records, transitions)
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
-    pub(super) fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<Value<'a>>
+    pub(super) fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<Value<'a>, Value<'a>>
     where
         K: Clone,
     {

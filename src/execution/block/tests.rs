@@ -2,7 +2,7 @@ use crate::committer::traits::TransitionWriter;
 use crate::execution::{BlockCache, BlockCacheWriter};
 
 use crate::crdt::{
-    state::{Marker, Numeric, Value},
+    state::{Numeric, Value},
     uint64::U64,
 };
 use crate::store::traits::FallbackStore;
@@ -55,9 +55,9 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     assert!((cache.get(&7)) == Some(&replacement));
     assert!((fallback.get(&7)) == Some(&original));
 
-    cache = write_block(cache, vec![(7, Value::Marker(Marker::Deleted))]);
-    assert!(!cache.contains_key(&7));
-    assert!(cache.get(&7).is_none());
+    cache = write_block(cache, vec![(7, Value::None)]);
+    assert!(cache.contains_key(&7));
+    assert!(matches!(cache.get(&7), Some(Value::None)));
     assert!((fallback.get(&7)) == Some(&original));
 
     let mut writer = BlockCacheWriter::new(cache);
@@ -87,10 +87,7 @@ fn deletion_cannot_be_followed_by_recreation_in_the_same_batch() {
     let mut writer = BlockCacheWriter::new(cache);
 
     assert_eq!(
-        writer.flush(vec![
-            (7, Value::Marker(Marker::Deleted)),
-            (7, numeric_u64(42)),
-        ]),
+        writer.flush(vec![(7, Value::None), (7, numeric_u64(42)),]),
         Err(crate::store::StoreError::ValueCannotBeRecreated)
     );
 }

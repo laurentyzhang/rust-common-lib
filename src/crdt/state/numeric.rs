@@ -18,11 +18,7 @@ impl<'a> ComparableNumeric<'a> {
         Self { value }
     }
 
-    pub(crate) fn compare_by(
-        &self,
-        other: &Self,
-        tie_breaker: impl FnOnce() -> Ordering,
-    ) -> Ordering {
+    pub(crate) fn compare(&self, other: &Self, tie_breaker: impl FnOnce() -> Ordering) -> Ordering {
         let ordering = match (self.value, other.value) {
             (Numeric::I64(left), Numeric::I64(right)) => left.compare(right),
             (Numeric::U64(left), Numeric::U64(right)) => left.compare(right),

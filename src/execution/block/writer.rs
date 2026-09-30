@@ -1,5 +1,5 @@
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::{Marker, Value};
+use crate::crdt::state::{Status, Value};
 use crate::execution::block::cache::BlockCache;
 use crate::store::traits::{FallbackStore, StoreError};
 
@@ -26,13 +26,10 @@ where
     fn flush(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         let mut deleted = std::collections::HashSet::new();
         for (key, value) in &updates {
-            if matches!(value, Value::Marker(Marker::Deleted)) {
+            if matches!(value, Value::None) {
                 deleted.insert(key.clone());
             } else if deleted.contains(key)
-                || matches!(
-                    self.block_cache.get_raw(key),
-                    Some(Value::Marker(Marker::Deleted))
-                )
+                || matches!(self.block_cache.get_raw(key), Some(Value::None))
             {
                 return Err(StoreError::ValueCannotBeRecreated);
             }

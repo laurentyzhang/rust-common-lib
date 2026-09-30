@@ -29,6 +29,10 @@ impl Bytes {
             (Some(_), None) => Ordering::Less,
         }
     }
+
+    // pub fn is_default(&self) -> bool {
+    //     self.delta.is_none()
+    // }
 }
 
 impl Crdt<[u8], [u8]> for Bytes {

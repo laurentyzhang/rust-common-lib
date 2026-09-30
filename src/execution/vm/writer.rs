@@ -1,6 +1,6 @@
 use super::cache::VmCache;
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::{Delta, Marker, Tracked, Value};
+use crate::crdt::state::{Delta, Status, Tracked, Value};
 use crate::store::traits::StoreError;
 
 pub struct VmCacheWriter<'a, K> {
@@ -25,19 +25,16 @@ where
 {
     fn flush(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
-            if matches!(value, Value::Marker(Marker::Deleted)) {
+            if matches!(value, Value::None) {
                 self.vm_cache.get_or_populate_tracked(&key).delete()?;
                 continue;
-            }
-            if matches!(value, Value::Marker(Marker::Missing | Marker::Stripped)) {
-                return Err(StoreError::ValueCannotBeStripped);
             }
 
             if self.vm_cache.get_or_populate_tracked(&key).is_deleted() {
                 return Err(StoreError::ValueCannotBeRecreated);
             }
 
-            // Update
+            //     // Update
             if self.vm_cache.exists(&key) {
                 let delta = value.delta();
                 if !matches!(delta, Delta::None) {
@@ -46,9 +43,11 @@ where
                     continue;
                 }
             }
+
+            // Insert the new value.
             self.vm_cache
                 .cache
-                .insert(key, Tracked::new_owned_existing(value, self.vm_cache.id));
+                .insert(key, Tracked::new_owned(value, self.vm_cache.id));
         }
         Ok(())
     }

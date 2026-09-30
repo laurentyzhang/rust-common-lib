@@ -1,14 +1,12 @@
-use std::marker::PhantomData;
-
-use crate::crdt::state::{Tracked, markers, value};
+// use crate::crdt::state::StateError;
+// use crate::crdt::state::counter::Counter;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Counter<T> {
+pub struct Counter {
     count: u32,
-    operation: PhantomData<T>,
 }
 
-impl<T> Counter<T> {
+impl Counter {
     pub(crate) fn increment(&mut self) {
         self.count += 1;
     }
@@ -18,43 +16,22 @@ impl<T> Counter<T> {
     }
 }
 
-impl<T> Default for Counter<T> {
+impl Default for Counter {
     fn default() -> Self {
-        Self {
-            count: 0,
-            operation: PhantomData,
-        }
+        Self { count: 0 }
     }
 }
 
-impl<T> From<u32> for Counter<T> {
+impl From<u32> for Counter {
     fn from(count: u32) -> Self {
-        Self {
-            count,
-            operation: PhantomData,
-        }
+        Self { count }
     }
 }
 
-pub trait Conflict {
-    fn conflicts_with(&self, other: &Tracked<value::Value<'_>>) -> bool;
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Read;
-
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct ExistenceCheck;
-
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Write;
-
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Delta;
-
-pub enum OperationCounter {
-    Read(Counter<Read>),
-    ExistenceCheck(Counter<ExistenceCheck>),
-    Write(Counter<Write>),
-    Delta(Counter<Delta>),
+pub struct Operations {
+    pub(crate) reads: Counter,
+    pub(crate) existence_checks: Counter,
+    pub(crate) deltas: Counter,
+    pub(crate) deletes: Counter,
 }

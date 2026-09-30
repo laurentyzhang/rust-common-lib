@@ -12,6 +12,7 @@ pub trait FallbackStore<'a, K, V>: Send + Sync {
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreError {
     State(StateError),
+    SetNoneToValue,
     DeleteNonexistingEntry,
     ValueCannotBeRecreated,
     ValueCannotBeStripped,

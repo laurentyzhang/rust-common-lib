@@ -170,16 +170,9 @@ fn unsigned_subtraction_rejects_other_numeric_types() {
 mod tracked {
     use super::Tracked;
     use crate::crdt::{
-        state::{Delta, Marker, Numeric, Value},
+        state::{Delta, Numeric, Value},
         uint64::U64,
     };
-
-    #[test]
-    fn stripped_value_is_live() {
-        let tracked = Tracked::new_owned_existing(Value::Marker(Marker::Stripped), 7);
-
-        assert!(tracked.is_live());
-    }
 
     #[test]
     fn deleting_created_value_returns_it_to_missing() {
@@ -189,11 +182,11 @@ mod tracked {
         assert!(tracked.add_delta(Delta::None).is_ok());
         assert!(tracked.delete().is_ok());
         assert!(tracked.is_missing());
-        assert!(matches!(tracked.current(), Value::Marker(Marker::Missing)));
+        assert!(matches!(tracked.current(), Value::None));
 
-        assert_eq!(tracked.reads.count(), 1);
-        assert_eq!(tracked.existence_checks.count(), 1);
-        assert_eq!(tracked.deltas.count(), 1);
+        assert_eq!(tracked.operations.reads.count(), 1);
+        assert_eq!(tracked.operations.existence_checks.count(), 1);
+        assert_eq!(tracked.operations.deltas.count(), 1);
     }
 
     #[test]
@@ -213,13 +206,13 @@ mod tracked {
     #[test]
     fn constructors_record_id_and_origin() {
         let empty = Tracked::new_owned_empty(10);
-        assert!(matches!(empty.original(), Value::Marker(Marker::Missing)));
-        assert!(matches!(empty.current(), Value::Marker(Marker::Missing)));
+        assert!(matches!(empty.original(), Value::None));
+        assert!(matches!(empty.current(), Value::None));
 
         let owned = Tracked::new_owned(U64::default().into(), 11);
         assert_eq!(owned.id, 11);
         assert!(owned.is_created());
-        assert!(matches!(owned.original(), Value::Marker(Marker::Missing)));
+        assert!(matches!(owned.original(), Value::None));
 
         let value: Value<'static> = U64::default().into();
         let borrowed = Tracked::new_borrowed(&value, 12);

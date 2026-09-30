@@ -1,7 +1,7 @@
 use crate::crdt::{
     bytes::Bytes,
     int64::I64,
-    state::{DeltaOp, Tracked, Value},
+    state::{DeltaOp, Status, Tracked},
     u64_set::U64Set,
     u256::U256,
     uint64::U64,
@@ -76,7 +76,7 @@ impl InternalEncode for U64Set {
     }
 }
 
-impl InternalEncode for Tracked<Value<'_>> {
+impl InternalEncode for Tracked<Status, Status> {
     fn encoded_size(&self) -> Result<u64> {
         tracked::encoded_size(self)
     }

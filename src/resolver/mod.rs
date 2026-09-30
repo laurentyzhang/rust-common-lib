@@ -1,6 +1,8 @@
+pub mod access_detector;
 pub mod accumulator;
 pub mod commit_plan;
-mod comparison;
 pub mod detector;
+pub mod reason;
+pub mod traits;
 
 pub use detector::ConflictDetector;

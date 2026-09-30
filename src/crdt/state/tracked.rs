@@ -1,206 +1,210 @@
 use super::{
-    Delta, Marker, StateError, Value,
-    op::{Counter, Delta as DeltaOperation, ExistenceCheck, Read, Write},
+    Delta, Numeric, StateError, Status, Value, numeric::ComparableNumeric, op::Operations,
+    value::Values,
 };
 use crate::store::traits::StoreError;
+use std::cmp::Ordering;
 
-pub struct Tracked<T> {
+pub struct Tracked<T0, T1> {
     pub(crate) id: u64,
-    pub(crate) original: T,
-    pub(crate) current: T,
-    pub(crate) reads: Counter<Read>,
-    pub(crate) existence_checks: Counter<ExistenceCheck>,
-    pub(crate) writes: Counter<Write>,
-    pub(crate) deltas: Counter<DeltaOperation>,
+    pub(crate) value: Values<T0, T1>,
+    pub(crate) operations: Operations,
 }
 
-impl<T> Tracked<T> {
-    pub fn original(&self) -> &T {
-        &self.original
+impl<T0, T1> Tracked<T0, T1> {
+    pub fn original(&self) -> &T0 {
+        &self.value.original
     }
 
-    pub fn current(&self) -> &T {
-        &self.current
+    pub fn current(&self) -> &T1 {
+        &self.value.current
     }
 
-    pub fn into_current(self) -> T {
-        self.current
+    pub fn into_current(self) -> T1 {
+        self.value.current
     }
 
-    pub fn clone_with_states<U>(&self, original: U, current: U) -> Tracked<U> {
+    pub fn clone_with_states<U0, U1>(&self, value: Values<U0, U1>) -> Tracked<U0, U1> {
         Tracked {
             id: self.id,
-            original,
-            current,
-            reads: self.reads,
-            existence_checks: self.existence_checks,
-            writes: self.writes,
-            deltas: self.deltas,
+            value,
+            operations: self.operations,
+        }
+    }
+
+    pub fn map_current<U>(self, map: impl FnOnce(T1) -> U) -> Tracked<T0, U> {
+        Tracked {
+            id: self.id,
+            value: Values {
+                original: self.value.original,
+                current: map(self.value.current),
+            },
+            operations: self.operations,
         }
     }
 }
 
-impl<'a> Tracked<Value<'a>> {
+impl Tracked<Status, Status> {
+    pub fn compare(&self, other: &Self) -> Ordering {
+        (
+            self.operations.deltas,
+            self.operations.existence_checks,
+            self.operations.reads,
+            self.id,
+        )
+            .cmp(&(
+                other.operations.deltas,
+                other.operations.existence_checks,
+                other.operations.reads,
+                other.id,
+            ))
+    }
+}
+
+impl Tracked<Status, Numeric<'static>> {
+    pub fn compare(&self, other: &Self) -> Ordering {
+        let left = ComparableNumeric::new(&self.value.current);
+        let right = ComparableNumeric::new(&other.value.current);
+
+        left.compare(&right, || self.id.cmp(&other.id))
+    }
+}
+
+impl<'a> Tracked<Value<'a>, Value<'a>> {
     pub fn new_owned_empty(id: u64) -> Self {
         Self::from_states(
-            Value::Marker(Marker::Missing),
-            Value::Marker(Marker::Missing),
             id,
+            Values {
+                original: Value::None,
+                current: Value::None,
+            },
         )
     }
 
-    pub fn new_owned(value: Value<'static>, id: u64) -> Self {
-        Self::from_states(Value::Marker(Marker::Missing), value, id)
-    }
-
-    pub fn new_owned_existing(value: Value<'a>, id: u64) -> Self {
-        Self::from_states(Value::Marker(Marker::Stripped), value, id)
-    }
-
-    pub fn new_owned_deleted(id: u64) -> Self {
+    pub fn new_owned(value: Value<'a>, id: u64) -> Self {
         Self::from_states(
-            Value::Marker(Marker::Stripped),
-            Value::Marker(Marker::Deleted),
             id,
+            Values {
+                original: Value::None,
+                current: value,
+            },
         )
     }
 
     pub fn new_borrowed(value: &'a Value<'_>, id: u64) -> Self {
-        Self::from_states(Value::from_borrowed(value), Value::from_borrowed(value), id)
-    }
-
-    pub fn owned_clone(&self) -> Tracked<Value<'static>> {
-        self.clone_with_states(
-            self.original.clone().into_owned(),
-            self.current.clone().into_owned(),
+        Self::from_states(
+            id,
+            Values {
+                original: Value::from_borrowed(value),
+                current: Value::from_borrowed(value),
+            },
         )
     }
 
-    pub fn into_owned(self) -> Tracked<Value<'static>> {
+    pub fn owned_clone(&self) -> Tracked<Value<'static>, Value<'static>> {
+        self.clone_with_states(Values {
+            original: self.value.original.clone().into_owned(),
+            current: self.value.current.clone().into_owned(),
+        })
+    }
+
+    pub fn into_owned(self) -> Tracked<Value<'static>, Value<'static>> {
         Tracked {
             id: self.id,
-            original: self.original.into_owned(),
-            current: self.current.into_owned(),
-            reads: self.reads,
-            existence_checks: self.existence_checks,
-            writes: self.writes,
-            deltas: self.deltas,
+            value: Values {
+                original: self.value.original.into_owned(),
+                current: self.value.current.into_owned(),
+            },
+            operations: self.operations,
         }
     }
 
-    /// Replace the value while preserving access history and recording a write.
+    /// Init the value with a new non-None value.
     pub fn set(&mut self, value: Value<'a>) -> Result<(), StoreError> {
-        if matches!(
-            value,
-            Value::Marker(Marker::Missing | Marker::Deleted | Marker::Stripped)
-        ) {
-            return Err(StoreError::ValueCannotBeStripped);
+        if matches!(value, Value::None) {
+            return Err(StoreError::SetNoneToValue);
         }
 
+        self.operations.deltas.increment();
         if self.is_live() || self.is_deleted() {
-            self.writes.increment();
             return Err(StoreError::ValueCannotBeRecreated);
         }
 
-        self.current = value;
+        self.value.current = value;
         Ok(())
-    }
-
-    pub fn delete(&mut self) -> Result<(), StoreError> {
-        self.writes.increment();
-        if !self.is_live() {
-            return Err(StoreError::DeleteNonexistingEntry);
-        }
-        self.current = if self.is_created() {
-            Value::Marker(Marker::Missing)
-        } else {
-            Value::Marker(Marker::Deleted)
-        };
-        Ok(())
-    }
-
-    pub fn get(&mut self) -> Option<&Value<'a>> {
-        self.reads.increment();
-        self.is_live().then_some(&self.current)
-    }
-
-    pub fn check(&mut self) {
-        self.existence_checks.increment();
     }
 
     pub fn add_delta(&mut self, delta: Delta) -> Result<(), StateError> {
         if !self.is_live() {
             return Err(StateError::CannotAddDeltaToMissingValue);
         }
-        self.deltas.increment();
-        self.current.add_delta(&delta)
+        self.operations.deltas.increment();
+        self.value.current.add_delta(&delta)
+    }
+
+    pub fn delete(&mut self) -> Result<(), StoreError> {
+        self.operations.deletes.increment();
+        self.value.current = Value::None;
+        Ok(())
+    }
+
+    pub fn get(&mut self) -> Option<&Value<'a>> {
+        self.operations.reads.increment();
+        self.is_live().then_some(&self.value.current)
+    }
+
+    pub fn check(&mut self) {
+        self.operations.existence_checks.increment();
     }
 
     pub fn apply_delta(&mut self) -> Option<&Value<'a>> {
-        self.writes.increment();
+        self.operations.deltas.increment();
         if !self.is_live() {
             return None;
         }
-        self.current.apply_delta();
-        Some(&self.current)
+        self.value.current.apply_delta();
+        Some(&self.value.current)
     }
 
     pub fn has_delta(&self) -> bool {
-        self.deltas.count() > 0
+        self.operations.deltas.count() > 0
     }
 
     pub fn is_creation_cancelled(&self) -> bool {
-        matches!(self.original, Value::Marker(Marker::Missing))
-            && matches!(self.current, Value::Marker(Marker::Missing))
+        matches!(self.value.original, Value::None) && matches!(self.value.current, Value::None)
     }
 
     pub fn is_live(&self) -> bool {
-        !matches!(
-            self.current,
-            Value::Marker(Marker::Missing | Marker::Deleted)
-        )
+        !matches!(self.value.current, Value::None)
     }
 
     pub fn is_missing(&self) -> bool {
-        matches!(self.current, Value::Marker(Marker::Missing))
+        matches!(self.value.current, Value::None)
     }
 
     pub fn is_deleted(&self) -> bool {
-        matches!(self.current, Value::Marker(Marker::Deleted))
+        matches!(self.value.current, Value::None) && !matches!(self.value.original, Value::None)
     }
 
     pub fn is_created(&self) -> bool {
-        matches!(self.original, Value::Marker(Marker::Missing))
-            && !matches!(self.current, Value::Marker(Marker::Missing))
+        matches!(self.value.original, Value::None) && !matches!(self.value.current, Value::None)
     }
 
     pub fn is_preexisting(&self) -> bool {
-        !matches!(self.original, Value::Marker(Marker::Missing))
+        !matches!(self.value.original, Value::None)
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.writes.count() == 0 && self.deltas.count() == 0 && !self.is_created()
-    }
-
-    pub fn has_conflict_with(&self, other: Tracked<Value<'a>>) -> bool {
-        if self.is_missing() || other.is_missing() {
-            return false;
-        }
-        true
+        self.operations.deltas.count() == 0 && self.operations.deletes.count() == 0
     }
 }
 
-//
-impl<'a> Tracked<Value<'a>> {
-    fn from_states(original: Value<'a>, current: Value<'a>, id: u64) -> Self {
+impl<'a> Tracked<Value<'a>, Value<'a>> {
+    fn from_states(id: u64, value: Values<Value<'a>, Value<'a>>) -> Self {
         Self {
             id,
-            original,
-            current,
-            reads: Counter::default(),
-            existence_checks: Counter::default(),
-            writes: Counter::default(),
-            deltas: Counter::default(),
+            value,
+            operations: Operations::default(),
         }
     }
 }

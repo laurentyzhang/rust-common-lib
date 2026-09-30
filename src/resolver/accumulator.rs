@@ -1,80 +1,61 @@
-use std::collections::{HashMap, HashSet};
-
-use crate::crdt::state::{Numeric, Tracked, TransactionOutput, numeric::ComparableNumeric};
+use super::traits::{Rejected, Resolver};
+use crate::crdt::state::{Numeric, Status, Tracked, value::Value};
+use crate::execution::output::ExecutionOutput;
+use std::collections::{BTreeSet, HashMap};
 
 pub struct Accumulator<K> {
-    entries: Vec<Option<Tracked<Numeric<'static>>>>,
-    by_key: HashMap<K, Vec<(u64, usize)>>,
+    entries: HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Numeric<'static>>>>>,
 }
 
 impl<K> Accumulator<K> {
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
-            by_key: HashMap::new(),
+            entries: HashMap::new(),
         }
     }
 
-    pub fn import(&mut self, numeric_trans: TransactionOutput<K, Tracked<Numeric<'static>>>)
-    where
+    pub fn import(
+        &mut self,
+        numeric_trans: HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Numeric<'static>>>>>,
+    ) where
         K: std::cmp::Eq + std::hash::Hash,
     {
-        let TransactionOutput { tx_id, records, .. } = numeric_trans;
-
-        for (key, value) in records {
-            let entry_ind = self.entries.len();
-
-            self.entries.push(Some(value));
-            self.by_key.entry(key).or_default().push((tx_id, entry_ind));
+        for (key, mut records) in numeric_trans {
+            self.entries.entry(key).or_default().append(&mut records);
         }
     }
 
-    pub fn accumulate(&mut self) -> Vec<u64> {
-        self.sort_transactions();
-
-        let mut rejected = HashSet::new();
-
-        self.by_key.values().for_each(|key_entries| {
-            let Some(first) = key_entries
-                .iter()
-                .position(|(_, entry_ind)| self.entries[*entry_ind].is_some())
-            else {
-                return;
-            };
-
-            let first_ind = key_entries[first].1;
-            let mut accumulated = self.entries[first_ind].take().unwrap().into_current();
-
-            key_entries
-                .iter()
-                .skip(first + 1)
-                .for_each(|(tx_id, entry_ind)| {
-                    let Some(value) = self.entries[*entry_ind].take() else {
-                        return;
-                    };
-
-                    if accumulated.add_delta(&value.current().delta()).is_err() {
-                        rejected.insert(*tx_id);
-                    }
-                });
-        });
-
-        let mut rejected = rejected.into_iter().collect::<Vec<_>>();
-        rejected.sort_unstable();
-        rejected
+    pub fn accumulate(&mut self) -> Vec<Rejected<K>>
+    where
+        K: Send + Sync,
+    {
+        Self::resolve(&mut self.entries)
     }
+}
 
-    fn sort_transactions(&mut self) {
-        let entries = &self.entries;
+impl<K> Resolver<K> for Accumulator<K> {
+    type Input = ExecutionOutput<K, Tracked<Status, Numeric<'static>>>;
 
-        self.by_key.values_mut().for_each(|key_entries| {
-            key_entries.sort_unstable_by(|(left_tx_id, left_ind), (right_tx_id, right_ind)| {
-                let left = ComparableNumeric::new(entries[*left_ind].as_ref().unwrap().current());
-                let right = ComparableNumeric::new(entries[*right_ind].as_ref().unwrap().current());
+    fn resolve_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
+        let mut rejected = Vec::new();
+        let mut records = records.into_iter();
+        let Some(first) = records.next() else {
+            return rejected;
+        };
 
-                left.compare_by(&right, || left_tx_id.cmp(right_tx_id))
-            });
-        });
+        let mut accumulated = first.data.into_current();
+
+        for record in records {
+            if let Err(error) = accumulated.add_delta(&record.data.current().delta()) {
+                rejected.push((
+                    record.map_data(|data| {
+                        data.map_current(|current| Status::Value(Value::Numeric(current)))
+                    }),
+                    error.into(),
+                ));
+            }
+        }
+        rejected
     }
 }
 
@@ -84,9 +65,11 @@ mod tests {
     use crate::crdt::{
         Crdt,
         int64::I64,
-        state::{DeltaOp, Value},
+        state::{Delta, DeltaOp, Value, status::Tag, value::Values},
         u256::U256,
+        uint64::U64,
     };
+    use crate::resolver::reason::Reason;
     use std::borrow::Cow;
 
     fn u256_value(delta: alloy_primitives::U256) -> Numeric<'static> {
@@ -105,6 +88,20 @@ mod tests {
         Numeric::U256(Cow::Owned(value))
     }
 
+    fn u64_value(delta: u64) -> Numeric<'static> {
+        let mut value = U64::default();
+        value.add_delta(&DeltaOp::Add(delta)).unwrap();
+        Numeric::U64(Cow::Owned(value))
+    }
+
+    fn u64_operation(operation: DeltaOp<u64>) -> Numeric<'static> {
+        let mut value = U64::default();
+        value.add_delta(&DeltaOp::Add(10)).unwrap();
+        value.apply_delta();
+        value.add_delta(&operation).unwrap();
+        Numeric::U64(Cow::Owned(value))
+    }
+
     fn i64_value(delta: i64, lower: i64, upper: i64) -> Numeric<'static> {
         let mut value = I64::new(lower, upper).unwrap();
         value.add_delta(&delta).unwrap();
@@ -114,21 +111,233 @@ mod tests {
     fn execution<K>(
         tx_id: u64,
         records: Vec<(K, Numeric<'static>)>,
-    ) -> TransactionOutput<K, Tracked<Numeric<'static>>> {
-        TransactionOutput {
-            tx_id,
-            gas_used: 0,
-            records: records
-                .into_iter()
-                .map(|(key, value)| {
-                    (
-                        key,
-                        Tracked::<Value<'static>>::new_owned_empty(tx_id)
-                            .clone_with_states(value.clone(), value),
-                    )
-                })
-                .collect(),
+    ) -> HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Numeric<'static>>>>>
+    where
+        K: Clone + Eq + std::hash::Hash,
+    {
+        let mut outputs = HashMap::new();
+
+        for (key, value) in records {
+            outputs
+                .entry(key.clone())
+                .or_insert_with(BTreeSet::new)
+                .insert(ExecutionOutput {
+                    id: tx_id,
+                    key,
+                    gas_used: 0,
+                    data: Tracked::<Value<'static>, Value<'static>>::new_owned_empty(tx_id)
+                        .clone_with_states(Values {
+                            original: Status::Tag(Tag::Missing),
+                            current: value,
+                        }),
+                });
         }
+
+        outputs
+    }
+
+    fn assert_mixed_sign_rejections(
+        base: Numeric<'static>,
+        deltas: Vec<Delta>,
+        underflow_id: u64,
+        overflow_ids: &[u64],
+    ) {
+        // Each transaction starts from the same committed value and is valid
+        // on its own. Only combining transactions may exceed the type's range.
+        let values = deltas
+            .iter()
+            .map(|delta| {
+                let mut value = base.clone();
+                value
+                    .add_delta(delta)
+                    .expect("individual delta must be valid");
+                value
+            })
+            .collect::<Vec<_>>();
+
+        // Check every sorted prefix, so accepted deltas after underflow and
+        // the precise point of overflow are verified, in either import order.
+        for prefix_len in 1..=values.len() {
+            for reverse_import in [false, true] {
+                let mut accumulator = Accumulator::new();
+                let mut indices = (0..prefix_len).collect::<Vec<_>>();
+                if reverse_import {
+                    indices.reverse();
+                }
+                for index in indices {
+                    accumulator.import(execution(
+                        index as u64 + 1,
+                        vec![(7, values[index].clone())],
+                    ));
+                }
+
+                assert_eq!(
+                    accumulator.entries[&7]
+                        .iter()
+                        .map(|record| record.id)
+                        .collect::<Vec<_>>(),
+                    (1..=prefix_len as u64).collect::<Vec<_>>(),
+                );
+                let rejected = accumulator.accumulate();
+                let expected_ids = std::iter::once(underflow_id)
+                    .chain(overflow_ids.iter().copied())
+                    .filter(|id| *id <= prefix_len as u64)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    rejected
+                        .iter()
+                        .map(|(record, _)| record.id)
+                        .collect::<Vec<_>>(),
+                    expected_ids,
+                    "prefix_len={prefix_len}, reverse_import={reverse_import}",
+                );
+
+                for (record, reason) in rejected {
+                    assert_eq!(record.key, 7);
+                    assert!(matches!(
+                        record.data.current(),
+                        Status::Value(Value::Numeric(value)) if value == &values[record.id as usize - 1]
+                    ));
+                    if record.id == underflow_id {
+                        assert!(matches!(
+                            reason,
+                            Reason::NumericError(crate::resolver::reason::NumericError::Underflow(
+                                _
+                            ))
+                        ));
+                    } else {
+                        assert!(matches!(
+                            reason,
+                            Reason::NumericError(crate::resolver::reason::NumericError::Overflow(
+                                _
+                            ))
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn accumulate_i64_mixed_signs_reports_underflow_and_overflow() {
+        for (initial, deltas, overflow_ids) in [
+            // Pending delta reaches MIN, cancels to zero, then reaches MAX.
+            (
+                0,
+                vec![
+                    i64::MIN + 1,
+                    i64::MIN + 2,
+                    -1,
+                    0,
+                    1,
+                    i64::MAX,
+                    i64::MAX,
+                    i64::MAX,
+                    i64::MAX,
+                ],
+                [8, 9],
+            ),
+            // Underflow occurs in stored value + pending delta. Later deltas
+            // reach MIN, cancel, reach pending MAX, and overflow pending delta.
+            (
+                -10,
+                vec![
+                    i64::MIN + 11,
+                    -2,
+                    -1,
+                    0,
+                    1,
+                    i64::MAX - 10,
+                    i64::MAX,
+                    i64::MAX,
+                    i64::MAX,
+                ],
+                [8, 9],
+            ),
+            // Underflow occurs in pending delta; overflow occurs when adding
+            // a representable pending delta (MAX - 2) to the stored value 10.
+            (
+                10,
+                vec![
+                    i64::MIN + 1,
+                    i64::MIN + 2,
+                    -1,
+                    0,
+                    1,
+                    i64::MAX / 2,
+                    i64::MAX / 2,
+                    i64::MAX / 2,
+                    i64::MAX / 2,
+                    i64::MAX / 2,
+                ],
+                [9, 10],
+            ),
+        ] {
+            let mut base = I64::default();
+            base.add_delta(&initial).unwrap();
+            base.apply_delta();
+            assert_mixed_sign_rejections(
+                Numeric::I64(Cow::Owned(base)),
+                deltas.into_iter().map(Delta::I64).collect(),
+                2,
+                &overflow_ids,
+            );
+        }
+    }
+
+    #[test]
+    fn accumulate_u64_mixed_signs_reports_underflow_and_overflow() {
+        let mut base = U64::default();
+        base.add_delta(&DeltaOp::Add(10)).unwrap();
+        base.apply_delta();
+
+        // 10 - 6 = 4; -5 underflows; -4 reaches zero; +10 cancels;
+        // +(MAX - 10) reaches MAX. Both following additions overflow.
+        let deltas = [
+            DeltaOp::Sub(6),
+            DeltaOp::Sub(5),
+            DeltaOp::Sub(4),
+            DeltaOp::Add(0),
+            DeltaOp::Add(10),
+            DeltaOp::Add(u64::MAX - 10),
+            DeltaOp::Add(u64::MAX - 10),
+            DeltaOp::Add(u64::MAX - 10),
+        ];
+        assert_mixed_sign_rejections(
+            Numeric::U64(Cow::Owned(base)),
+            deltas.into_iter().map(Delta::U64).collect(),
+            2,
+            &[7, 8],
+        );
+    }
+
+    #[test]
+    fn accumulate_u256_mixed_signs_reports_underflow_and_overflow() {
+        use alloy_primitives::U256 as Number;
+
+        let mut base = U256::default();
+        base.add_delta(&DeltaOp::Add(Number::from(10))).unwrap();
+        base.apply_delta();
+
+        // Exercise the full 256-bit range with the same recovery and
+        // cancellation sequence as U64, including repeated overflow.
+        let large = Number::MAX - Number::from(10);
+        let deltas = [
+            DeltaOp::Sub(Number::from(6)),
+            DeltaOp::Sub(Number::from(5)),
+            DeltaOp::Sub(Number::from(4)),
+            DeltaOp::Add(Number::ZERO),
+            DeltaOp::Add(Number::from(10)),
+            DeltaOp::Add(large),
+            DeltaOp::Add(large),
+            DeltaOp::Add(large),
+        ];
+        assert_mixed_sign_rejections(
+            Numeric::U256(Cow::Owned(base)),
+            deltas.into_iter().map(Delta::U256).collect(),
+            2,
+            &[7, 8],
+        );
     }
 
     #[test]
@@ -152,11 +361,9 @@ mod tests {
             90,
             vec![(1, u256_value(saturated + alloy_primitives::U256::from(1)))],
         ));
-        accumulator.sort_transactions();
-
-        let tx_ids = accumulator.by_key[&1]
+        let tx_ids = accumulator.entries[&1]
             .iter()
-            .map(|(tx_id, _)| *tx_id)
+            .map(|record| record.id)
             .collect::<Vec<_>>();
 
         assert_eq!(tx_ids, vec![20, 30, 90, 1]);
@@ -202,11 +409,9 @@ mod tests {
             )],
         ));
 
-        accumulator.sort_transactions();
-
-        let tx_ids = accumulator.by_key[&1]
+        let tx_ids = accumulator.entries[&1]
             .iter()
-            .map(|(tx_id, _)| *tx_id)
+            .map(|record| record.id)
             .collect::<Vec<_>>();
 
         assert_eq!(tx_ids, vec![40, 30, 10, 20, 50]);
@@ -224,7 +429,113 @@ mod tests {
         accumulator.import(execution(6, vec![(3, i64_value(5, -5, 5))]));
 
         let rejected = accumulator.accumulate();
+        let rejected = rejected
+            .into_iter()
+            .map(|(record, _)| record.id)
+            .collect::<Vec<_>>();
 
         assert_eq!(rejected, vec![2, 3, 5]);
+    }
+
+    #[test]
+    fn empty_and_single_record_groups_have_no_rejections() {
+        let mut accumulator = Accumulator::<u64>::new();
+        assert!(accumulator.accumulate().is_empty());
+
+        accumulator.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
+        assert!(accumulator.accumulate().is_empty());
+        assert!(accumulator.entries[&7].is_empty());
+        assert!(accumulator.accumulate().is_empty());
+    }
+
+    #[test]
+    fn rejection_retains_key_numeric_data_and_reason() {
+        let mut accumulator = Accumulator::new();
+        accumulator.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
+        accumulator.import(execution(2, vec![(7, i64_value(4, -5, 5))]));
+
+        let rejected = accumulator.accumulate();
+        assert_eq!(rejected.len(), 1);
+
+        let (record, reason) = &rejected[0];
+        assert_eq!(record.id, 2);
+        assert_eq!(record.key, 7);
+        assert!(matches!(
+            record.data.current(),
+            Status::Value(Value::Numeric(Numeric::I64(value)))
+                if value.delta().copied() == Some(4)
+        ));
+        assert!(matches!(
+            reason,
+            Reason::NumericError(crate::resolver::reason::NumericError::AboveUpperLimit(_))
+        ));
+    }
+
+    #[test]
+    fn same_transaction_rejected_for_multiple_keys_keeps_every_record() {
+        let mut accumulator = Accumulator::new();
+        accumulator.import(execution(1, vec![(10, i64_value(3, -5, 5))]));
+        accumulator.import(execution(2, vec![(20, i64_value(3, -5, 5))]));
+        accumulator.import(execution(
+            7,
+            vec![(10, i64_value(4, -5, 5)), (20, i64_value(4, -5, 5))],
+        ));
+
+        let rejected = accumulator.accumulate();
+        assert_eq!(rejected.len(), 2);
+        assert!(rejected.iter().all(|(record, _)| record.id == 7));
+
+        let mut keys = rejected
+            .into_iter()
+            .map(|(record, _)| record.key)
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![10, 20]);
+    }
+
+    #[test]
+    fn accumulate_reports_arithmetic_overflow() {
+        let mut accumulator = Accumulator::new();
+        accumulator.import(execution(1, vec![(7, u64_value(1))]));
+        accumulator.import(execution(2, vec![(7, u64_value(u64::MAX))]));
+
+        let rejected = accumulator.accumulate();
+        assert_eq!(rejected.len(), 1);
+
+        let (record, reason) = &rejected[0];
+        assert_eq!(record.id, 2);
+        assert_eq!(record.key, 7);
+        assert!(matches!(
+            record.data.current(),
+            Status::Value(Value::Numeric(Numeric::U64(value)))
+                if value.delta() == Some(&DeltaOp::Add(u64::MAX))
+        ));
+        assert!(matches!(
+            reason,
+            Reason::NumericError(crate::resolver::reason::NumericError::Overflow(_))
+        ));
+    }
+
+    #[test]
+    fn accumulate_reports_arithmetic_underflow() {
+        let mut accumulator = Accumulator::new();
+        accumulator.import(execution(1, vec![(7, u64_operation(DeltaOp::Sub(6)))]));
+        accumulator.import(execution(2, vec![(7, u64_operation(DeltaOp::Sub(5)))]));
+
+        let rejected = accumulator.accumulate();
+        assert_eq!(rejected.len(), 1);
+
+        let (record, reason) = &rejected[0];
+        assert_eq!(record.id, 2);
+        assert_eq!(record.key, 7);
+        assert!(matches!(
+            record.data.current(),
+            Status::Value(Value::Numeric(Numeric::U64(value)))
+                if value.delta() == Some(&DeltaOp::Sub(5))
+        ));
+        assert!(matches!(
+            reason,
+            Reason::NumericError(crate::resolver::reason::NumericError::Underflow(_))
+        ));
     }
 }
