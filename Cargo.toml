@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "accumulator_sorting"
 harness = false
+
+[[bench]]
+name = "conflict_detection"
+harness = false

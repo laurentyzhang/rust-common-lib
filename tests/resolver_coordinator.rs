@@ -4,10 +4,9 @@ use rust_common_lib::{
         Crdt, I64, U64, U256,
         state::{Delta, DeltaOp, Numeric, Status, Tracked, Value, status::Tag},
     },
-    execution::VmCache,
+    execution::{VmCache, output::ExecutionOutput},
     resolver::{
         ConflictDetector,
-        output::ExecutionOutput,
         reason::{AccessConflict, NumericError, Reason},
     },
 };
@@ -54,7 +53,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
             detector.import(vec![record]);
         }
 
-        let rejected = detector.detect_conflicts();
+        let rejected = detector.detect_conflicts().rejected;
         assert_eq!(
             rejected
                 .iter()
@@ -74,6 +73,35 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
 }
 
 #[test]
+fn conflict_result_builds_commit_and_reject_plans() {
+    let mut detector = ConflictDetector::new();
+    detector.import(combined_records());
+
+    let result = detector.detect_conflicts();
+    assert_eq!(
+        result.committable.iter().copied().collect::<Vec<_>>(),
+        vec![5, 11]
+    );
+
+    let commit_plan = result.commit_plan(42, 7);
+    assert_eq!(commit_plan.block_id, 42);
+    assert_eq!(commit_plan.generation, 7);
+    assert_eq!(commit_plan.accepted, vec![5, 11]);
+
+    let reject_plan = result.reject_plan(42, 7);
+    assert_eq!(reject_plan.block_id, 42);
+    assert_eq!(reject_plan.generation, 7);
+    assert_eq!(
+        reject_plan
+            .rejected
+            .iter()
+            .map(|(record, _)| (record.id, record.key))
+            .collect::<Vec<_>>(),
+        vec![(20, 20), (30, 10)]
+    );
+}
+
+#[test]
 fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     let mut fallback = VmCache::new(0);
     fallback
@@ -88,7 +116,8 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     let mut detector = ConflictDetector::new();
     detector.import(second.drain().0);
     detector.import(first.drain().0);
-    let rejected = detector.detect_conflicts();
+    let result = detector.detect_conflicts();
+    let rejected = &result.rejected;
 
     assert_eq!(rejected.len(), 2);
     assert!(
@@ -110,16 +139,27 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
                 if value.delta().copied() == Some(4)
         )
     }));
+
+    let commit_plan = result.commit_plan(42, 7);
+    assert_eq!(commit_plan.accepted, vec![1]);
+    let reject_plan = result.reject_plan(42, 7);
+    assert_eq!(reject_plan.rejected.len(), 2);
+    assert!(
+        reject_plan
+            .rejected
+            .iter()
+            .all(|(record, _)| record.id == 2)
+    );
 }
 
 #[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
     let mut detector = ConflictDetector::new();
-    assert!(detector.detect_conflicts().is_empty());
+    assert!(detector.detect_conflicts().rejected.is_empty());
 
     for _ in 0..2 {
         detector.import(combined_records());
-        let rejected = detector.detect_conflicts();
+        let rejected = detector.detect_conflicts().rejected;
         assert_eq!(
             rejected
                 .iter()
@@ -127,7 +167,7 @@ fn consumes_both_stages_and_accepts_a_fresh_batch() {
                 .collect::<Vec<_>>(),
             vec![20, 30],
         );
-        assert!(detector.detect_conflicts().is_empty());
+        assert!(detector.detect_conflicts().rejected.is_empty());
     }
 }
 
@@ -151,7 +191,7 @@ fn numeric_reads_remain_visible_to_access_detection() {
         let mut detector = ConflictDetector::new();
         detector.import(writer.drain().0);
         detector.import(reader.drain().0);
-        let rejected = detector.detect_conflicts();
+        let rejected = detector.detect_conflicts().rejected;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!((rejected[0].0.id, rejected[0].0.key), (2, 7));
@@ -221,7 +261,7 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
         let mut detector = ConflictDetector::new();
         detector.import(second.drain().0);
         detector.import(first.drain().0);
-        let rejected = detector.detect_conflicts();
+        let rejected = detector.detect_conflicts().rejected;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!((rejected[0].0.id, rejected[0].0.key), (2, 7));

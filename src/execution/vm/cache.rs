@@ -1,7 +1,7 @@
 use crate::crdt::state::Delta;
 use crate::crdt::state::{Status, Tracked, Value, status};
 use crate::execution::error::Error;
-use crate::resolver::output::ExecutionOutput;
+use crate::execution::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
 use std::borrow::Cow;

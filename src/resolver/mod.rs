@@ -5,4 +5,5 @@ pub mod detector;
 pub mod reason;
 pub mod traits;
 
+pub use commit_plan::{CommitPlan, ConflictResult, RejectPlan};
 pub use detector::ConflictDetector;

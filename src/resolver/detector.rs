@@ -1,6 +1,7 @@
 use super::{
     access_detector::AccessDetector,
     accumulator::Accumulator,
+    commit_plan::ConflictResult,
     traits::{Rejected, Resolver},
 };
 use crate::crdt::state::{
@@ -15,6 +16,7 @@ use std::collections::{BTreeSet, HashMap};
 pub struct ConflictDetector<K> {
     access_detector: AccessDetector<K>,
     accumulator: Accumulator<K>,
+    result: ConflictResult<K>,
 }
 
 impl<K> ConflictDetector<K> {
@@ -22,6 +24,7 @@ impl<K> ConflictDetector<K> {
         Self {
             access_detector: AccessDetector::new(),
             accumulator: Accumulator::new(),
+            result: ConflictResult::default(),
         }
     }
 
@@ -29,6 +32,10 @@ impl<K> ConflictDetector<K> {
     where
         K: Clone + Eq + std::hash::Hash,
     {
+        for transaction_id in transitions.iter().map(|record| record.id) {
+            self.result.committable.insert(transaction_id);
+        }
+
         let mut numeric_trans = HashMap::new();
         for transition in &mut transitions {
             if matches!(
@@ -60,7 +67,7 @@ impl<K> ConflictDetector<K> {
 
     /// Runs both stages in parallel and retains every rejection reason,
     /// including multiple reasons for the same transaction and key.
-    pub fn detect_conflicts(&mut self) -> Vec<Rejected<K>>
+    pub fn detect_conflicts(&mut self) -> ConflictResult<K>
     where
         K: Eq + std::hash::Hash + Send + Sync,
     {
@@ -70,7 +77,15 @@ impl<K> ConflictDetector<K> {
         );
         rejected.extend(numeric_rejected);
         rejected.sort_unstable_by_key(|(record, _)| record.id);
-        rejected
+        let rejected_ids = rejected
+            .iter()
+            .map(|(record, _)| record.id)
+            .collect::<BTreeSet<_>>();
+        self.result
+            .committable
+            .retain(|transaction_id| !rejected_ids.contains(transaction_id));
+        self.result.rejected = rejected;
+        std::mem::take(&mut self.result)
     }
 }
 
@@ -254,7 +269,7 @@ mod tests {
                             detector.import(records);
                         }
 
-                        let rejected = detector.detect_conflicts();
+                        let rejected = detector.detect_conflicts().rejected;
                         assert_eq!(rejected.len(), usize::from(same_key));
                         if same_key {
                             // A pure delete sorts before a read. A read+delete
@@ -356,7 +371,7 @@ mod tests {
                             detector.import(records);
                         }
 
-                        let rejected = detector.detect_conflicts();
+                        let rejected = detector.detect_conflicts().rejected;
                         assert_eq!(rejected.len(), usize::from(same_key));
                         if same_key {
                             // A pure delete sorts first. With a delta before
@@ -480,7 +495,7 @@ mod tests {
             ),
         ]);
 
-        let rejected = detector.detect_conflicts();
+        let rejected = detector.detect_conflicts().rejected;
         assert_eq!(rejected.len(), 2);
         assert!(
             rejected
