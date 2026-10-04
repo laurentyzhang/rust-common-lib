@@ -53,10 +53,12 @@ where
         }
     }
 
-    fn get_raw(&self, key: &K) -> Option<&Value<'value>> {
+    fn get_untracked(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
             Some(value) => Some(value),
-            None => self.fallback.and_then(|fallback| fallback.get_raw(key)),
+            None => self
+                .fallback
+                .and_then(|fallback| fallback.get_untracked(key)),
         }
     }
 }

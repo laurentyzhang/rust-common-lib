@@ -1,4 +1,4 @@
-use super::traits::{Rejected, Resolver};
+use super::traits::{ConflictChecker, Rejected};
 use crate::crdt::state::{Numeric, Status, Tracked, value::Value};
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
@@ -29,14 +29,14 @@ impl<K> Accumulator<K> {
     where
         K: Send + Sync,
     {
-        Self::resolve(&mut self.entries)
+        Self::find_rejections(&mut self.entries)
     }
 }
 
-impl<K> Resolver<K> for Accumulator<K> {
+impl<K> ConflictChecker<K> for Accumulator<K> {
     type Input = ExecutionOutput<K, Tracked<Status, Numeric<'static>>>;
 
-    fn resolve_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
+    fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
         let mut rejected = Vec::new();
         let mut records = records.into_iter();
         let Some(first) = records.next() else {

@@ -6,23 +6,24 @@ use std::collections::{BTreeSet, HashMap};
 
 pub type Rejected<K> = (ExecutionOutput<K, Tracked<Status, Status>>, Reason);
 
-/// Resolves sorted execution records independently for each key.
-pub trait Resolver<K> {
-    /// The record type and ordering used by this resolver stage.
+/// Checks sorted execution records for conflicts independently for each key.
+pub trait ConflictChecker<K> {
+    /// The record type and ordering used by this conflict check.
     type Input: Ord;
 
-    fn resolve_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>>;
+    /// Returns records rejected by this stage's checks for one state key.
+    fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>>;
 
     /// Consumes each key's records in parallel and sorts rejections by
     /// transaction ID. The map retains its keys with empty record sets.
-    fn resolve(records_by_key: &mut HashMap<K, BTreeSet<Self::Input>>) -> Vec<Rejected<K>>
+    fn find_rejections(records_by_key: &mut HashMap<K, BTreeSet<Self::Input>>) -> Vec<Rejected<K>>
     where
         K: Send + Sync,
         Self::Input: Send,
     {
         let rejected_by_key = records_by_key
             .par_iter_mut()
-            .map(|(_, records)| Self::resolve_by_key(std::mem::take(records)))
+            .map(|(_, records)| Self::find_rejections_by_key(std::mem::take(records)))
             .filter(|rejected| !rejected.is_empty())
             .collect::<Vec<Vec<Rejected<K>>>>();
 

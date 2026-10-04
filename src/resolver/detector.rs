@@ -2,7 +2,7 @@ use super::{
     access_detector::AccessDetector,
     accumulator::Accumulator,
     commit_plan::ConflictResult,
-    traits::{Rejected, Resolver},
+    traits::{ConflictChecker, Rejected},
 };
 use crate::crdt::state::{
     Tracked,
@@ -96,7 +96,7 @@ pub fn detect<K>(
 where
     K: Eq + std::hash::Hash + Send + Sync,
 {
-    AccessDetector::<K>::resolve(records_by_key)
+    AccessDetector::<K>::find_rejections(records_by_key)
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ where
             if matches!(value, Value::None) {
                 deleted.insert(key.clone());
             } else if deleted.contains(key)
-                || matches!(self.block_cache.get_raw(key), Some(Value::None))
+                || matches!(self.block_cache.get_untracked(key), Some(Value::None))
             {
                 return Err(StoreError::ValueCannotBeRecreated);
             }

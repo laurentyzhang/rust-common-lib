@@ -1,6 +1,6 @@
 use super::{
     reason::{AccessConflict, Reason},
-    traits::{Rejected, Resolver},
+    traits::{ConflictChecker, Rejected},
 };
 use crate::crdt::state::{
     Tracked,
@@ -38,14 +38,14 @@ impl<K> AccessDetector<K> {
     where
         K: Send + Sync,
     {
-        Self::resolve(&mut self.entries)
+        Self::find_rejections(&mut self.entries)
     }
 }
 
-impl<K> Resolver<K> for AccessDetector<K> {
+impl<K> ConflictChecker<K> for AccessDetector<K> {
     type Input = ExecutionOutput<K, Tracked<Status, Status>>;
 
-    fn resolve_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
+    fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
         let mut rejected = Vec::new();
         let mut records = records.into_iter();
 

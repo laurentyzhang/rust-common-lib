@@ -16,6 +16,16 @@ where
             fallback,
         }
     }
+
+    fn get(&self, key: &K) -> Option<&V> {
+        match self.cache.peek(key) {
+            Some(value) => Some(value),
+            None => self
+                .fallback
+                .as_ref()
+                .and_then(|fallback| (**fallback).get_untracked(key)),
+        }
+    }
 }
 
 impl<'a, K, V> FallbackStore<'a, K, V> for CachedStore<'a, K, V>
@@ -41,13 +51,7 @@ where
         }
     }
 
-    fn get_raw(&self, key: &K) -> Option<&V> {
-        match self.cache.peek(key) {
-            Some(value) => Some(value),
-            None => self
-                .fallback
-                .as_ref()
-                .and_then(|fallback| (**fallback).get_raw(key)),
-        }
+    fn get_untracked(&self, key: &K) -> Option<&V> {
+        self.get(key)
     }
 }

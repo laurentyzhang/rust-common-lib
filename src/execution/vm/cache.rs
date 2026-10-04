@@ -89,7 +89,9 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             None => self
                 .fallback
                 .as_ref()
-                .and_then(|fallback: &&dyn FallbackStore<K, Value<'a>>| (**fallback).get_raw(key))
+                .and_then(|fallback: &&dyn FallbackStore<K, Value<'a>>| {
+                    (**fallback).get_untracked(key)
+                })
                 .is_some_and(|value| !matches!(value, Value::None)),
         }
     }
@@ -148,7 +150,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
 
         self.cache.entry(key.clone()).or_insert_with(|| {
             fallback
-                .and_then(|fallback| fallback.get_raw(key))
+                .and_then(|fallback| fallback.get_untracked(key))
                 .map_or_else(
                     || Tracked::new_owned_empty(self.id),
                     |value| Tracked::new_borrowed(value, self.id),
@@ -187,13 +189,13 @@ where
         }
     }
 
-    fn get_raw(&self, key: &K) -> Option<&Value<'value>> {
+    fn get_untracked(&self, key: &K) -> Option<&Value<'value>> {
         match self.cache.get(key) {
             Some(tracked) => Some(tracked.current()),
             None => self
                 .fallback
                 .as_ref()
-                .and_then(|fallback| fallback.get_raw(key)),
+                .and_then(|fallback| fallback.get_untracked(key)),
         }
     }
 }
