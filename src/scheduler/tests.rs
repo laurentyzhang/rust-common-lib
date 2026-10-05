@@ -32,7 +32,7 @@ fn ids(generation: &Generation) -> Vec<u64> {
 
 #[test]
 fn unrelated_callees_share_a_parallel_generation() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(1, CalleeProfile::default());
     scheduler.set_profile(2, CalleeProfile::default());
 
@@ -48,7 +48,7 @@ fn unrelated_callees_share_a_parallel_generation() {
 
 #[test]
 fn known_conflicting_callees_are_serialized_during_finalization() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -73,7 +73,7 @@ fn known_conflicting_callees_are_serialized_during_finalization() {
 
 #[test]
 fn sequential_only_callee_runs_alone() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -92,7 +92,7 @@ fn sequential_only_callee_runs_alone() {
 
 #[test]
 fn repeated_deferrable_callee_places_one_call_in_next_generation() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -111,7 +111,7 @@ fn repeated_deferrable_callee_places_one_call_in_next_generation() {
 
 #[test]
 fn disabling_deferral_keeps_repeated_deferrable_calls_in_current_generation() {
-    let mut scheduler = Scheduler::with_config(SchedulerConfig {
+    let mut scheduler = GreedyScheduler::with_config(SchedulerConfig {
         deferral_enabled: false,
         ..SchedulerConfig::default()
     });
@@ -138,7 +138,7 @@ fn disabling_deferral_keeps_repeated_deferrable_calls_in_current_generation() {
 
 #[test]
 fn sender_nonce_offsets_survive_sequence_id_sorting() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(1, CalleeProfile::default());
 
     let plan = scheduler.schedule([transaction(10, 1, 1, 1), transaction(20, 1, 0, 1)]);
@@ -157,8 +157,8 @@ fn sender_nonce_offsets_survive_sequence_id_sorting() {
     assert_eq!(sequence_nonce_offsets, vec![(10, 1), (20, 0)]);
 }
 
-fn uncompacted_scheduler() -> Scheduler {
-    Scheduler::with_config(SchedulerConfig {
+fn uncompacted_scheduler() -> GreedyScheduler {
+    GreedyScheduler::with_config(SchedulerConfig {
         merge_threshold: 0,
         ..SchedulerConfig::default()
     })
@@ -186,7 +186,7 @@ fn assert_serial_order(plan: &[Generation], before: u64, after: u64) {
     );
 }
 
-fn triangle_profiles(scheduler: &mut Scheduler) {
+fn triangle_profiles(scheduler: &mut GreedyScheduler) {
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -250,7 +250,7 @@ fn fully_parallelizable_overrides_its_own_isolation_and_conflicts() {
 #[test]
 fn isolated_transaction_stays_alone_regardless_of_parallel_peer_seed_order() {
     for (isolated_id, parallel_id) in [(1, 2), (2, 1)] {
-        let mut scheduler = Scheduler::new();
+        let mut scheduler = GreedyScheduler::new();
         scheduler.set_profile(
             1,
             CalleeProfile {
@@ -297,7 +297,7 @@ fn replacing_a_profile_removes_its_stale_incoming_conflict_edges() {
 
 #[test]
 fn compaction_preserves_sender_order_across_a_deferred_predecessor() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     triangle_profiles(&mut scheduler);
 
     let plan = scheduler.schedule([
@@ -330,7 +330,7 @@ fn compaction_does_not_leave_a_sender_predecessor_in_the_source_generation() {
             )
         })
         .collect::<BTreeMap<_, _>>();
-        let mut scheduler = Scheduler::new();
+        let mut scheduler = GreedyScheduler::new();
         for (&callee, profile) in &profiles {
             scheduler.set_profile(callee, profile.clone());
         }
@@ -356,7 +356,7 @@ fn compaction_does_not_leave_a_sender_predecessor_in_the_source_generation() {
 
 #[test]
 fn compaction_does_not_jump_over_an_intervening_conflicting_callee() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     triangle_profiles(&mut scheduler);
 
     let plan = scheduler.schedule([
@@ -371,7 +371,7 @@ fn compaction_does_not_jump_over_an_intervening_conflicting_callee() {
 
 #[test]
 fn compaction_does_not_jump_over_an_isolated_transaction() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -401,7 +401,7 @@ fn compaction_does_not_jump_over_an_isolated_transaction() {
 
 #[test]
 fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -431,7 +431,7 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
 
 #[test]
 fn a_merged_sequence_has_one_nonce_offset_for_each_sender() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     scheduler.set_profile(
         1,
         CalleeProfile {
@@ -463,12 +463,46 @@ fn a_merged_sequence_has_one_nonce_offset_for_each_sender() {
 
 #[test]
 fn empty_input_produces_an_empty_plan() {
-    assert_eq!(Scheduler::new().schedule([]), Vec::<Generation>::new());
+    assert_eq!(GreedyScheduler::new().schedule([]), Vec::<Generation>::new());
+}
+
+#[test]
+fn pass_through_scheduler_puts_each_job_in_its_own_parallel_sequence() {
+    let plan = PassThroughScheduler::new().schedule([
+        transaction(1, 1, 0, 1),
+        transaction(2, 2, 0, 2),
+        transaction(3, 1, 1, 3),
+    ]);
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(ids(&plan[0]), vec![1, 2, 3]);
+    assert!(
+        plan[0]
+            .sequences
+            .iter()
+            .all(|sequence| sequence.transactions.len() == 1)
+    );
+    let offsets = plan[0]
+        .sequences
+        .iter()
+        .map(|sequence| {
+            let job = &sequence.transactions[0];
+            (job.id, sequence.nonce_offsets[0].offset)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(offsets.get(&1), Some(&0));
+    assert_eq!(offsets.get(&2), Some(&0));
+    assert_eq!(offsets.get(&3), Some(&1));
+}
+
+#[test]
+fn pass_through_scheduler_returns_no_generations_for_empty_input() {
+    assert_eq!(PassThroughScheduler::new().schedule([]), Vec::<Generation>::new());
 }
 
 #[test]
 fn input_permutations_produce_the_same_plan() {
-    let mut scheduler = Scheduler::new();
+    let mut scheduler = GreedyScheduler::new();
     triangle_profiles(&mut scheduler);
     let mut transactions = vec![
         transaction(6, 1, 0, 1),
@@ -502,7 +536,7 @@ fn assert_plan_invariants(
     assert_eq!(actual_ids, inputs_by_id.keys().copied().collect::<Vec<_>>());
 
     let mut previous_sender_nonces = BTreeMap::new();
-    for generation in &plan {
+    for generation in plan {
         assert!(!generation.sequences.is_empty());
         let mut sender_order = BTreeMap::<Sender, Vec<(u64, u64)>>::new();
         for sequence in &generation.sequences {
@@ -616,7 +650,7 @@ fn small_profile_combinations_preserve_public_plan_invariants() {
                                     .insert(right);
                             }
                         }
-                        let mut scheduler = Scheduler::with_config(SchedulerConfig {
+                        let mut scheduler = GreedyScheduler::with_config(SchedulerConfig {
                             deferral_enabled,
                             merge_threshold,
                         });
