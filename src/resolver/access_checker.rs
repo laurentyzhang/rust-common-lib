@@ -1,6 +1,6 @@
 use super::{
     reason::{AccessConflict, Reason},
-    traits::{ConflictChecker, Rejected},
+    traits::{Checker, Rejected},
 };
 use crate::crdt::state::{
     Tracked,
@@ -11,11 +11,11 @@ use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
 /// Checks access conflicts for both numeric and nonnumeric records.
-pub struct AccessDetector<K> {
+pub struct AccessChecker<K> {
     entries: HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>>,
 }
 
-impl<K> AccessDetector<K> {
+impl<K> AccessChecker<K> {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -34,7 +34,7 @@ impl<K> AccessDetector<K> {
         }
     }
 
-    pub fn detect_conflicts(&mut self) -> Vec<Rejected<K>>
+    pub fn check_conflicts(&mut self) -> Vec<Rejected<K>>
     where
         K: Send + Sync,
     {
@@ -42,7 +42,7 @@ impl<K> AccessDetector<K> {
     }
 }
 
-impl<K> ConflictChecker<K> for AccessDetector<K> {
+impl<K> Checker<K> for AccessChecker<K> {
     type Input = ExecutionOutput<K, Tracked<Status, Status>>;
 
     fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {

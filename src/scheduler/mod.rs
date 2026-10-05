@@ -1,12 +1,11 @@
 mod job_resolver;
-mod plan;
+mod draft;
 mod scheduler;
 mod sender;
 mod sender_batcher;
 mod store;
 mod workload;
 
-pub use plan::ExecutionPlan;
 pub use scheduler::{Scheduler, SchedulerConfig};
 pub use store::CalleeProfile;
 pub use workload::{Generation, Job, JobSequence};

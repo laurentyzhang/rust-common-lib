@@ -7,12 +7,6 @@ use super::workload::{Generation, Job, JobSequence};
 
 type NonceKey = (u64, u64);
 
-/// Finalized execution plan consisting of multiple generations.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ExecutionPlan {
-    pub generations: Vec<Generation>,
-}
-
 /// Draft execution plan used during scheduling before finalization.
 #[derive(Default)]
 pub(super) struct DraftPlan<'a> {
@@ -335,13 +329,11 @@ impl<'a> DraftPlan<'a> {
 
     /// Builds the public plan in generation order, finalizing each generation's jobs
     /// and sender nonce offsets after all layout changes are complete.
-    pub(super) fn finalize(self) -> ExecutionPlan {
-        ExecutionPlan {
-            generations: self
-                .generations
-                .into_iter()
-                .map(DraftGeneration::finalize)
-                .collect(),
-        }
+    /// Finalizes the scheduler's mutable draft into generations.
+    pub(super) fn finalize(self) -> Vec<Generation> {
+        self.generations
+            .into_iter()
+            .map(DraftGeneration::finalize)
+            .collect()
     }
 }

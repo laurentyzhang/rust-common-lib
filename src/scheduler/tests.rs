@@ -42,8 +42,8 @@ fn unrelated_callees_share_a_parallel_generation() {
         transaction(3, 3, 0, 1),
     ]);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(ids(&plan.generations[0]), vec![1, 2, 3]);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(ids(&plan[0]), vec![1, 2, 3]);
 }
 
 #[test]
@@ -66,9 +66,9 @@ fn known_conflicting_callees_are_serialized_during_finalization() {
 
     let plan = scheduler.schedule([transaction(1, 1, 0, 1), transaction(2, 2, 0, 2)]);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(plan.generations[0].sequences.len(), 1);
-    assert_eq!(ids(&plan.generations[0]), vec![1, 2]);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].sequences.len(), 1);
+    assert_eq!(ids(&plan[0]), vec![1, 2]);
 }
 
 #[test]
@@ -85,9 +85,9 @@ fn sequential_only_callee_runs_alone() {
 
     let plan = scheduler.schedule([transaction(1, 1, 0, 1), transaction(2, 2, 0, 2)]);
 
-    assert_eq!(plan.generations.len(), 2);
-    assert_eq!(ids(&plan.generations[0]), vec![1]);
-    assert_eq!(ids(&plan.generations[1]), vec![2]);
+    assert_eq!(plan.len(), 2);
+    assert_eq!(ids(&plan[0]), vec![1]);
+    assert_eq!(ids(&plan[1]), vec![2]);
 }
 
 #[test]
@@ -103,10 +103,10 @@ fn repeated_deferrable_callee_places_one_call_in_next_generation() {
 
     let plan = scheduler.schedule([transaction(1, 1, 0, 1), transaction(2, 2, 0, 1)]);
 
-    assert_eq!(plan.generations.len(), 2);
-    assert_eq!(ids(&plan.generations[0]), vec![1]);
-    assert_eq!(ids(&plan.generations[1]), vec![2]);
-    assert!(plan.generations[1].sequences[0].transactions[0].is_deferred);
+    assert_eq!(plan.len(), 2);
+    assert_eq!(ids(&plan[0]), vec![1]);
+    assert_eq!(ids(&plan[1]), vec![2]);
+    assert!(plan[1].sequences[0].transactions[0].is_deferred);
 }
 
 #[test]
@@ -125,10 +125,10 @@ fn disabling_deferral_keeps_repeated_deferrable_calls_in_current_generation() {
 
     let plan = scheduler.schedule([transaction(1, 1, 0, 1), transaction(2, 2, 0, 1)]);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(ids(&plan.generations[0]), vec![1, 2]);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(ids(&plan[0]), vec![1, 2]);
     assert!(
-        plan.generations[0]
+        plan[0]
             .sequences
             .iter()
             .flat_map(|sequence| &sequence.transactions)
@@ -143,8 +143,8 @@ fn sender_nonce_offsets_survive_sequence_id_sorting() {
 
     let plan = scheduler.schedule([transaction(10, 1, 1, 1), transaction(20, 1, 0, 1)]);
 
-    assert_eq!(ids(&plan.generations[0]), vec![10, 20]);
-    let sequence_nonce_offsets = plan.generations[0]
+    assert_eq!(ids(&plan[0]), vec![10, 20]);
+    let sequence_nonce_offsets = plan[0]
         .sequences
         .iter()
         .map(|sequence| {
@@ -164,8 +164,8 @@ fn uncompacted_scheduler() -> Scheduler {
     })
 }
 
-fn location(plan: &ExecutionPlan, id: u64) -> (usize, usize, usize) {
-    for (generation_index, generation) in plan.generations.iter().enumerate() {
+fn location(plan: &[Generation], id: u64) -> (usize, usize, usize) {
+    for (generation_index, generation) in plan.iter().enumerate() {
         for (sequence_index, sequence) in generation.sequences.iter().enumerate() {
             for (transaction_index, transaction) in sequence.transactions.iter().enumerate() {
                 if transaction.id == id {
@@ -177,7 +177,7 @@ fn location(plan: &ExecutionPlan, id: u64) -> (usize, usize, usize) {
     panic!("transaction {id} is missing from the plan");
 }
 
-fn assert_serial_order(plan: &ExecutionPlan, before: u64, after: u64) {
+fn assert_serial_order(plan: &[Generation], before: u64, after: u64) {
     let before = location(plan, before);
     let after = location(plan, after);
     assert!(
@@ -222,9 +222,9 @@ fn asymmetric_conflicts_are_respected_after_sender_heads_are_consumed() {
         transaction(4, 2, 1, 2),
     ]);
 
-    assert_eq!(plan.generations.len(), 2);
-    assert_eq!(ids(&plan.generations[0]), vec![1, 2, 3]);
-    assert_eq!(ids(&plan.generations[1]), vec![4]);
+    assert_eq!(plan.len(), 2);
+    assert_eq!(ids(&plan[0]), vec![1, 2, 3]);
+    assert_eq!(ids(&plan[1]), vec![4]);
 }
 
 #[test]
@@ -243,8 +243,8 @@ fn fully_parallelizable_overrides_its_own_isolation_and_conflicts() {
 
     let plan = scheduler.schedule([parallel, transaction(2, 2, 0, 2)]);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(plan.generations[0].sequences.len(), 2);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].sequences.len(), 2);
 }
 
 #[test]
@@ -263,9 +263,9 @@ fn isolated_transaction_stays_alone_regardless_of_parallel_peer_seed_order() {
 
         let plan = scheduler.schedule([transaction(isolated_id, 1, 0, 1), parallel]);
 
-        assert_eq!(plan.generations.len(), 2);
+        assert_eq!(plan.len(), 2);
         assert!(
-            plan.generations
+            plan
                 .iter()
                 .all(|generation| ids(generation).len() == 1)
         );
@@ -284,15 +284,15 @@ fn replacing_a_profile_removes_its_stale_incoming_conflict_edges() {
     );
     let transactions = [transaction(1, 1, 0, 1), transaction(2, 2, 0, 2)];
     assert_eq!(
-        scheduler.schedule(transactions.clone()).generations.len(),
+        scheduler.schedule(transactions.clone()).len(),
         2
     );
 
     scheduler.set_profile(1, CalleeProfile::default());
     let plan = scheduler.schedule(transactions);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(plan.generations[0].sequences.len(), 2);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].sequences.len(), 2);
 }
 
 #[test]
@@ -393,10 +393,10 @@ fn compaction_does_not_jump_over_an_isolated_transaction() {
         transaction(3, 2, 0, 3),
     ]);
 
-    assert_eq!(plan.generations.len(), 3);
-    assert_eq!(ids(&plan.generations[0]), vec![1]);
-    assert_eq!(ids(&plan.generations[1]), vec![2]);
-    assert_eq!(ids(&plan.generations[2]), vec![3]);
+    assert_eq!(plan.len(), 3);
+    assert_eq!(ids(&plan[0]), vec![1]);
+    assert_eq!(ids(&plan[1]), vec![2]);
+    assert_eq!(ids(&plan[2]), vec![3]);
 }
 
 #[test]
@@ -419,7 +419,7 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
     assert!(location(&plan, 20).0 <= location(&plan, 10).0);
     assert!(location(&plan, 10).0 <= location(&plan, 30).0);
     let marked_deferred = plan
-        .generations
+        
         .iter()
         .flat_map(|generation| &generation.sequences)
         .flat_map(|sequence| &sequence.transactions)
@@ -444,10 +444,10 @@ fn a_merged_sequence_has_one_nonce_offset_for_each_sender() {
 
     let plan = scheduler.schedule([first.clone(), second.clone()]);
 
-    assert_eq!(plan.generations.len(), 1);
-    assert_eq!(plan.generations[0].sequences.len(), 1);
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].sequences.len(), 1);
     assert_eq!(
-        plan.generations[0].sequences[0].nonce_offsets,
+        plan[0].sequences[0].nonce_offsets,
         vec![
             SenderNonceOffset {
                 sender: first.sender,
@@ -463,7 +463,7 @@ fn a_merged_sequence_has_one_nonce_offset_for_each_sender() {
 
 #[test]
 fn empty_input_produces_an_empty_plan() {
-    assert_eq!(Scheduler::new().schedule([]), ExecutionPlan::default());
+    assert_eq!(Scheduler::new().schedule([]), Vec::<Generation>::new());
 }
 
 #[test]
@@ -491,18 +491,18 @@ fn input_permutations_produce_the_same_plan() {
 fn assert_plan_invariants(
     input: &[Job],
     profiles: &BTreeMap<u64, CalleeProfile>,
-    plan: &ExecutionPlan,
+    plan: &[Generation],
 ) {
     let inputs_by_id = input
         .iter()
         .map(|transaction| (transaction.id, transaction))
         .collect::<BTreeMap<_, _>>();
-    let mut actual_ids = plan.generations.iter().flat_map(ids).collect::<Vec<_>>();
+    let mut actual_ids = plan.iter().flat_map(ids).collect::<Vec<_>>();
     actual_ids.sort_unstable();
     assert_eq!(actual_ids, inputs_by_id.keys().copied().collect::<Vec<_>>());
 
     let mut previous_sender_nonces = BTreeMap::new();
-    for generation in &plan.generations {
+    for generation in &plan {
         assert!(!generation.sequences.is_empty());
         let mut sender_order = BTreeMap::<Sender, Vec<(u64, u64)>>::new();
         for sequence in &generation.sequences {

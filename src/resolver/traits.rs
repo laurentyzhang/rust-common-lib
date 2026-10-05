@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap};
 pub type Rejected<K> = (ExecutionOutput<K, Tracked<Status, Status>>, Reason);
 
 /// Checks sorted execution records for conflicts independently for each key.
-pub trait ConflictChecker<K> {
+pub trait Checker<K> {
     /// The record type and ordering used by this conflict check.
     type Input: Ord;
 

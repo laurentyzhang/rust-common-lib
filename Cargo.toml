@@ -7,6 +7,11 @@ edition = "2024"
 im = "15.0.0"
 alloy-rlp = "0.3.16"
 alloy-primitives = { version = "1.6.1", features = ["rlp"] }
+alloy-evm = "0.38.0"
+alloy-op-evm = { git = "https://github.com/ethereum-optimism/optimism", branch = "develop" }
+alloy-op-hardforks = { git = "https://github.com/ethereum-optimism/optimism", branch = "develop" }
+op-alloy = { git = "https://github.com/ethereum-optimism/optimism", branch = "develop" }
+op-revm = { git = "https://github.com/ethereum-optimism/optimism", branch = "develop" }
 rayon = "1.11.0"
 quick_cache = { path = "../../quick-cache" }
 

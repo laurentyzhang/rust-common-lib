@@ -1,13 +1,13 @@
-use super::traits::{ConflictChecker, Rejected};
+use super::traits::{Checker, Rejected};
 use crate::crdt::state::{Numeric, Status, Tracked, value::Value};
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
-pub struct Accumulator<K> {
+pub struct SumChecker<K> {
     entries: HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Numeric<'static>>>>>,
 }
 
-impl<K> Accumulator<K> {
+impl<K> SumChecker<K> {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -33,7 +33,7 @@ impl<K> Accumulator<K> {
     }
 }
 
-impl<K> ConflictChecker<K> for Accumulator<K> {
+impl<K> Checker<K> for SumChecker<K> {
     type Input = ExecutionOutput<K, Tracked<Status, Numeric<'static>>>;
 
     fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
@@ -159,26 +159,26 @@ mod tests {
         // the precise point of overflow are verified, in either import order.
         for prefix_len in 1..=values.len() {
             for reverse_import in [false, true] {
-                let mut accumulator = Accumulator::new();
+                let mut sum_checker = SumChecker::new();
                 let mut indices = (0..prefix_len).collect::<Vec<_>>();
                 if reverse_import {
                     indices.reverse();
                 }
                 for index in indices {
-                    accumulator.import(execution(
+                    sum_checker.import(execution(
                         index as u64 + 1,
                         vec![(7, values[index].clone())],
                     ));
                 }
 
                 assert_eq!(
-                    accumulator.entries[&7]
+                    sum_checker.entries[&7]
                         .iter()
                         .map(|record| record.id)
                         .collect::<Vec<_>>(),
                     (1..=prefix_len as u64).collect::<Vec<_>>(),
                 );
-                let rejected = accumulator.accumulate();
+                let rejected = sum_checker.accumulate();
                 let expected_ids = std::iter::once(underflow_id)
                     .chain(overflow_ids.iter().copied())
                     .filter(|id| *id <= prefix_len as u64)
@@ -342,26 +342,26 @@ mod tests {
 
     #[test]
     fn sort_entries_orders_numeric_deltas_then_transaction_id() {
-        let mut accumulator = Accumulator::new();
+        let mut sum_checker = SumChecker::new();
         let saturated = alloy_primitives::U256::from(u64::MAX);
 
-        accumulator.import(execution(
+        sum_checker.import(execution(
             30,
             vec![(1, u256_value(alloy_primitives::U256::from(5)))],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             20,
             vec![(1, u256_value(alloy_primitives::U256::from(5)))],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             1,
             vec![(1, u256_value(saturated + alloy_primitives::U256::from(2)))],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             90,
             vec![(1, u256_value(saturated + alloy_primitives::U256::from(1)))],
         ));
-        let tx_ids = accumulator.entries[&1]
+        let tx_ids = sum_checker.entries[&1]
             .iter()
             .map(|record| record.id)
             .collect::<Vec<_>>();
@@ -371,37 +371,37 @@ mod tests {
 
     #[test]
     fn sort_entries_accounts_for_delta_sign() {
-        let mut accumulator = Accumulator::new();
+        let mut sum_checker = SumChecker::new();
 
-        accumulator.import(execution(
+        sum_checker.import(execution(
             30,
             vec![(
                 1,
                 u256_operation(DeltaOp::Sub(alloy_primitives::U256::from(2))),
             )],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             40,
             vec![(
                 1,
                 u256_operation(DeltaOp::Sub(alloy_primitives::U256::from(5))),
             )],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             20,
             vec![(
                 1,
                 u256_operation(DeltaOp::Add(alloy_primitives::U256::from(2))),
             )],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             10,
             vec![(
                 1,
                 u256_operation(DeltaOp::Add(alloy_primitives::U256::from(2))),
             )],
         ));
-        accumulator.import(execution(
+        sum_checker.import(execution(
             50,
             vec![(
                 1,
@@ -409,7 +409,7 @@ mod tests {
             )],
         ));
 
-        let tx_ids = accumulator.entries[&1]
+        let tx_ids = sum_checker.entries[&1]
             .iter()
             .map(|record| record.id)
             .collect::<Vec<_>>();
@@ -419,16 +419,16 @@ mod tests {
 
     #[test]
     fn accumulate_returns_rejected_transactions_and_continues() {
-        let mut accumulator = Accumulator::new();
+        let mut sum_checker = SumChecker::new();
 
-        accumulator.import(execution(1, vec![(1, i64_value(3, -5, 5))]));
-        accumulator.import(execution(2, vec![(1, i64_value(4, -5, 5))]));
-        accumulator.import(execution(3, vec![(1, i64_value(5, -5, 5))]));
-        accumulator.import(execution(4, vec![(2, i64_value(2, -5, 5))]));
-        accumulator.import(execution(5, vec![(2, i64_value(4, -5, 5))]));
-        accumulator.import(execution(6, vec![(3, i64_value(5, -5, 5))]));
+        sum_checker.import(execution(1, vec![(1, i64_value(3, -5, 5))]));
+        sum_checker.import(execution(2, vec![(1, i64_value(4, -5, 5))]));
+        sum_checker.import(execution(3, vec![(1, i64_value(5, -5, 5))]));
+        sum_checker.import(execution(4, vec![(2, i64_value(2, -5, 5))]));
+        sum_checker.import(execution(5, vec![(2, i64_value(4, -5, 5))]));
+        sum_checker.import(execution(6, vec![(3, i64_value(5, -5, 5))]));
 
-        let rejected = accumulator.accumulate();
+        let rejected = sum_checker.accumulate();
         let rejected = rejected
             .into_iter()
             .map(|(record, _)| record.id)
@@ -439,22 +439,22 @@ mod tests {
 
     #[test]
     fn empty_and_single_record_groups_have_no_rejections() {
-        let mut accumulator = Accumulator::<u64>::new();
-        assert!(accumulator.accumulate().is_empty());
+        let mut sum_checker = SumChecker::<u64>::new();
+        assert!(sum_checker.accumulate().is_empty());
 
-        accumulator.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
-        assert!(accumulator.accumulate().is_empty());
-        assert!(accumulator.entries[&7].is_empty());
-        assert!(accumulator.accumulate().is_empty());
+        sum_checker.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
+        assert!(sum_checker.accumulate().is_empty());
+        assert!(sum_checker.entries[&7].is_empty());
+        assert!(sum_checker.accumulate().is_empty());
     }
 
     #[test]
     fn rejection_retains_key_numeric_data_and_reason() {
-        let mut accumulator = Accumulator::new();
-        accumulator.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
-        accumulator.import(execution(2, vec![(7, i64_value(4, -5, 5))]));
+        let mut sum_checker = SumChecker::new();
+        sum_checker.import(execution(1, vec![(7, i64_value(3, -5, 5))]));
+        sum_checker.import(execution(2, vec![(7, i64_value(4, -5, 5))]));
 
-        let rejected = accumulator.accumulate();
+        let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 1);
 
         let (record, reason) = &rejected[0];
@@ -473,15 +473,15 @@ mod tests {
 
     #[test]
     fn same_transaction_rejected_for_multiple_keys_keeps_every_record() {
-        let mut accumulator = Accumulator::new();
-        accumulator.import(execution(1, vec![(10, i64_value(3, -5, 5))]));
-        accumulator.import(execution(2, vec![(20, i64_value(3, -5, 5))]));
-        accumulator.import(execution(
+        let mut sum_checker = SumChecker::new();
+        sum_checker.import(execution(1, vec![(10, i64_value(3, -5, 5))]));
+        sum_checker.import(execution(2, vec![(20, i64_value(3, -5, 5))]));
+        sum_checker.import(execution(
             7,
             vec![(10, i64_value(4, -5, 5)), (20, i64_value(4, -5, 5))],
         ));
 
-        let rejected = accumulator.accumulate();
+        let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 2);
         assert!(rejected.iter().all(|(record, _)| record.id == 7));
 
@@ -495,11 +495,11 @@ mod tests {
 
     #[test]
     fn accumulate_reports_arithmetic_overflow() {
-        let mut accumulator = Accumulator::new();
-        accumulator.import(execution(1, vec![(7, u64_value(1))]));
-        accumulator.import(execution(2, vec![(7, u64_value(u64::MAX))]));
+        let mut sum_checker = SumChecker::new();
+        sum_checker.import(execution(1, vec![(7, u64_value(1))]));
+        sum_checker.import(execution(2, vec![(7, u64_value(u64::MAX))]));
 
-        let rejected = accumulator.accumulate();
+        let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 1);
 
         let (record, reason) = &rejected[0];
@@ -518,11 +518,11 @@ mod tests {
 
     #[test]
     fn accumulate_reports_arithmetic_underflow() {
-        let mut accumulator = Accumulator::new();
-        accumulator.import(execution(1, vec![(7, u64_operation(DeltaOp::Sub(6)))]));
-        accumulator.import(execution(2, vec![(7, u64_operation(DeltaOp::Sub(5)))]));
+        let mut sum_checker = SumChecker::new();
+        sum_checker.import(execution(1, vec![(7, u64_operation(DeltaOp::Sub(6)))]));
+        sum_checker.import(execution(2, vec![(7, u64_operation(DeltaOp::Sub(5)))]));
 
-        let rejected = accumulator.accumulate();
+        let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 1);
 
         let (record, reason) = &rejected[0];

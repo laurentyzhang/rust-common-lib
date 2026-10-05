@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
+use super::draft::DraftPlan;
 use super::job_resolver::JobResolver;
-use super::plan::DraftPlan;
-use super::plan::ExecutionPlan;
 use super::sender_batcher::SenderBatcher;
 use super::store::CalleeProfile;
-use super::workload::Job;
+use super::workload::{Generation, Job};
 
 /// Options for the scheduler's planning passes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,7 +64,7 @@ impl Scheduler {
     /// Builds and compacts an execution plan using the current callee profiles.
     /// Orders each sender's jobs by nonce, then ID, and applies the configured
     /// deferral rules. Finalizes each sequence's nonce offsets after compaction.
-    pub fn schedule(&self, transactions: impl IntoIterator<Item = Job>) -> ExecutionPlan {
+    pub fn schedule(&self, transactions: impl IntoIterator<Item = Job>) -> Vec<Generation> {
         let policy = JobResolver::new(&self.profiles);
         let mut batches = SenderBatcher::new(
             transactions

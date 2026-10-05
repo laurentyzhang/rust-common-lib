@@ -6,7 +6,7 @@ use rust_common_lib::{
     },
     execution::{VmCache, output::ExecutionOutput},
     resolver::{
-        ConflictDetector,
+        ConflictChecker,
         reason::{AccessConflict, NumericError, Reason},
     },
 };
@@ -47,13 +47,13 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         if reverse_import {
             records.reverse();
         }
-        let mut detector = ConflictDetector::new();
+        let mut detector = ConflictChecker::new();
         // Separate imports must accumulate into both owned stages.
         for record in records {
             detector.import(vec![record]);
         }
 
-        let rejected = detector.detect_conflicts().rejected;
+        let rejected = detector.check_conflicts().rejected;
         assert_eq!(
             rejected
                 .iter()
@@ -74,10 +74,10 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
 
 #[test]
 fn conflict_result_builds_commit_and_reject_plans() {
-    let mut detector = ConflictDetector::new();
+    let mut detector = ConflictChecker::new();
     detector.import(combined_records());
 
-    let result = detector.detect_conflicts();
+    let result = detector.check_conflicts();
     assert_eq!(
         result.committable.iter().copied().collect::<Vec<_>>(),
         vec![5, 11]
@@ -113,10 +113,10 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     assert!(second.get(&7).is_some());
     second.add_delta(&7, Delta::I64(4)).unwrap();
 
-    let mut detector = ConflictDetector::new();
+    let mut detector = ConflictChecker::new();
     detector.import(second.drain().0);
     detector.import(first.drain().0);
-    let result = detector.detect_conflicts();
+    let result = detector.check_conflicts();
     let rejected = &result.rejected;
 
     assert_eq!(rejected.len(), 2);
@@ -154,12 +154,12 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
 
 #[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
-    let mut detector = ConflictDetector::new();
-    assert!(detector.detect_conflicts().rejected.is_empty());
+    let mut detector = ConflictChecker::new();
+    assert!(detector.check_conflicts().rejected.is_empty());
 
     for _ in 0..2 {
         detector.import(combined_records());
-        let rejected = detector.detect_conflicts().rejected;
+        let rejected = detector.check_conflicts().rejected;
         assert_eq!(
             rejected
                 .iter()
@@ -167,7 +167,7 @@ fn consumes_both_stages_and_accepts_a_fresh_batch() {
                 .collect::<Vec<_>>(),
             vec![20, 30],
         );
-        assert!(detector.detect_conflicts().rejected.is_empty());
+        assert!(detector.check_conflicts().rejected.is_empty());
     }
 }
 
@@ -188,10 +188,10 @@ fn numeric_reads_remain_visible_to_access_detection() {
         let mut writer = VmCache::new_with_fallback(2, &fallback);
         writer.add_delta(&7, delta).unwrap();
 
-        let mut detector = ConflictDetector::new();
+        let mut detector = ConflictChecker::new();
         detector.import(writer.drain().0);
         detector.import(reader.drain().0);
-        let rejected = detector.detect_conflicts().rejected;
+        let rejected = detector.check_conflicts().rejected;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!((rejected[0].0.id, rejected[0].0.key), (2, 7));
@@ -258,10 +258,10 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
         let mut second = VmCache::new_with_fallback(2, &fallback);
         second.add_delta(&7, second_delta).unwrap();
 
-        let mut detector = ConflictDetector::new();
+        let mut detector = ConflictChecker::new();
         detector.import(second.drain().0);
         detector.import(first.drain().0);
-        let rejected = detector.detect_conflicts().rejected;
+        let rejected = detector.check_conflicts().rejected;
 
         assert_eq!(rejected.len(), 1);
         assert_eq!((rejected[0].0.id, rejected[0].0.key), (2, 7));

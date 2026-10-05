@@ -1,8 +1,8 @@
 use super::{
-    access_detector::AccessDetector,
-    accumulator::Accumulator,
+    access_checker::AccessChecker,
     commit_plan::ConflictResult,
-    traits::{ConflictChecker, Rejected},
+    sum_checker::SumChecker,
+    traits::{Checker, Rejected},
 };
 use crate::crdt::state::{
     Tracked,
@@ -12,18 +12,18 @@ use crate::crdt::state::{
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
-/// Coordinates access-conflict detection and numeric accumulation.
-pub struct ConflictDetector<K> {
-    access_detector: AccessDetector<K>,
-    accumulator: Accumulator<K>,
+/// Coordinates access and numeric conflict checks and combines their results.
+pub struct ConflictChecker<K> {
+    access_checker: AccessChecker<K>,
+    sum_checker: SumChecker<K>,
     result: ConflictResult<K>,
 }
 
-impl<K> ConflictDetector<K> {
+impl<K> ConflictChecker<K> {
     pub fn new() -> Self {
         Self {
-            access_detector: AccessDetector::new(),
-            accumulator: Accumulator::new(),
+            access_checker: AccessChecker::new(),
+            sum_checker: SumChecker::new(),
             result: ConflictResult::default(),
         }
     }
@@ -61,19 +61,19 @@ impl<K> ConflictDetector<K> {
             }
         }
 
-        self.access_detector.import(transitions);
-        self.accumulator.import(numeric_trans);
+        self.access_checker.import(transitions);
+        self.sum_checker.import(numeric_trans);
     }
 
     /// Runs both stages in parallel and retains every rejection reason,
     /// including multiple reasons for the same transaction and key.
-    pub fn detect_conflicts(&mut self) -> ConflictResult<K>
+    pub fn check_conflicts(&mut self) -> ConflictResult<K>
     where
         K: Eq + std::hash::Hash + Send + Sync,
     {
         let (mut rejected, numeric_rejected) = rayon::join(
-            || self.access_detector.detect_conflicts(),
-            || self.accumulator.accumulate(),
+            || self.access_checker.check_conflicts(),
+            || self.sum_checker.accumulate(),
         );
         rejected.extend(numeric_rejected);
         rejected.sort_unstable_by_key(|(record, _)| record.id);
@@ -96,7 +96,7 @@ pub fn detect<K>(
 where
     K: Eq + std::hash::Hash + Send + Sync,
 {
-    AccessDetector::<K>::find_rejections(records_by_key)
+    AccessChecker::<K>::find_rejections(records_by_key)
 }
 
 #[cfg(test)]
@@ -264,12 +264,12 @@ mod tests {
                         if reverse_import {
                             imports.reverse();
                         }
-                        let mut detector = ConflictDetector::new();
+                        let mut detector = ConflictChecker::new();
                         for records in imports {
                             detector.import(records);
                         }
 
-                        let rejected = detector.detect_conflicts().rejected;
+                        let rejected = detector.check_conflicts().rejected;
                         assert_eq!(rejected.len(), usize::from(same_key));
                         if same_key {
                             // A pure delete sorts before a read. A read+delete
@@ -366,12 +366,12 @@ mod tests {
                         if reverse_import {
                             imports.reverse();
                         }
-                        let mut detector = ConflictDetector::new();
+                        let mut detector = ConflictChecker::new();
                         for records in imports {
                             detector.import(records);
                         }
 
-                        let rejected = detector.detect_conflicts().rejected;
+                        let rejected = detector.check_conflicts().rejected;
                         assert_eq!(rejected.len(), usize::from(same_key));
                         if same_key {
                             // A pure delete sorts first. With a delta before
@@ -478,7 +478,7 @@ mod tests {
         let mut second = I64::new(-10, 10).unwrap();
         second.add_delta(&9).unwrap();
 
-        let mut detector = ConflictDetector::new();
+        let mut detector = ConflictChecker::new();
         detector.import(vec![
             output(1, 8, operations(0, 0, 0, 0), Status::Tag(Tag::Default)),
             output(
@@ -495,7 +495,7 @@ mod tests {
             ),
         ]);
 
-        let rejected = detector.detect_conflicts().rejected;
+        let rejected = detector.check_conflicts().rejected;
         assert_eq!(rejected.len(), 2);
         assert!(
             rejected

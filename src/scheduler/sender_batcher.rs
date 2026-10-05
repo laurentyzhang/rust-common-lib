@@ -13,6 +13,7 @@ pub(super) struct SenderBatcher<'a> {
     queues: Vec<SenderQueue<'a>>,
 }
 
+/// Provides construction and batch iteration for sender jobs.
 impl<'a> SenderBatcher<'a> {
     /// Groups jobs by sender and orders each queue by nonce, then transaction ID.
     pub(super) fn new(transactions: impl IntoIterator<Item = ResolvedJob<'a>>) -> Self {
