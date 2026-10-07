@@ -126,8 +126,10 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
             .all(|(record, _)| (record.id, record.key) == (2, 7))
     );
     assert!(rejected.iter().any(|(record, reason)| {
-        matches!(reason, Reason::AccessConflict(AccessConflict::ReadWrite(_)))
-            && matches!(record.data.current(), Status::Tag(Tag::Stripped))
+        matches!(
+            reason,
+            Reason::AccessConflict(AccessConflict::ReadConflict(_))
+        ) && matches!(record.data.current(), Status::Tag(Tag::Stripped))
     }));
     assert!(rejected.iter().any(|(record, reason)| {
         matches!(
@@ -197,7 +199,7 @@ fn numeric_reads_remain_visible_to_access_detection() {
         assert_eq!((rejected[0].0.id, rejected[0].0.key), (2, 7));
         assert!(matches!(
             rejected[0].1,
-            Reason::AccessConflict(AccessConflict::ReadWrite(_))
+            Reason::AccessConflict(AccessConflict::ReadConflict(_))
         ));
     }
 }

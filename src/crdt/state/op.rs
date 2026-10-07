@@ -33,5 +33,5 @@ pub struct Operations {
     pub(crate) reads: Counter,
     pub(crate) existence_checks: Counter,
     pub(crate) deltas: Counter,
-    pub(crate) deletes: Counter,
+    pub(crate) removes: Counter,
 }

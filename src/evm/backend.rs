@@ -208,8 +208,6 @@ impl PostExecEvmFactoryHooks for BaseFactory {
 }
 
 /// Arcology wrapper around the chain's block-executor factory.
-///
-/// The wrapped factory and all chain-specific concrete types remain private.
 #[derive(Clone, Debug)]
 pub struct ArcologyBlockExecutorFactory<R, Spec> {
     factory: OpBlockExecutorFactory<R, Spec, PostExecEvmFactoryAdapter<ArcologyEvmFactory>>,

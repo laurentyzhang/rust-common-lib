@@ -2,10 +2,11 @@ use super::sender::{Sender, SenderNonceOffset};
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job {
+fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
     let mut address = [0; 20];
     address[19] = sender;
     Job {
+        tx: (),
         id,
         sender: address,
         nonce,
@@ -15,13 +16,13 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job {
     }
 }
 
-fn ids(generation: &Generation) -> Vec<u64> {
+fn ids(generation: &Generation<()>) -> Vec<u64> {
     let mut ids = generation
         .sequences
         .iter()
         .flat_map(|sequence| {
             sequence
-                .transactions
+                .jobs
                 .iter()
                 .map(|transaction| transaction.id)
         })
@@ -106,7 +107,7 @@ fn repeated_deferrable_callee_places_one_call_in_next_generation() {
     assert_eq!(plan.len(), 2);
     assert_eq!(ids(&plan[0]), vec![1]);
     assert_eq!(ids(&plan[1]), vec![2]);
-    assert!(plan[1].sequences[0].transactions[0].is_deferred);
+    assert!(plan[1].sequences[0].jobs[0].is_deferred);
 }
 
 #[test]
@@ -131,7 +132,7 @@ fn disabling_deferral_keeps_repeated_deferrable_calls_in_current_generation() {
         plan[0]
             .sequences
             .iter()
-            .flat_map(|sequence| &sequence.transactions)
+            .flat_map(|sequence| &sequence.jobs)
             .all(|transaction| !transaction.is_deferred)
     );
 }
@@ -148,7 +149,7 @@ fn sender_nonce_offsets_survive_sequence_id_sorting() {
         .sequences
         .iter()
         .map(|sequence| {
-            let transaction = &sequence.transactions[0];
+            let transaction = &sequence.jobs[0];
             assert_eq!(sequence.nonce_offsets.len(), 1);
             assert_eq!(sequence.nonce_offsets[0].sender, transaction.sender);
             (transaction.id, sequence.nonce_offsets[0].offset)
@@ -164,10 +165,10 @@ fn uncompacted_scheduler() -> GreedyScheduler {
     })
 }
 
-fn location(plan: &[Generation], id: u64) -> (usize, usize, usize) {
+fn location(plan: &[Generation<()>], id: u64) -> (usize, usize, usize) {
     for (generation_index, generation) in plan.iter().enumerate() {
         for (sequence_index, sequence) in generation.sequences.iter().enumerate() {
-            for (transaction_index, transaction) in sequence.transactions.iter().enumerate() {
+            for (transaction_index, transaction) in sequence.jobs.iter().enumerate() {
                 if transaction.id == id {
                     return (generation_index, sequence_index, transaction_index);
                 }
@@ -177,7 +178,7 @@ fn location(plan: &[Generation], id: u64) -> (usize, usize, usize) {
     panic!("transaction {id} is missing from the plan");
 }
 
-fn assert_serial_order(plan: &[Generation], before: u64, after: u64) {
+fn assert_serial_order(plan: &[Generation<()>], before: u64, after: u64) {
     let before = location(plan, before);
     let after = location(plan, after);
     assert!(
@@ -422,7 +423,7 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
         
         .iter()
         .flat_map(|generation| &generation.sequences)
-        .flat_map(|sequence| &sequence.transactions)
+        .flat_map(|sequence| &sequence.jobs)
         .filter(|transaction| transaction.is_deferred)
         .map(|transaction| transaction.id)
         .collect::<Vec<_>>();
@@ -463,7 +464,10 @@ fn a_merged_sequence_has_one_nonce_offset_for_each_sender() {
 
 #[test]
 fn empty_input_produces_an_empty_plan() {
-    assert_eq!(GreedyScheduler::new().schedule([]), Vec::<Generation>::new());
+    assert_eq!(
+        GreedyScheduler::new().schedule([]),
+        Vec::<Generation<()>>::new()
+    );
 }
 
 #[test]
@@ -480,13 +484,13 @@ fn pass_through_scheduler_puts_each_job_in_its_own_parallel_sequence() {
         plan[0]
             .sequences
             .iter()
-            .all(|sequence| sequence.transactions.len() == 1)
+            .all(|sequence| sequence.jobs.len() == 1)
     );
     let offsets = plan[0]
         .sequences
         .iter()
         .map(|sequence| {
-            let job = &sequence.transactions[0];
+            let job = &sequence.jobs[0];
             (job.id, sequence.nonce_offsets[0].offset)
         })
         .collect::<BTreeMap<_, _>>();
@@ -497,7 +501,43 @@ fn pass_through_scheduler_puts_each_job_in_its_own_parallel_sequence() {
 
 #[test]
 fn pass_through_scheduler_returns_no_generations_for_empty_input() {
-    assert_eq!(PassThroughScheduler::new().schedule([]), Vec::<Generation>::new());
+    assert_eq!(
+        PassThroughScheduler::new().schedule([]),
+        Vec::<Generation<()>>::new()
+    );
+}
+
+#[test]
+fn schedulers_preserve_transaction_payloads() {
+    let jobs = [
+        Job {
+            tx: "first",
+            id: 1,
+            sender: [1; 20],
+            nonce: 0,
+            callee: None,
+            is_deferred: false,
+            fully_parallelizable: false,
+        },
+        Job {
+            tx: "second",
+            id: 2,
+            sender: [2; 20],
+            nonce: 0,
+            callee: None,
+            is_deferred: false,
+            fully_parallelizable: false,
+        },
+    ];
+    let plan = GreedyScheduler::new().schedule(jobs);
+
+    let payloads = plan
+        .into_iter()
+        .flat_map(|generation| generation.sequences)
+        .flat_map(|sequence| sequence.jobs)
+        .map(|job| job.tx)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(payloads, BTreeSet::from(["first", "second"]));
 }
 
 #[test]
@@ -523,9 +563,9 @@ fn input_permutations_produce_the_same_plan() {
     }
 }
 fn assert_plan_invariants(
-    input: &[Job],
+    input: &[Job<()>],
     profiles: &BTreeMap<u64, CalleeProfile>,
-    plan: &[Generation],
+    plan: &[Generation<()>],
 ) {
     let inputs_by_id = input
         .iter()
@@ -540,8 +580,8 @@ fn assert_plan_invariants(
         assert!(!generation.sequences.is_empty());
         let mut sender_order = BTreeMap::<Sender, Vec<(u64, u64)>>::new();
         for sequence in &generation.sequences {
-            assert!(!sequence.transactions.is_empty());
-            for scheduled in &sequence.transactions {
+            assert!(!sequence.jobs.is_empty());
+            for scheduled in &sequence.jobs {
                 let original = inputs_by_id[&scheduled.id];
                 assert_eq!(scheduled.sender, original.sender);
                 assert_eq!(scheduled.nonce, original.nonce);
@@ -575,7 +615,7 @@ fn assert_plan_invariants(
         for (sequence_index, sequence) in generation.sequences.iter().enumerate() {
             let mut expected_offsets = BTreeMap::new();
             let mut previous_ranks = BTreeMap::new();
-            for scheduled in &sequence.transactions {
+            for scheduled in &sequence.jobs {
                 let rank = sender_order[&scheduled.sender]
                     .iter()
                     .position(|key| *key == (scheduled.nonce, scheduled.id))
@@ -598,8 +638,8 @@ fn assert_plan_invariants(
             assert_eq!(actual_offsets, expected_offsets);
 
             for other_sequence in &generation.sequences[sequence_index + 1..] {
-                for left in &sequence.transactions {
-                    for right in &other_sequence.transactions {
+                for left in &sequence.jobs {
+                    for right in &other_sequence.jobs {
                         let left = inputs_by_id[&left.id];
                         let right = inputs_by_id[&right.id];
                         if left.fully_parallelizable || right.fully_parallelizable {
@@ -679,8 +719,9 @@ mod model_tests {
     use crate::scheduler::sender::SenderNonceOffset;
     use crate::scheduler::workload::{Generation, Job, JobSequence};
 
-    fn transaction(sender: u8, nonce: u64, id: u64) -> Job {
+    fn transaction(sender: u8, nonce: u64, id: u64) -> Job<()> {
         Job {
+            tx: (),
             id,
             sender: [sender; 20],
             nonce,
@@ -730,8 +771,9 @@ mod policy_tests {
     use crate::scheduler::{CalleeProfile, Job};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn transaction(callee: u64, fully_parallelizable: bool) -> Job {
+    fn transaction(callee: u64, fully_parallelizable: bool) -> Job<()> {
         Job {
+            tx: (),
             id: callee,
             sender: [0; 20],
             nonce: 0,
@@ -799,8 +841,9 @@ mod queue_tests {
     use crate::scheduler::{CalleeProfile, Job};
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job {
+    fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         Job {
+            tx: (),
             id,
             sender: [sender; 20],
             nonce,

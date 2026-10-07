@@ -180,7 +180,7 @@ mod tracked {
         let _ = tracked.get();
         tracked.check();
         assert!(tracked.add_delta(Delta::None).is_ok());
-        assert!(tracked.delete().is_ok());
+        assert!(tracked.remove().is_ok());
         assert!(tracked.is_missing());
         assert!(matches!(tracked.current(), Value::None));
 
@@ -195,7 +195,7 @@ mod tracked {
             Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut tracked = Tracked::new_borrowed(&value, 7);
 
-        assert!(tracked.delete().is_ok());
+        assert!(tracked.remove().is_ok());
         assert!(tracked.is_deleted());
         assert_eq!(
             tracked.set(value.clone()),
@@ -254,5 +254,41 @@ mod tracked {
         let owned = tracked.into_owned();
         assert_eq!(owned.id, 42);
         assert!(owned.original() == &value);
+    }
+}
+
+mod tracked_creation {
+    use super::*;
+    use crate::crdt::state::{Status, Tracked, status::Tag, value::Values};
+
+    fn status_record(original: Status, current: Status) -> Tracked<Status, Status> {
+        Tracked {
+            id: 0,
+            value: Values { original, current },
+            operations: Default::default(),
+        }
+    }
+
+    #[test]
+    fn missing_to_present_is_newly_created() {
+        let record = status_record(Status::Tag(Tag::Missing), Status::Tag(Tag::Default));
+
+        assert!(record.is_newly_created());
+    }
+
+    #[test]
+    fn missing_to_missing_is_not_newly_created() {
+        let record = status_record(Status::Tag(Tag::Missing), Status::Tag(Tag::Missing));
+
+        assert!(!record.is_newly_created());
+    }
+
+    #[test]
+    fn preexisting_value_and_deletion_are_not_newly_created() {
+        let preexisting = status_record(Status::Tag(Tag::Stripped), Status::Tag(Tag::Stripped));
+        let deleted = status_record(Status::Tag(Tag::Stripped), Status::Tag(Tag::Deleted));
+
+        assert!(!preexisting.is_newly_created());
+        assert!(!deleted.is_newly_created());
     }
 }

@@ -45,10 +45,12 @@ impl From<crate::crdt::state::StateError> for Reason {
 
 #[derive(Clone, Debug)]
 pub enum AccessConflict {
-    ReadWrite(String),
-    ReadDelete(String),
-    DeltaDelete(String),
-    ConcurrentDeltaWritesOnNonCommutative(String),
+    CreationConflict(String),
+    ExistenceConflict(String),
+    ReadConflict(String),
+    DeltaConflict(String),
+    RemoveConflict(String),
+    ConcurrentDeltaOnNonCommutative(String),
 }
 
 #[derive(Debug, Clone)]
@@ -67,11 +69,19 @@ pub struct TransactionConflictReport {
 impl AccessConflict {
     pub(crate) fn with_key<K: std::fmt::Debug>(self, key: &K) -> Self {
         match self {
-            Self::ReadWrite(message) => Self::ReadWrite(format!("{message}; key={key:?}")),
-            Self::ReadDelete(message) => Self::ReadDelete(format!("{message}; key={key:?}")),
-            Self::DeltaDelete(message) => Self::DeltaDelete(format!("{message}; key={key:?}")),
-            Self::ConcurrentDeltaWritesOnNonCommutative(message) => {
-                Self::ConcurrentDeltaWritesOnNonCommutative(format!("{message}; key={key:?}"))
+            Self::CreationConflict(message) => {
+                Self::CreationConflict(format!("{message}; key={key:?}"))
+            }
+            Self::ExistenceConflict(message) => {
+                Self::ExistenceConflict(format!("{message}; key={key:?}"))
+            }
+            Self::ReadConflict(message) => Self::ReadConflict(format!("{message}; key={key:?}")),
+            Self::DeltaConflict(message) => Self::DeltaConflict(format!("{message}; key={key:?}")),
+            Self::RemoveConflict(message) => {
+                Self::RemoveConflict(format!("{message}; key={key:?}"))
+            }
+            Self::ConcurrentDeltaOnNonCommutative(message) => {
+                Self::ConcurrentDeltaOnNonCommutative(format!("{message}; key={key:?}"))
             }
         }
     }

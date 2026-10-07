@@ -6,20 +6,20 @@
 
 #[doc(hidden)]
 pub mod backend;
+mod block_executor;
 mod call_router;
-mod executor;
-mod executor_factory;
 mod factory;
 mod revm_adapter;
+mod statedb;
 mod transaction;
 
 pub use backend::ArcologyBlockExecutorFactory;
+pub use block_executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use call_router::{
     ArcologyApi, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
     CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, arcology_address,
 };
-pub use executor::{ArcologyBlockExecutor, ArcologyParaExecutor};
-pub use executor_factory::ArcologyExecutorFactory;
 pub use factory::{ArcologyEvm, ArcologyEvmFactory, PrecompileCollisionError};
 pub use revm_adapter::dispatch_revm_call;
+pub use statedb::{StateDB, StateKey};
 pub use transaction::ArcologyTx;

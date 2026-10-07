@@ -11,14 +11,14 @@ pub(super) enum ExecutionMode {
 }
 
 #[derive(Debug)]
-pub(super) struct ResolvedJob<'a> {
-    pub(super) job: Job,
+pub(super) struct ResolvedJob<'a, Tx = ()> {
+    pub(super) job: Job<Tx>,
     pub(super) mode: ExecutionMode,
     pub(super) deferrable: bool,
     conflict_peers: &'a BTreeSet<u64>,
 }
 
-impl<'a> ResolvedJob<'a> {
+impl<'a, Tx> ResolvedJob<'a, Tx> {
     /// Returns the distinct conflict peer count used to prioritize sender queues.
     pub(super) fn conflict_peer_count(&self) -> usize {
         self.conflict_peers.len()
@@ -70,7 +70,10 @@ impl<'a> JobResolver<'a> {
     /// Resolves a job's execution mode, deferral eligibility, and conflict peers.
     /// The fully parallel flag overrides this job's callee restrictions;
     /// deferral eligibility still comes from its profile.
-    pub(super) fn resolve<'resolver>(&'resolver self, job: Job) -> ResolvedJob<'resolver> {
+    pub(super) fn resolve<'resolver, Tx>(
+        &'resolver self,
+        job: Job<Tx>,
+    ) -> ResolvedJob<'resolver, Tx> {
         let profile = job.callee.and_then(|callee| self.profiles.get(&callee));
         let mode = if job.fully_parallelizable {
             ExecutionMode::FullyParallel

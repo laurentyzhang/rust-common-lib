@@ -26,7 +26,7 @@ where
     fn flush(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
             if matches!(value, Value::None) {
-                self.vm_cache.get_or_populate_tracked(&key).delete()?;
+                self.vm_cache.get_or_populate_tracked(&key).remove()?;
                 continue;
             }
 

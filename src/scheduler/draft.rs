@@ -8,26 +8,40 @@ use super::workload::{Generation, Job, JobSequence};
 type NonceKey = (u64, u64);
 
 /// Draft execution plan used during scheduling before finalization.
-#[derive(Default)]
-pub(super) struct DraftPlan<'a> {
-    generations: Vec<DraftGeneration<'a>>,
+pub(super) struct DraftPlan<'a, Tx = ()> {
+    generations: Vec<DraftGeneration<'a, Tx>>,
 }
 
-#[derive(Default)]
-struct DraftGeneration<'a> {
-    sequences: Vec<DraftSequence<'a>>,
+struct DraftGeneration<'a, Tx = ()> {
+    sequences: Vec<DraftSequence<'a, Tx>>,
 }
 
-struct DraftSequence<'a> {
-    transactions: Vec<DraftTransaction<'a>>,
+impl<'a, Tx> Default for DraftPlan<'a, Tx> {
+    fn default() -> Self {
+        Self {
+            generations: Vec::new(),
+        }
+    }
 }
 
-struct DraftTransaction<'a> {
-    job: ResolvedJob<'a>,
+impl<'a, Tx> Default for DraftGeneration<'a, Tx> {
+    fn default() -> Self {
+        Self {
+            sequences: Vec::new(),
+        }
+    }
+}
+
+struct DraftSequence<'a, Tx = ()> {
+    transactions: Vec<DraftTransaction<'a, Tx>>,
+}
+
+struct DraftTransaction<'a, Tx = ()> {
+    job: ResolvedJob<'a, Tx>,
     is_deferred: bool,
 }
 
-impl<'a> DraftTransaction<'a> {
+impl<'a, Tx> DraftTransaction<'a, Tx> {
     /// Returns the sender address used to group jobs and compare nonce order.
     fn sender(&self) -> Sender {
         self.job.job.sender
@@ -39,16 +53,16 @@ impl<'a> DraftTransaction<'a> {
     }
 
     /// Copies the planned deferral flag into the job and drops its resolved policy.
-    fn finalize(self) -> Job {
+    fn finalize(self) -> Job<Tx> {
         let mut transaction = self.job.job;
         transaction.is_deferred = self.is_deferred;
         transaction
     }
 }
 
-impl<'a> DraftSequence<'a> {
+impl<'a, Tx> DraftSequence<'a, Tx> {
     /// Starts a sequence with one resolved job and its planned deferral flag.
-    fn from_job(job: ResolvedJob<'a>, is_deferred: bool) -> Self {
+    fn from_job(job: ResolvedJob<'a, Tx>, is_deferred: bool) -> Self {
         Self {
             transactions: vec![DraftTransaction { job, is_deferred }],
         }
@@ -65,7 +79,7 @@ impl<'a> DraftSequence<'a> {
     }
 
     /// Finalizes jobs in their existing order; the generation assigns nonce offsets later.
-    fn finalize(self) -> JobSequence {
+    fn finalize(self) -> JobSequence<Tx> {
         JobSequence::new(
             self.transactions
                 .into_iter()
@@ -75,9 +89,9 @@ impl<'a> DraftSequence<'a> {
     }
 }
 
-impl<'a> DraftGeneration<'a> {
+impl<'a, Tx> DraftGeneration<'a, Tx> {
     /// Iterates over every transaction, visiting sequences in their stored order.
-    fn transactions(&self) -> impl Iterator<Item = &DraftTransaction<'_>> {
+    fn transactions(&self) -> impl Iterator<Item = &DraftTransaction<'_, Tx>> {
         self.sequences
             .iter()
             .flat_map(|sequence| &sequence.transactions)
@@ -127,7 +141,7 @@ impl<'a> DraftGeneration<'a> {
     /// Checks whether appending the candidate keeps each sender's nonce span contiguous.
     /// Rejects a merge if another destination sequence contains a same-sender transaction
     /// whose nonce key falls between the first and last keys in the merged sequence.
-    fn preserves_nonce_spans(&self, destination: usize, candidate: &DraftSequence<'_>) -> bool {
+    fn preserves_nonce_spans(&self, destination: usize, candidate: &DraftSequence<'_, Tx>) -> bool {
         let mut spans = BTreeMap::<Sender, (NonceKey, NonceKey)>::new();
         for transaction in self.sequences[destination]
             .transactions
@@ -228,7 +242,7 @@ impl<'a> DraftGeneration<'a> {
 
     /// Sorts sequences by their first transaction ID, finalizes their jobs, and computes
     /// sender nonce offsets using the completed generation layout.
-    fn finalize(mut self) -> Generation {
+    fn finalize(mut self) -> Generation<Tx> {
         self.sequences
             .sort_unstable_by_key(|sequence| sequence.transactions[0].job.job.id);
         Generation::new(
@@ -240,12 +254,12 @@ impl<'a> DraftGeneration<'a> {
     }
 }
 
-impl<'a> DraftPlan<'a> {
+impl<'a, Tx> DraftPlan<'a, Tx> {
     /// Appends generations for a conflict-compatible batch, splitting repeated
     /// deferrable callees when deferral is enabled and recording each job's deferred flag.
     /// A sender's later jobs stay in the same generation as its earlier jobs or a later one.
-    pub(super) fn push_batch(&mut self, batch: Vec<ResolvedJob<'a>>, config: &SchedulerConfig) {
-        let mut generations = Vec::<DraftGeneration<'a>>::new();
+    pub(super) fn push_batch(&mut self, batch: Vec<ResolvedJob<'a, Tx>>, config: &SchedulerConfig) {
+        let mut generations = Vec::<DraftGeneration<'a, Tx>>::new();
         let mut sender_floor = BTreeMap::<Sender, usize>::new();
         let mut split_sources = BTreeSet::<usize>::new();
 
@@ -300,7 +314,7 @@ impl<'a> DraftPlan<'a> {
     }
 
     /// Appends the generation only if it contains at least one sequence.
-    fn push_generation(&mut self, generation: DraftGeneration<'a>) {
+    fn push_generation(&mut self, generation: DraftGeneration<'a, Tx>) {
         if !generation.sequences.is_empty() {
             self.generations.push(generation);
         }
@@ -314,7 +328,7 @@ impl<'a> DraftPlan<'a> {
             return;
         }
 
-        let mut compacted = Vec::<DraftGeneration<'a>>::with_capacity(self.generations.len());
+        let mut compacted = Vec::<DraftGeneration<'a, Tx>>::with_capacity(self.generations.len());
         for mut source in self.generations.drain(..) {
             if let Some(previous) = compacted.last_mut() {
                 source.merge_into(previous, config);
@@ -330,7 +344,7 @@ impl<'a> DraftPlan<'a> {
     /// Builds the public plan in generation order, finalizing each generation's jobs
     /// and sender nonce offsets after all layout changes are complete.
     /// Finalizes the scheduler's mutable draft into generations.
-    pub(super) fn finalize(self) -> Vec<Generation> {
+    pub(super) fn finalize(self) -> Vec<Generation<Tx>> {
         self.generations
             .into_iter()
             .map(DraftGeneration::finalize)

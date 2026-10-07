@@ -54,7 +54,7 @@ impl<K> Checker<K> for AccessChecker<K> {
             operations.reads.count() > 0
                 || operations.existence_checks.count() > 0
                 || operations.deltas.count() > 0
-                || operations.deletes.count() > 0
+                || operations.removes.count() > 0
         }) else {
             return rejected;
         };
@@ -63,9 +63,10 @@ impl<K> Checker<K> for AccessChecker<K> {
             let result = first
                 .data
                 .read_conflict_with(&record.data)
+                .and_then(|_| first.data.creation_conflict_with(&record.data))
                 .and_then(|_| first.data.delta_conflict_with(&record.data))
                 .and_then(|_| first.data.existence_conflict_with(&record.data))
-                .and_then(|_| first.data.delete_conflict_with(&record.data));
+                .and_then(|_| first.data.remove_conflict_with(&record.data));
 
             if let Err(reason) = result {
                 rejected.push((record, reason));
@@ -82,16 +83,11 @@ impl Tracked<Status, Status> {
             return Ok(());
         }
 
-        if other.operations.deltas.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadWrite(
-                "Reads conflict detected with deltas".to_string(),
-            )));
-        }
-        if other.operations.deletes.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadDelete(
-                "Reads conflict detected with deletes".to_string(),
-            )));
-        }
+        self.creation_conflict(other, "Creation".to_string())?;
+        // self.existence_conflict(other, "Reads".to_string())?;
+        // self.read_conflict(other, "Reads".to_string())?;
+        self.delta_conflict(other, "Reads".to_string())?;
+        self.remove_conflict(other, "Delta".to_string())?;
         Ok(())
     }
 
@@ -100,17 +96,15 @@ impl Tracked<Status, Status> {
             return Ok(());
         }
 
-        if other.operations.reads.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadWrite(
-                "Deltas conflict detected with reads".to_string(),
-            )));
+        if self.is_newly_created() && other.is_newly_created() {
+            return self.created_value_conflict(other);
         }
 
-        if other.operations.deletes.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::DeltaDelete(
-                "Deltas conflict detected with deletes".to_string(),
-            )));
-        }
+        self.creation_conflict(other, "Creation".to_string())?;
+        // self.existence_conflict(other, "Delta".to_string())?;
+        self.read_conflict(other, "Delta".to_string())?;
+        // self.delta_conflict(other, "Delta".to_string())?;
+        self.remove_conflict(other, "Remove".to_string())?;
 
         // Bytes do not support commutative delta writes.
         // Only idempotent delta writes are allowed for Bytes.
@@ -124,7 +118,7 @@ impl Tracked<Status, Status> {
             )
         {
             return Err(Reason::AccessConflict(
-                AccessConflict::ConcurrentDeltaWritesOnNonCommutative(
+                AccessConflict::ConcurrentDeltaOnNonCommutative(
                     "Deltas conflict detected with Deltas".to_string(),
                 ),
             ));
@@ -133,39 +127,126 @@ impl Tracked<Status, Status> {
         Ok(())
     }
 
+    pub fn creation_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+        if !self.is_newly_created() {
+            return Ok(());
+        }
+
+        // self.creation_conflict(other, "Creation".to_string())?;
+        self.existence_conflict(other, "Existence".to_string())?;
+        self.read_conflict(other, "Read".to_string())?;
+        if !other.is_newly_created() {
+            self.delta_conflict_with(other)?;
+        }
+        self.remove_conflict(other, "Remove".to_string())?;
+
+        self.created_value_conflict(other)
+    }
+
+    // Checks for conflicts arising from existence checks on the current record.
     pub fn existence_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
         if self.operations.existence_checks.count() == 0 {
             return Ok(());
         }
 
-        if other.operations.deletes.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadWrite(
-                "Existence check on deleted value".to_string(),
+        self.creation_conflict(other, "Creation".to_string())?;
+        // self.existence_conflict(other, "Existence".to_string())?;
+        // self.read_conflict(other, "Read".to_string())?;
+        // self.delta_conflict(other, "Delta".to_string())?;
+        self.remove_conflict(other, "Remove".to_string())?;
+        Ok(())
+    }
+
+    // Checks for conflicts arising from remove operations on the current record.
+    pub fn remove_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+        if self.operations.removes.count() == 0 {
+            return Ok(());
+        }
+
+        self.creation_conflict(other, "Creation".to_string())?;
+        self.existence_conflict(other, "Existence".to_string())?;
+        self.read_conflict(other, "Read".to_string())?;
+        self.delta_conflict(other, "Delta".to_string())?;
+        // self.remove_conflict(other, "Remove".to_string())?;
+        Ok(())
+    }
+}
+
+impl Tracked<Status, Status> {
+    fn created_value_conflict(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+        if self.value.current != other.value.current {
+            return Err(Reason::AccessConflict(AccessConflict::CreationConflict(
+                "Creation conflict with differing values".to_string(),
+            )));
+        }
+
+        Ok(())
+    }
+
+    // 1. Checks for conflicts arising from creation operations on the current record.
+    fn creation_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+        other_op: String,
+    ) -> Result<(), Reason> {
+        if other.is_newly_created() {
+            return Err(Reason::AccessConflict(AccessConflict::ReadConflict(
+                format!("creation_conflict conflict detected with: {}", other_op),
             )));
         }
         Ok(())
     }
 
-    pub fn delete_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
-        if self.operations.deletes.count() == 0 {
-            return Ok(());
-        }
-
-        if other.operations.reads.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadDelete(
-                "Deleted value conflicts with reads".to_string(),
-            )));
-        }
-
+    // 2. Checks for conflicts arising from existence checks on the current record.
+    fn existence_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+        other_op: String,
+    ) -> Result<(), Reason> {
         if other.operations.existence_checks.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadWrite(
-                "Deleted value conflicts with existence check".to_string(),
+            return Err(Reason::AccessConflict(AccessConflict::ExistenceConflict(
+                format!("Existence conflict detected with: {}", other_op),
             )));
         }
+        Ok(())
+    }
 
+    // 3. Checks for conflicts arising from read operations on the current record.
+    fn read_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+        other_op: String,
+    ) -> Result<(), Reason> {
+        if other.operations.reads.count() > 0 {
+            return Err(Reason::AccessConflict(AccessConflict::ReadConflict(
+                format!("Reads conflict detected with: {}", other_op),
+            )));
+        }
+        Ok(())
+    }
+    // 4. Checks for conflicts arising from delta operations on the current record.
+    fn delta_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+        other_op: String,
+    ) -> Result<(), Reason> {
         if other.operations.deltas.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::DeltaDelete(
-                "Deleted value conflicts with deltas".to_string(),
+            return Err(Reason::AccessConflict(AccessConflict::DeltaConflict(
+                format!("Delta conflict detected with: {}", other_op),
+            )));
+        }
+        Ok(())
+    }
+
+    //5. Checks for conflicts arising from remove operations on the current record.
+    fn remove_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+        other_op: String,
+    ) -> Result<(), Reason> {
+        if other.operations.removes.count() > 0 {
+            return Err(Reason::AccessConflict(AccessConflict::RemoveConflict(
+                format!("Remove conflict detected with: {}", other_op),
             )));
         }
         Ok(())

@@ -102,7 +102,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
         K: Clone,
     {
         self.get_or_populate_tracked(key)
-            .delete()
+            .remove()
             .map_err(Error::from)
     }
 

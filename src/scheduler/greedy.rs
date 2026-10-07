@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use super::draft::DraftPlan;
 use super::job_resolver::JobResolver;
+use super::scheduler::{Scheduler, SchedulerConfig};
 use super::sender_batcher::SenderBatcher;
 use super::store::CalleeProfile;
-use super::scheduler::{Scheduler, SchedulerConfig};
 use super::workload::{Generation, Job};
 
 /// Greedy transaction planner driven by caller-supplied callee profiles.
@@ -43,17 +43,13 @@ impl GreedyScheduler {
     }
 }
 
-impl Scheduler for GreedyScheduler {
+impl<Tx> Scheduler<Tx> for GreedyScheduler {
     /// Builds and compacts an execution plan using the current callee profiles.
     /// Orders each sender's jobs by nonce, then ID, and applies the configured
     /// deferral rules. Finalizes each sequence's nonce offsets after compaction.
-    fn schedule(&self, transactions: impl IntoIterator<Item = Job>) -> Vec<Generation> {
-        let policy = JobResolver::new(&self.profiles);
-        let mut batches = SenderBatcher::new(
-            transactions
-                .into_iter()
-                .map(|transaction| policy.resolve(transaction)),
-        );
+    fn schedule(&self, txs: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>> {
+        let resolver = JobResolver::new(&self.profiles);
+        let mut batches = SenderBatcher::new(txs.into_iter().map(|job| resolver.resolve(job)));
         let mut plan = DraftPlan::default();
         while let Some(batch) = batches.next_batch() {
             plan.push_batch(batch, &self.config);

@@ -12,11 +12,16 @@ impl PassThroughScheduler {
     }
 }
 
-impl Scheduler for PassThroughScheduler {
-    fn schedule(&self, transactions: impl IntoIterator<Item = Job>) -> Vec<Generation> {
-        let sequences = transactions
+impl<Tx> Scheduler<Tx> for PassThroughScheduler {
+    /// Places each job in its own sequence within one generation.
+    fn schedule(&self, jobs: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>> {
+        let sequences = jobs
             .into_iter()
-            .map(|transaction| JobSequence::new(vec![transaction]))
+            .enumerate()
+            .map(|(index, mut job)| {
+                job.id = index as u64;
+                JobSequence::new(vec![job])
+            })
             .collect::<Vec<_>>();
 
         if sequences.is_empty() {

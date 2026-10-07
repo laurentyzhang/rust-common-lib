@@ -1,7 +1,9 @@
 use super::{
     Delta, Numeric, StateError, Status, Value, numeric::ComparableNumeric, op::Operations,
-    value::Values,
+    status::Tag, value::Values,
 };
+
+// use crate::crdt::state::status::Tag;
 use crate::store::traits::StoreError;
 use std::cmp::Ordering;
 
@@ -45,6 +47,11 @@ impl<T0, T1> Tracked<T0, T1> {
 }
 
 impl Tracked<Status, Status> {
+    pub fn is_newly_created(&self) -> bool {
+        return matches!(&self.value.original, Status::Tag(Tag::Missing))
+            && !matches!(&self.value.current, Status::Tag(Tag::Missing));
+    }
+
     pub fn compare(&self, other: &Self) -> Ordering {
         (
             self.operations.deltas,
@@ -142,8 +149,8 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
         self.value.current.add_delta(&delta)
     }
 
-    pub fn delete(&mut self) -> Result<(), StoreError> {
-        self.operations.deletes.increment();
+    pub fn remove(&mut self) -> Result<(), StoreError> {
+        self.operations.removes.increment();
         self.value.current = Value::None;
         Ok(())
     }
@@ -195,7 +202,7 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.operations.deltas.count() == 0 && self.operations.deletes.count() == 0
+        self.operations.deltas.count() == 0 && self.operations.removes.count() == 0
     }
 }
 

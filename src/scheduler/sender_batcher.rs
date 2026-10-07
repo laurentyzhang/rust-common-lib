@@ -3,21 +3,21 @@ use std::collections::{BTreeMap, VecDeque};
 use super::job_resolver::ResolvedJob;
 use super::sender::Sender;
 
-struct SenderQueue<'a> {
+struct SenderQueue<'a, Tx> {
     sender: Sender,
-    pending: VecDeque<ResolvedJob<'a>>,
+    pending: VecDeque<ResolvedJob<'a, Tx>>,
 }
 
 /// Produces conflict-compatible batches while preserving each sender's nonce order.
-pub(super) struct SenderBatcher<'a> {
-    queues: Vec<SenderQueue<'a>>,
+pub(super) struct SenderBatcher<'a, Tx> {
+    queues: Vec<SenderQueue<'a, Tx>>,
 }
 
 /// Provides construction and batch iteration for sender jobs.
-impl<'a> SenderBatcher<'a> {
+impl<'a, Tx> SenderBatcher<'a, Tx> {
     /// Groups jobs by sender and orders each queue by nonce, then transaction ID.
-    pub(super) fn new(transactions: impl IntoIterator<Item = ResolvedJob<'a>>) -> Self {
-        let mut by_sender = BTreeMap::<Sender, Vec<ResolvedJob<'a>>>::new();
+    pub(super) fn new(transactions: impl IntoIterator<Item = ResolvedJob<'a, Tx>>) -> Self {
+        let mut by_sender = BTreeMap::<Sender, Vec<ResolvedJob<'a, Tx>>>::new();
         for transaction in transactions {
             by_sender
                 .entry(transaction.job.sender)
@@ -42,7 +42,7 @@ impl<'a> SenderBatcher<'a> {
     /// Visits queues by their head's conflict count, job ID, and sender address,
     /// stopping each queue at its first incompatible job. Returns `None` once
     /// all queues are empty.
-    pub(super) fn next_batch(&mut self) -> Option<Vec<ResolvedJob<'a>>> {
+    pub(super) fn next_batch(&mut self) -> Option<Vec<ResolvedJob<'a, Tx>>> {
         if self.queues.is_empty() {
             return None;
         }
@@ -52,7 +52,7 @@ impl<'a> SenderBatcher<'a> {
             (head.conflict_peer_count(), head.job.id, queue.sender)
         });
 
-        let mut batch = Vec::<ResolvedJob<'a>>::new();
+        let mut batch = Vec::<ResolvedJob<'a, Tx>>::new();
         for queue in &mut self.queues {
             while queue.pending.front().is_some_and(|candidate| {
                 batch

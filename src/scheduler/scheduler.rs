@@ -20,6 +20,6 @@ impl Default for SchedulerConfig {
     }
 }
 
-pub trait Scheduler {
-    fn schedule(&self, transactions: impl IntoIterator<Item = Job>) -> Vec<Generation>;
+pub trait Scheduler<Tx> {
+    fn schedule(&self, transactions: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>>;
 }

@@ -86,7 +86,7 @@ pub fn encode_to(tracked: &Tracked<Status, Status>, output: &mut [u8]) -> Result
     writer.write_u64(tracked.id)?;
     writer.write_u32(tracked.operations.reads.count())?;
     writer.write_u32(tracked.operations.existence_checks.count())?;
-    writer.write_u32(tracked.operations.deletes.count())?;
+    writer.write_u32(tracked.operations.removes.count())?;
     writer.write_u32(tracked.operations.deltas.count())?;
     let header_size = writer.finish();
 
@@ -130,7 +130,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Status, Status>> {
         operations: Operations {
             reads: reads.into(),
             existence_checks: existence_checks.into(),
-            deletes: deletes.into(),
+            removes: deletes.into(),
             deltas: deltas.into(),
         },
     };
@@ -182,7 +182,7 @@ mod tests {
             operations: Operations {
                 reads: 1.into(),
                 existence_checks: 2.into(),
-                deletes: 3.into(),
+                removes: 3.into(),
                 deltas: 4.into(),
             },
         }
