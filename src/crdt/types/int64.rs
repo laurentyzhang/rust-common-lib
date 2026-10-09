@@ -1,6 +1,6 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::Numeric;
-use crate::crdt::state::Value;
+use crate::crdt::state::CrdtValue;
 use crate::crdt::state::{NumericError, StateError};
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -21,9 +21,9 @@ impl Default for I64 {
     }
 }
 
-impl From<I64> for Value<'static> {
+impl From<I64> for CrdtValue<'static> {
     fn from(value: I64) -> Self {
-        Value::Numeric(Numeric::I64(Cow::Owned(value)))
+        CrdtValue::Numeric(Numeric::I64(Cow::Owned(value)))
     }
 }
 

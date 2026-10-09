@@ -1,6 +1,6 @@
 use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
-use crate::crdt::state::{DeltaOp, StateError, Value};
+use crate::crdt::state::{DeltaOp, StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
@@ -19,9 +19,9 @@ impl Default for U64Set {
     }
 }
 
-impl From<U64Set> for Value<'static> {
+impl From<U64Set> for CrdtValue<'static> {
     fn from(value: U64Set) -> Self {
-        Value::U64Set(Cow::Owned(value))
+        CrdtValue::U64Set(Cow::Owned(value))
     }
 }
 

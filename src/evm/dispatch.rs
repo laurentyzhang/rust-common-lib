@@ -15,7 +15,10 @@ use alloy_evm::{
 /// [`ArcologyEvmFactory`](super::ArcologyEvmFactory). The `PrecompileInput`
 /// also carries REVM's journal-backed `EvmInternals`, allowing the adapter to
 /// be extended with stateful Arcology APIs without replacing the factory.
-pub fn dispatch_revm_call(router: &CallHookRouter, input: PrecompileInput<'_>) -> PrecompileResult {
+pub fn dispatch_precompile(
+    router: &CallHookRouter,
+    input: PrecompileInput<'_>,
+) -> PrecompileResult {
     let scheme = if input.is_static_call() {
         CallScheme::StaticCall
     } else if input.is_direct_call() {

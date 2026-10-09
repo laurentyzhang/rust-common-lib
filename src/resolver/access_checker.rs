@@ -5,7 +5,7 @@ use super::{
 use crate::crdt::state::{
     Tracked,
     status::{Status, Tag},
-    value::Value,
+    value::CrdtValue,
 };
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
@@ -111,7 +111,7 @@ impl Tracked<Status, Status> {
         // Without access to the previous state, we can only
         // safely assume that the default state or deleting the value
         // are actually idempotent.
-        if matches!(&other.value.current, Status::Value(Value::Bytes(_)))
+        if matches!(&other.value.current, Status::Value(CrdtValue::Bytes(_)))
             && !matches!(
                 &self.value.current,
                 Status::Tag(Tag::Missing) | Status::Tag(Tag::Default) | Status::Tag(Tag::Deleted)

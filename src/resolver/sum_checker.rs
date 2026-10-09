@@ -1,5 +1,5 @@
 use super::traits::{Checker, Rejected};
-use crate::crdt::state::{Numeric, Status, Tracked, value::Value};
+use crate::crdt::state::{Numeric, Status, Tracked, value::CrdtValue};
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
@@ -49,7 +49,7 @@ impl<K> Checker<K> for SumChecker<K> {
             if let Err(error) = accumulated.add_delta(&record.data.current().delta()) {
                 rejected.push((
                     record.map_data(|data| {
-                        data.map_current(|current| Status::Value(Value::Numeric(current)))
+                        data.map_current(|current| Status::Value(CrdtValue::Numeric(current)))
                     }),
                     error.into(),
                 ));

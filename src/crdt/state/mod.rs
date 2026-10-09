@@ -13,7 +13,7 @@ pub use error::{NumericError, StateError};
 pub use numeric::Numeric;
 pub use status::Status;
 pub use tracked::Tracked;
-pub use value::Value;
+pub use value::CrdtValue;
 
 #[cfg(test)]
 #[path = "tests.rs"]

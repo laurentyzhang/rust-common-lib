@@ -9,7 +9,7 @@ use super::{
         BaseEvm, BaseFactory, PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx,
         PostExecTxContext,
     },
-    dispatch_revm_call,
+    dispatch_precompile,
     transaction::ArcologyTx,
 };
 use alloy_evm::{
@@ -199,7 +199,7 @@ impl ArcologyEvmFactory {
                 let router = self.router.clone();
                 let id = PrecompileId::custom(format!("arcology-{address:?}"));
                 let hook = DynPrecompile::new_stateful(id, move |input| {
-                    dispatch_revm_call(&router, input)
+                    dispatch_precompile(&router, input)
                 });
                 (address, hook)
             });

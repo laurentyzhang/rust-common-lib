@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::crdt::state::{
-    Numeric, Status, Tracked, Value, op::Operations, status::Tag, value::Values,
+    Numeric, Status, Tracked, CrdtValue, op::Operations, status::Tag, value::Values,
 };
 
 use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
@@ -20,12 +20,12 @@ const HEADER_SIZE: u64 = 34;
 
 fn value_tag(value: &Status) -> u8 {
     match value {
-        Status::Value(Value::Bytes(_)) => BYTES,
-        Status::Value(Value::Numeric(Numeric::I64(_))) => I64,
-        Status::Value(Value::Numeric(Numeric::U64(_))) => U64,
-        Status::Value(Value::Numeric(Numeric::U256(_))) => U256,
-        Status::Value(Value::U64Set(_)) => U64_SET,
-        Status::Value(Value::None) | Status::Tag(Tag::Missing) => MISSING,
+        Status::Value(CrdtValue::Bytes(_)) => BYTES,
+        Status::Value(CrdtValue::Numeric(Numeric::I64(_))) => I64,
+        Status::Value(CrdtValue::Numeric(Numeric::U64(_))) => U64,
+        Status::Value(CrdtValue::Numeric(Numeric::U256(_))) => U256,
+        Status::Value(CrdtValue::U64Set(_)) => U64_SET,
+        Status::Value(CrdtValue::None) | Status::Tag(Tag::Missing) => MISSING,
         Status::Tag(Tag::Deleted) => DELETED,
         Status::Tag(Tag::Default) => DEFAULT,
         Status::Tag(Tag::Stripped) => STRIPPED,
@@ -34,23 +34,23 @@ fn value_tag(value: &Status) -> u8 {
 
 fn value_size(value: &Status) -> Result<u64> {
     match value {
-        Status::Tag(_) | Status::Value(Value::None) => Ok(0),
-        Status::Value(Value::Bytes(value)) => bytes::encoded_size(value),
-        Status::Value(Value::Numeric(Numeric::I64(value))) => int64::encoded_size(value),
-        Status::Value(Value::Numeric(Numeric::U64(value))) => uint64::encoded_size(value),
-        Status::Value(Value::Numeric(Numeric::U256(value))) => u256::encoded_size(value),
-        Status::Value(Value::U64Set(value)) => u64_set::encoded_size(value),
+        Status::Tag(_) | Status::Value(CrdtValue::None) => Ok(0),
+        Status::Value(CrdtValue::Bytes(value)) => bytes::encoded_size(value),
+        Status::Value(CrdtValue::Numeric(Numeric::I64(value))) => int64::encoded_size(value),
+        Status::Value(CrdtValue::Numeric(Numeric::U64(value))) => uint64::encoded_size(value),
+        Status::Value(CrdtValue::Numeric(Numeric::U256(value))) => u256::encoded_size(value),
+        Status::Value(CrdtValue::U64Set(value)) => u64_set::encoded_size(value),
     }
 }
 
 fn encode_value_to(value: &Status, output: &mut [u8]) -> Result<u64> {
     match value {
-        Status::Tag(_) | Status::Value(Value::None) => Ok(0),
-        Status::Value(Value::Bytes(value)) => bytes::encode_to(value, output),
-        Status::Value(Value::Numeric(Numeric::I64(value))) => int64::encode_to(value, output),
-        Status::Value(Value::Numeric(Numeric::U64(value))) => uint64::encode_to(value, output),
-        Status::Value(Value::Numeric(Numeric::U256(value))) => u256::encode_to(value, output),
-        Status::Value(Value::U64Set(value)) => u64_set::encode_to(value, output),
+        Status::Tag(_) | Status::Value(CrdtValue::None) => Ok(0),
+        Status::Value(CrdtValue::Bytes(value)) => bytes::encode_to(value, output),
+        Status::Value(CrdtValue::Numeric(Numeric::I64(value))) => int64::encode_to(value, output),
+        Status::Value(CrdtValue::Numeric(Numeric::U64(value))) => uint64::encode_to(value, output),
+        Status::Value(CrdtValue::Numeric(Numeric::U256(value))) => u256::encode_to(value, output),
+        Status::Value(CrdtValue::U64Set(value)) => u64_set::encode_to(value, output),
     }
 }
 
@@ -139,17 +139,17 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Status, Status>> {
 
 fn decode_value(tag: u8, payload: &[u8]) -> Result<Status> {
     let value = match tag {
-        BYTES => Status::Value(Value::Bytes(Cow::Owned(bytes::decode(payload)?))),
-        I64 => Status::Value(Value::Numeric(Numeric::I64(Cow::Owned(int64::decode(
+        BYTES => Status::Value(CrdtValue::Bytes(Cow::Owned(bytes::decode(payload)?))),
+        I64 => Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(int64::decode(
             payload,
         )?)))),
-        U64 => Status::Value(Value::Numeric(Numeric::U64(Cow::Owned(uint64::decode(
+        U64 => Status::Value(CrdtValue::Numeric(Numeric::U64(Cow::Owned(uint64::decode(
             payload,
         )?)))),
-        U256 => Status::Value(Value::Numeric(Numeric::U256(Cow::Owned(u256::decode(
+        U256 => Status::Value(CrdtValue::Numeric(Numeric::U256(Cow::Owned(u256::decode(
             payload,
         )?)))),
-        U64_SET => Status::Value(Value::U64Set(Cow::Owned(u64_set::decode(payload)?))),
+        U64_SET => Status::Value(CrdtValue::U64Set(Cow::Owned(u64_set::decode(payload)?))),
         DELETED if payload.is_empty() => Status::Tag(Tag::Deleted),
         DEFAULT if payload.is_empty() => Status::Tag(Tag::Default),
         STRIPPED if payload.is_empty() => Status::Tag(Tag::Stripped),

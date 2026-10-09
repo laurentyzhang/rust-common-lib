@@ -1,6 +1,6 @@
 use super::*;
 use crate::crdt::Crdt;
-use crate::crdt::state::{DeltaOp, NumericError, Value};
+use crate::crdt::state::{DeltaOp, NumericError, CrdtValue};
 
 macro_rules! unsigned_delta_tests {
     ($module:ident, $crdt:ty, $number:ty, $variant:ident, $error:ident, $accessor:ident, $codec:ident) => {
@@ -12,7 +12,7 @@ macro_rules! unsigned_delta_tests {
 
             #[test]
             fn mixed_deltas_are_deferred_and_cancel_in_both_directions() {
-                let mut value: Value<'static> = <$crdt>::default().into();
+                let mut value: CrdtValue<'static> = <$crdt>::default().into();
                 value
                     .add_delta(&Delta::$variant(DeltaOp::Add(n(10))))
                     .unwrap();
@@ -47,7 +47,7 @@ macro_rules! unsigned_delta_tests {
 
             #[test]
             fn full_unsigned_range_and_failed_operations_preserve_state() {
-                let mut value: Value<'static> = <$crdt>::default().into();
+                let mut value: CrdtValue<'static> = <$crdt>::default().into();
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&Delta::$variant(DeltaOp::Sub(n(1)))),
@@ -155,8 +155,8 @@ unsigned_delta_tests!(
 
 #[test]
 fn unsigned_subtraction_rejects_other_numeric_types() {
-    let mut u64_value: Value<'static> = crate::crdt::uint64::U64::default().into();
-    let mut u256_value: Value<'static> = crate::crdt::u256::U256::default().into();
+    let mut u64_value: CrdtValue<'static> = crate::crdt::uint64::U64::default().into();
+    let mut u256_value: CrdtValue<'static> = crate::crdt::u256::U256::default().into();
     assert_eq!(
         u64_value.add_delta(&Delta::U256(DeltaOp::Sub(alloy_primitives::U256::ZERO,))),
         Err(StateError::TypeMismatch)
@@ -170,7 +170,7 @@ fn unsigned_subtraction_rejects_other_numeric_types() {
 mod tracked {
     use super::Tracked;
     use crate::crdt::{
-        state::{Delta, Numeric, Value},
+        state::{Delta, Numeric, CrdtValue},
         uint64::U64,
     };
 
@@ -182,7 +182,7 @@ mod tracked {
         assert!(tracked.add_delta(Delta::None).is_ok());
         assert!(tracked.remove().is_ok());
         assert!(tracked.is_missing());
-        assert!(matches!(tracked.current(), Value::None));
+        assert!(matches!(tracked.current(), CrdtValue::None));
 
         assert_eq!(tracked.operations.reads.count(), 1);
         assert_eq!(tracked.operations.existence_checks.count(), 1);
@@ -191,8 +191,8 @@ mod tracked {
 
     #[test]
     fn deleting_preexisting_value_is_permanent() {
-        let value: Value<'static> =
-            Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+        let value: CrdtValue<'static> =
+            CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
         let mut tracked = Tracked::new_borrowed(&value, 7);
 
         assert!(tracked.remove().is_ok());
@@ -206,15 +206,15 @@ mod tracked {
     #[test]
     fn constructors_record_id_and_origin() {
         let empty = Tracked::new_owned_empty(10);
-        assert!(matches!(empty.original(), Value::None));
-        assert!(matches!(empty.current(), Value::None));
+        assert!(matches!(empty.original(), CrdtValue::None));
+        assert!(matches!(empty.current(), CrdtValue::None));
 
         let owned = Tracked::new_owned(U64::default().into(), 11);
         assert_eq!(owned.id, 11);
         assert!(owned.is_created());
-        assert!(matches!(owned.original(), Value::None));
+        assert!(matches!(owned.original(), CrdtValue::None));
 
-        let value: Value<'static> = U64::default().into();
+        let value: CrdtValue<'static> = U64::default().into();
         let borrowed = Tracked::new_borrowed(&value, 12);
         assert_eq!(borrowed.id, 12);
         assert!(!borrowed.is_created());
@@ -225,7 +225,7 @@ mod tracked {
 
     #[test]
     fn only_mutations_make_a_record_non_read_only() {
-        let value: Value<'static> = U64::default().into();
+        let value: CrdtValue<'static> = U64::default().into();
         let mut tracked = Tracked::new_borrowed(&value, 7);
         assert!(tracked.is_read_only());
 
@@ -244,7 +244,7 @@ mod tracked {
 
     #[test]
     fn ownership_conversions_preserve_id() {
-        let value: Value<'static> = U64::default().into();
+        let value: CrdtValue<'static> = U64::default().into();
         let tracked = Tracked::new_borrowed(&value, 42);
         let cloned = tracked.owned_clone();
 

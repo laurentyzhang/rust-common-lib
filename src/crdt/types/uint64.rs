@@ -1,5 +1,5 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, Value};
+use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
@@ -20,9 +20,9 @@ impl Default for U64 {
     }
 }
 
-impl From<U64> for Value<'static> {
+impl From<U64> for CrdtValue<'static> {
     fn from(value: U64) -> Self {
-        Value::Numeric(Numeric::U64(Cow::Owned(value)))
+        CrdtValue::Numeric(Numeric::U64(Cow::Owned(value)))
     }
 }
 
@@ -85,8 +85,8 @@ impl U64 {
         })
     }
 
-    // fn numeric_value(number: u64) -> Value<'static> {
-    //     Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
+    // fn numeric_value(number: u64) -> CrdtValue<'static> {
+    //     CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
     //         value: number,
     //         ..U64::default()
     //     })))

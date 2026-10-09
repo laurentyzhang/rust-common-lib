@@ -4,7 +4,7 @@ mod access_checker {
     use crate::crdt::state::{
         Tracked,
         status::{Status, Tag},
-        value::Value,
+        value::CrdtValue,
     };
     use crate::execution::output::ExecutionOutput;
     use crate::resolver::access_checker::AccessChecker;
@@ -315,7 +315,7 @@ mod access_checker {
             let mut data = record(missing(), present(), 0, 0, 1, 0);
             data.id = id;
             data.value.current =
-                Status::Value(Value::Bytes(Cow::Owned(Bytes::new(vec![bytes]).unwrap())));
+                Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![bytes]).unwrap())));
             ExecutionOutput {
                 id,
                 key: 7,
@@ -349,8 +349,8 @@ mod access_checker {
 
         let mut left = record(present(), Tag::Stripped, 0, 0, 1, 0);
         let mut right = record(present(), Tag::Stripped, 0, 0, 1, 0);
-        left.value.current = Status::Value(Value::Bytes(Cow::Owned(Bytes::new(vec![1]).unwrap())));
-        right.value.current = Status::Value(Value::Bytes(Cow::Owned(Bytes::new(vec![2]).unwrap())));
+        left.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![1]).unwrap())));
+        right.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![2]).unwrap())));
 
         assert!(left.delta_conflict_with(&right).is_err());
         assert!(right.delta_conflict_with(&left).is_err());
@@ -478,10 +478,10 @@ mod conflict_checker {
             Delta, DeltaOp, Numeric, Tracked,
             op::Operations,
             status::{Status, Tag},
-            value::{Value, Values},
+            value::{CrdtValue, Values},
         },
     };
-    use crate::execution::VmCache;
+    use crate::execution::VmStateCache;
     use crate::execution::output::ExecutionOutput;
     use crate::resolver::access_checker::AccessChecker;
     use crate::resolver::conflict_checker::*;
@@ -588,17 +588,17 @@ mod conflict_checker {
     #[test]
     fn vm_read_remove_conflicts_survive_drain_import_and_ordering() {
         for value in [
-            Value::from(Bytes::new(vec![1]).unwrap()),
-            Value::from(crate::crdt::uint64::U64::default()),
+            CrdtValue::from(Bytes::new(vec![1]).unwrap()),
+            CrdtValue::from(crate::crdt::uint64::U64::default()),
         ] {
             for delete_reads_first in [false, true] {
                 for reverse_import in [false, true] {
                     for same_key in [false, true] {
-                        let mut fallback = VmCache::new(0);
+                        let mut fallback = VmStateCache::new(0);
                         fallback.insert(&7, value.clone()).unwrap();
                         fallback.insert(&8, value.clone()).unwrap();
-                        let mut reader = VmCache::new_with_fallback(1, &fallback);
-                        let mut deleter = VmCache::new_with_fallback(2, &fallback);
+                        let mut reader = VmStateCache::new_with_fallback(1, &fallback);
+                        let mut deleter = VmStateCache::new_with_fallback(2, &fallback);
                         let delete_key = if same_key { 7 } else { 8 };
 
                         assert!((&mut reader).get(&7).is_some());
@@ -634,31 +634,31 @@ mod conflict_checker {
     fn vm_delta_remove_conflicts_survive_drain_import_and_ordering() {
         for (value, delta) in [
             (
-                Value::from(Bytes::new(vec![1]).unwrap()),
+                CrdtValue::from(Bytes::new(vec![1]).unwrap()),
                 Delta::Bytes(vec![2]),
             ),
-            (Value::from(I64::default()), Delta::I64(1)),
+            (CrdtValue::from(I64::default()), Delta::I64(1)),
             (
-                Value::from(crate::crdt::uint64::U64::default()),
+                CrdtValue::from(crate::crdt::uint64::U64::default()),
                 Delta::U64(DeltaOp::Add(1)),
             ),
             (
-                Value::from(crate::crdt::u256::U256::default()),
+                CrdtValue::from(crate::crdt::u256::U256::default()),
                 Delta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
-                Value::from(crate::crdt::u64_set::U64Set::default()),
+                CrdtValue::from(crate::crdt::u64_set::U64Set::default()),
                 Delta::U64Set(vec![DeltaOp::Add(1)]),
             ),
         ] {
             for delete_writes_first in [false, true] {
                 for reverse_import in [false, true] {
                     for same_key in [false, true] {
-                        let mut fallback = VmCache::new(0);
+                        let mut fallback = VmStateCache::new(0);
                         fallback.insert(&7, value.clone()).unwrap();
                         fallback.insert(&8, value.clone()).unwrap();
-                        let mut writer = VmCache::new_with_fallback(1, &fallback);
-                        let mut deleter = VmCache::new_with_fallback(2, &fallback);
+                        let mut writer = VmStateCache::new_with_fallback(1, &fallback);
+                        let mut deleter = VmStateCache::new_with_fallback(2, &fallback);
                         let delete_key = if same_key { 7 } else { 8 };
 
                         writer.add_delta(&7, delta.clone()).unwrap();
@@ -778,13 +778,13 @@ mod conflict_checker {
                 2,
                 7,
                 operations(0, 0, 1, 0),
-                Status::Value(Value::Numeric(Numeric::I64(Cow::Owned(first)))),
+                Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(first)))),
             ),
             output(
                 3,
                 7,
                 operations(1, 0, 1, 0),
-                Status::Value(Value::Numeric(Numeric::I64(Cow::Owned(second)))),
+                Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(second)))),
             ),
         ]);
 
@@ -803,7 +803,7 @@ mod conflict_checker {
                 )
         }));
         assert!(rejected.iter().any(|(record, reason)| {
-            matches!(record.data.current(), Status::Value(Value::Numeric(Numeric::I64(value)))
+            matches!(record.data.current(), Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
                     if value.delta().copied() == Some(9))
                 && matches!(
                     reason,
@@ -817,7 +817,7 @@ mod sum_checker {
     use crate::crdt::{
         Crdt,
         int64::I64,
-        state::{Delta, DeltaOp, Numeric, Status, Tracked, Value, status::Tag, value::Values},
+        state::{Delta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag, value::Values},
         u256::U256,
         uint64::U64,
     };
@@ -880,7 +880,7 @@ mod sum_checker {
                     id: tx_id,
                     key,
                     gas_used: 0,
-                    data: Tracked::<Value<'static>, Value<'static>>::new_owned_empty(tx_id)
+                    data: Tracked::<CrdtValue<'static>, CrdtValue<'static>>::new_owned_empty(tx_id)
                         .clone_with_states(Values {
                             original: Status::Tag(Tag::Missing),
                             current: value,
@@ -951,7 +951,7 @@ mod sum_checker {
                     assert_eq!(record.key, 7);
                     assert!(matches!(
                         record.data.current(),
-                        Status::Value(Value::Numeric(value)) if value == &values[record.id as usize - 1]
+                        Status::Value(CrdtValue::Numeric(value)) if value == &values[record.id as usize - 1]
                     ));
                     if record.id == underflow_id {
                         assert!(matches!(
@@ -1217,7 +1217,7 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(Value::Numeric(Numeric::I64(value)))
+            Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
                 if value.delta().copied() == Some(4)
         ));
         assert!(matches!(
@@ -1262,7 +1262,7 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(Value::Numeric(Numeric::U64(value)))
+            Status::Value(CrdtValue::Numeric(Numeric::U64(value)))
                 if value.delta() == Some(&DeltaOp::Add(u64::MAX))
         ));
         assert!(matches!(
@@ -1285,7 +1285,7 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(Value::Numeric(Numeric::U64(value)))
+            Status::Value(CrdtValue::Numeric(Numeric::U64(value)))
                 if value.delta() == Some(&DeltaOp::Sub(5))
         ));
         assert!(matches!(

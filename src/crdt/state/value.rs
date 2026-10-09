@@ -1,4 +1,5 @@
 use super::{Delta, Numeric, StateError};
+use crate::crdt;
 use crate::crdt::Crdt;
 
 #[derive(Clone, PartialEq)]
@@ -8,24 +9,24 @@ pub struct Values<T0, T1> {
 }
 
 #[derive(Clone, PartialEq)]
-pub enum Value<'a> {
-    Bytes(std::borrow::Cow<'a, crate::crdt::bytes::Bytes>),
-    U64Set(std::borrow::Cow<'a, crate::crdt::u64_set::U64Set>),
+pub enum CrdtValue<'a> {
+    Bytes(std::borrow::Cow<'a, crdt::bytes::Bytes>),
+    U64Set(std::borrow::Cow<'a, crdt::u64_set::U64Set>),
     Numeric(Numeric<'a>),
     None,
 }
 
-impl<'a> Value<'a> {
-    pub fn into_owned(self) -> Value<'static> {
+impl<'a> CrdtValue<'a> {
+    pub fn into_owned(self) -> CrdtValue<'static> {
         match self {
-            Self::Bytes(value) => Value::Bytes(std::borrow::Cow::Owned(value.into_owned())),
-            Self::U64Set(value) => Value::U64Set(std::borrow::Cow::Owned(value.into_owned())),
-            Self::Numeric(value) => Value::Numeric(value.into_owned()),
-            Self::None => Value::None,
+            Self::Bytes(value) => CrdtValue::Bytes(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U64Set(value) => CrdtValue::U64Set(std::borrow::Cow::Owned(value.into_owned())),
+            Self::Numeric(value) => CrdtValue::Numeric(value.into_owned()),
+            Self::None => CrdtValue::None,
         }
     }
 
-    pub fn from_borrowed(value: &'a Value<'_>) -> Self {
+    pub fn from_borrowed(value: &'a CrdtValue<'_>) -> Self {
         match value {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
@@ -115,7 +116,7 @@ impl<'a> Value<'a> {
         }
     }
 
-    pub fn apply_delta(&mut self) -> &Value<'a> {
+    pub fn apply_delta(&mut self) -> &CrdtValue<'a> {
         match self {
             Self::Bytes(value) => {
                 value.to_mut().apply_delta();

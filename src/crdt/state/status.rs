@@ -1,4 +1,4 @@
-use super::value::{Value, Values};
+use super::value::{CrdtValue, Values};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
@@ -11,34 +11,34 @@ pub enum Tag {
 #[derive(Clone, PartialEq)]
 pub enum Status {
     Tag(Tag),
-    Value(Value<'static>),
+    Value(CrdtValue<'static>),
 }
 
 /// Strips the given `Values` by converting them into `Status` representations.
 /// This is mainly for reducing the memory footprint when checking conflicts.
-pub fn strip(value: &Values<Value<'_>, Value<'_>>) -> Values<Status, Status> {
+pub fn strip(value: &Values<CrdtValue<'_>, CrdtValue<'_>>) -> Values<Status, Status> {
     let original = match &value.original {
-        Value::None => Status::Tag(Tag::Missing),
+        CrdtValue::None => Status::Tag(Tag::Missing),
         _ => Status::Tag(Tag::Stripped),
     };
 
     let current = match &value.current {
-        Value::Numeric(value) => Status::Value(Value::Numeric(value.clone().into_owned())),
-        Value::Bytes(value) => {
+        CrdtValue::Numeric(value) => Status::Value(CrdtValue::Numeric(value.clone().into_owned())),
+        CrdtValue::Bytes(value) => {
             if value.delta.is_none() {
                 Status::Tag(Tag::Default)
             } else {
                 Status::Tag(Tag::Stripped)
             }
         }
-        Value::U64Set(value) => {
+        CrdtValue::U64Set(value) => {
             if value.delta.is_none() {
                 Status::Tag(Tag::Default) // no pending changes
             } else {
                 Status::Tag(Tag::Stripped) // has pending changes, strip the details.
             }
         }
-        Value::None => {
+        CrdtValue::None => {
             if original == Status::Tag(Tag::Missing) {
                 Status::Tag(Tag::Missing) // Original value was missing too.
             } else {

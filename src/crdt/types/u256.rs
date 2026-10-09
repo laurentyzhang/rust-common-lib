@@ -1,4 +1,4 @@
-use crate::crdt::state::{DeltaOp, Numeric, Value};
+use crate::crdt::state::{DeltaOp, Numeric, CrdtValue};
 use alloy_primitives::U256 as AlloyU256;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -23,9 +23,9 @@ impl Default for U256 {
     }
 }
 
-impl From<U256> for Value<'static> {
+impl From<U256> for CrdtValue<'static> {
     fn from(value: U256) -> Self {
-        Value::Numeric(Numeric::U256(Cow::Owned(value)))
+        CrdtValue::Numeric(Numeric::U256(Cow::Owned(value)))
     }
 }
 

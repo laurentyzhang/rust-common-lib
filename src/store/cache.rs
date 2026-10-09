@@ -1,4 +1,4 @@
-// use crate::crdt::state::{Delta, Tracked, Value};
+// use crate::crdt::state::{Delta, Tracked, CrdtValue};
 use crate::store::traits::FallbackStore;
 
 pub struct CachedStore<'a, K, V> {

@@ -7,7 +7,7 @@ use super::{
 use crate::crdt::state::{
     Tracked,
     status::{Status, Tag},
-    value::{Value, Values},
+    value::{CrdtValue, Values},
 };
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
@@ -40,9 +40,9 @@ impl<K> ConflictChecker<K> {
         for transition in &mut transitions {
             if matches!(
                 &transition.data.value.current,
-                Status::Value(Value::Numeric(_))
+                Status::Value(CrdtValue::Numeric(_))
             ) {
-                let Status::Value(Value::Numeric(value)) = std::mem::replace(
+                let Status::Value(CrdtValue::Numeric(value)) = std::mem::replace(
                     &mut transition.data.value.current,
                     Status::Tag(Tag::Stripped),
                 ) else {

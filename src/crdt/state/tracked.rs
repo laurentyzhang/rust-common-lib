@@ -1,5 +1,5 @@
 use super::{
-    Delta, Numeric, StateError, Status, Value, numeric::ComparableNumeric, op::Operations,
+    Delta, Numeric, StateError, Status, CrdtValue, numeric::ComparableNumeric, op::Operations,
     status::Tag, value::Values,
 };
 
@@ -77,45 +77,45 @@ impl Tracked<Status, Numeric<'static>> {
     }
 }
 
-impl<'a> Tracked<Value<'a>, Value<'a>> {
+impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn new_owned_empty(id: u64) -> Self {
         Self::from_states(
             id,
             Values {
-                original: Value::None,
-                current: Value::None,
+                original: CrdtValue::None,
+                current: CrdtValue::None,
             },
         )
     }
 
-    pub fn new_owned(value: Value<'a>, id: u64) -> Self {
+    pub fn new_owned(value: CrdtValue<'a>, id: u64) -> Self {
         Self::from_states(
             id,
             Values {
-                original: Value::None,
+                original: CrdtValue::None,
                 current: value,
             },
         )
     }
 
-    pub fn new_borrowed(value: &'a Value<'_>, id: u64) -> Self {
+    pub fn new_borrowed(value: &'a CrdtValue<'_>, id: u64) -> Self {
         Self::from_states(
             id,
             Values {
-                original: Value::from_borrowed(value),
-                current: Value::from_borrowed(value),
+                original: CrdtValue::from_borrowed(value),
+                current: CrdtValue::from_borrowed(value),
             },
         )
     }
 
-    pub fn owned_clone(&self) -> Tracked<Value<'static>, Value<'static>> {
+    pub fn owned_clone(&self) -> Tracked<CrdtValue<'static>, CrdtValue<'static>> {
         self.clone_with_states(Values {
             original: self.value.original.clone().into_owned(),
             current: self.value.current.clone().into_owned(),
         })
     }
 
-    pub fn into_owned(self) -> Tracked<Value<'static>, Value<'static>> {
+    pub fn into_owned(self) -> Tracked<CrdtValue<'static>, CrdtValue<'static>> {
         Tracked {
             id: self.id,
             value: Values {
@@ -127,8 +127,8 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
     }
 
     /// Init the value with a new non-None value.
-    pub fn set(&mut self, value: Value<'a>) -> Result<(), StoreError> {
-        if matches!(value, Value::None) {
+    pub fn set(&mut self, value: CrdtValue<'a>) -> Result<(), StoreError> {
+        if matches!(value, CrdtValue::None) {
             return Err(StoreError::SetNoneToValue);
         }
 
@@ -151,11 +151,11 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
 
     pub fn remove(&mut self) -> Result<(), StoreError> {
         self.operations.removes.increment();
-        self.value.current = Value::None;
+        self.value.current = CrdtValue::None;
         Ok(())
     }
 
-    pub fn get(&mut self) -> Option<&Value<'a>> {
+    pub fn get(&mut self) -> Option<&CrdtValue<'a>> {
         self.operations.reads.increment();
         self.is_live().then_some(&self.value.current)
     }
@@ -164,7 +164,7 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
         self.operations.existence_checks.increment();
     }
 
-    pub fn apply_delta(&mut self) -> Option<&Value<'a>> {
+    pub fn apply_delta(&mut self) -> Option<&CrdtValue<'a>> {
         self.operations.deltas.increment();
         if !self.is_live() {
             return None;
@@ -178,27 +178,27 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
     }
 
     pub fn is_creation_cancelled(&self) -> bool {
-        matches!(self.value.original, Value::None) && matches!(self.value.current, Value::None)
+        matches!(self.value.original, CrdtValue::None) && matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_live(&self) -> bool {
-        !matches!(self.value.current, Value::None)
+        !matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_missing(&self) -> bool {
-        matches!(self.value.current, Value::None)
+        matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_deleted(&self) -> bool {
-        matches!(self.value.current, Value::None) && !matches!(self.value.original, Value::None)
+        matches!(self.value.current, CrdtValue::None) && !matches!(self.value.original, CrdtValue::None)
     }
 
     pub fn is_created(&self) -> bool {
-        matches!(self.value.original, Value::None) && !matches!(self.value.current, Value::None)
+        matches!(self.value.original, CrdtValue::None) && !matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_preexisting(&self) -> bool {
-        !matches!(self.value.original, Value::None)
+        !matches!(self.value.original, CrdtValue::None)
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -206,8 +206,8 @@ impl<'a> Tracked<Value<'a>, Value<'a>> {
     }
 }
 
-impl<'a> Tracked<Value<'a>, Value<'a>> {
-    fn from_states(id: u64, value: Values<Value<'a>, Value<'a>>) -> Self {
+impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
+    fn from_states(id: u64, value: Values<CrdtValue<'a>, CrdtValue<'a>>) -> Self {
         Self {
             id,
             value,

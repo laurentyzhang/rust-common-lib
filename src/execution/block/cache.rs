@@ -1,11 +1,11 @@
 use crate::collections;
-use crate::crdt::state::{Status, Value};
+use crate::crdt::state::{Status, CrdtValue};
 use crate::store::traits::FallbackStore;
 
 /// A cache for storing all state transitions within a block.
 pub struct BlockCache<'a, K> {
-    pub(in crate::execution) cache: collections::shard_map::ShardMap<K, Value<'a>>,
-    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
+    pub(in crate::execution) cache: collections::shard_map::ShardMap<K, CrdtValue<'a>>,
+    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, CrdtValue<'a>>>,
 }
 
 impl<'a, K> BlockCache<'a, K> {
@@ -21,7 +21,7 @@ impl<'a, K> BlockCache<'a, K> {
     }
 
     /// Creates a new `BlockCache` with a fallback store.
-    pub fn new_with_fallback(fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>) -> Self
+    pub fn new_with_fallback(fallback: Option<&'a dyn FallbackStore<'a, K, CrdtValue<'a>>>) -> Self
     where
         K: std::hash::Hash + Eq,
     {
@@ -32,7 +32,7 @@ impl<'a, K> BlockCache<'a, K> {
     }
 }
 
-impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for BlockCache<'cache, K>
+impl<'store, 'cache, 'value, K> FallbackStore<'store, K, CrdtValue<'value>> for BlockCache<'cache, K>
 where
     K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,
@@ -46,14 +46,14 @@ where
         }
     }
 
-    fn get(&self, key: &K) -> Option<&Value<'value>> {
+    fn get(&self, key: &K) -> Option<&CrdtValue<'value>> {
         match self.cache.get(key) {
             Some(value) => Some(value),
             None => self.fallback.and_then(|fallback| fallback.get(key)),
         }
     }
 
-    fn get_untracked(&self, key: &K) -> Option<&Value<'value>> {
+    fn get_untracked(&self, key: &K) -> Option<&CrdtValue<'value>> {
         match self.cache.get(key) {
             Some(value) => Some(value),
             None => self

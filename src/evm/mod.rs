@@ -8,8 +8,8 @@
 pub mod backend;
 mod block_executor;
 mod call_router;
+mod dispatch;
 mod factory;
-mod revm_adapter;
 mod statedb;
 mod transaction;
 
@@ -19,7 +19,7 @@ pub use call_router::{
     ArcologyApi, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
     CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, arcology_address,
 };
+pub use dispatch::dispatch_precompile;
 pub use factory::{ArcologyEvm, ArcologyEvmFactory, PrecompileCollisionError};
-pub use revm_adapter::dispatch_revm_call;
 pub use statedb::{StateDB, StateKey};
 pub use transaction::ArcologyTx;

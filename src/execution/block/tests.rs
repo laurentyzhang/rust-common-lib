@@ -2,7 +2,7 @@ use crate::committer::traits::TransitionWriter;
 use crate::execution::{BlockCache, BlockCacheWriter};
 
 use crate::crdt::{
-    state::{Numeric, Value},
+    state::{Numeric, CrdtValue},
     uint64::U64,
 };
 use crate::store::traits::FallbackStore;
@@ -22,7 +22,7 @@ where
 
 fn write_block<'a, K>(
     cache: BlockCache<'a, K>,
-    updates: Vec<(K, Value<'static>)>,
+    updates: Vec<(K, CrdtValue<'static>)>,
 ) -> BlockCache<'a, K>
 where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
@@ -32,8 +32,8 @@ where
     writer.into_inner()
 }
 
-fn numeric_u64(number: u64) -> Value<'static> {
-    Value::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
+fn numeric_u64(number: u64) -> CrdtValue<'static> {
+    CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
         value: number,
         ..U64::default()
     })))
@@ -55,9 +55,9 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     assert!((cache.get(&7)) == Some(&replacement));
     assert!((fallback.get(&7)) == Some(&original));
 
-    cache = write_block(cache, vec![(7, Value::None)]);
+    cache = write_block(cache, vec![(7, CrdtValue::None)]);
     assert!(cache.contains_key(&7));
-    assert!(matches!(cache.get(&7), Some(Value::None)));
+    assert!(matches!(cache.get(&7), Some(CrdtValue::None)));
     assert!((fallback.get(&7)) == Some(&original));
 
     let mut writer = BlockCacheWriter::new(cache);
@@ -87,7 +87,7 @@ fn deletion_cannot_be_followed_by_recreation_in_the_same_batch() {
     let mut writer = BlockCacheWriter::new(cache);
 
     assert_eq!(
-        writer.flush(vec![(7, Value::None), (7, numeric_u64(42)),]),
+        writer.flush(vec![(7, CrdtValue::None), (7, numeric_u64(42)),]),
         Err(crate::store::StoreError::ValueCannotBeRecreated)
     );
 }

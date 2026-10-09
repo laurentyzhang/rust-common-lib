@@ -1,31 +1,31 @@
-use super::cache::VmCache;
+use super::cache::VmStateCache;
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::{Delta, Status, Tracked, Value};
+use crate::crdt::state::{Delta, Status, Tracked, CrdtValue};
 use crate::store::traits::StoreError;
 
-pub struct VmCacheWriter<'a, K> {
-    vm_cache: VmCache<'a, K>,
+pub struct VmStateCacheWriter<'a, K> {
+    vm_cache: VmStateCache<'a, K>,
 }
 
-impl<'a, K> VmCacheWriter<'a, K> {
-    pub fn new(vm_cache: VmCache<'a, K>) -> Self {
+impl<'a, K> VmStateCacheWriter<'a, K> {
+    pub fn new(vm_cache: VmStateCache<'a, K>) -> Self {
         Self { vm_cache }
     }
 
-    pub fn into_inner(self) -> VmCache<'a, K> {
+    pub fn into_inner(self) -> VmStateCache<'a, K> {
         self.vm_cache
     }
 }
 
 /// A write-only store implementation for the execution cache.
 /// Useful for using the execution cache as the fallback store for another execution cache.
-impl<'a, K> TransitionWriter<K, Value<'static>> for VmCacheWriter<'a, K>
+impl<'a, K> TransitionWriter<K, CrdtValue<'static>> for VmStateCacheWriter<'a, K>
 where
     K: std::hash::Hash + Eq + Clone,
 {
-    fn flush(&mut self, updates: Vec<(K, Value<'static>)>) -> Result<(), StoreError> {
+    fn flush(&mut self, updates: Vec<(K, CrdtValue<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
-            if matches!(value, Value::None) {
+            if matches!(value, CrdtValue::None) {
                 self.vm_cache.get_or_populate_tracked(&key).remove()?;
                 continue;
             }

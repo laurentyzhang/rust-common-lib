@@ -1,4 +1,4 @@
-//! A revm `Database` over a `VmCache`, which falls back to its `FallbackStore` on a miss.
+//! A revm `Database` over a `VmStateCache`, which falls back to its `FallbackStore` on a miss.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -8,7 +8,7 @@ use alloy_evm::revm::bytecode::Bytecode;
 use alloy_evm::revm::state::AccountInfo;
 use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, keccak256};
 
-use crate::execution::VmCache;
+use crate::execution::VmStateCache;
 
 /// Cache keys for the parts of an account.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -19,15 +19,15 @@ pub enum StateKey {
     Storage(Address, U256),
 }
 
-/// Reads accounts and storage through a `VmCache`. Writes are not supported yet.
+/// Reads accounts and storage through a `VmStateCache`. Writes are not supported yet.
 pub struct StateDB<'a> {
-    execution_cache: VmCache<'a, StateKey>,
+    execution_cache: VmStateCache<'a, StateKey>,
     /// Code seen by `basic`, so `code_by_hash` can answer later.
     codes: HashMap<B256, Bytecode>,
 }
 
 impl<'a> StateDB<'a> {
-    pub fn new(execution_cache: VmCache<'a, StateKey>) -> Self {
+    pub fn new(execution_cache: VmStateCache<'a, StateKey>) -> Self {
         Self {
             execution_cache,
             codes: HashMap::new(),

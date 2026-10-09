@@ -1,5 +1,5 @@
 use crate::crdt::state::Delta;
-use crate::crdt::state::{Status, Tracked, Value, status};
+use crate::crdt::state::{CrdtValue, Status, Tracked, status};
 use crate::execution::error::Error;
 use crate::execution::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
@@ -7,13 +7,13 @@ use crate::store::traits::StoreError;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-pub struct VmCache<'a, K> {
+pub struct VmStateCache<'a, K> {
     pub(super) id: u64,
-    pub(super) cache: HashMap<K, Tracked<Value<'a>, Value<'a>>>,
-    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, Value<'a>>>,
+    pub(super) cache: HashMap<K, Tracked<CrdtValue<'a>, CrdtValue<'a>>>,
+    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, CrdtValue<'a>>>,
 }
 
-impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
+impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -23,7 +23,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(id: u64, fallback: &'a dyn FallbackStore<'a, K, Value<'a>>) -> Self {
+    pub fn new_with_fallback(
+        id: u64,
+        fallback: &'a dyn FallbackStore<'a, K, CrdtValue<'a>>,
+    ) -> Self {
         Self {
             id,
             cache: HashMap::new(),
@@ -39,7 +42,7 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     ///
     /// Use `(&mut cache).get(key)` to select this method when `FallbackStore`
     /// is in scope. `(&cache).get(key)` selects the untracked trait method.
-    pub fn get(&mut self, key: &K) -> Option<Cow<'_, Value<'a>>>
+    pub fn get(&mut self, key: &K) -> Option<Cow<'_, CrdtValue<'a>>>
     where
         K: Clone,
     {
@@ -55,11 +58,11 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn insert(&mut self, key: &K, value: Value<'static>) -> Result<(), Error>
+    pub fn insert(&mut self, key: &K, value: CrdtValue<'static>) -> Result<(), Error>
     where
         K: Clone,
     {
-        if matches!(value, Value::None) {
+        if matches!(value, CrdtValue::None) {
             return Err(StoreError::ValueCannotBeStripped.into());
         }
 
@@ -89,10 +92,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
             None => self
                 .fallback
                 .as_ref()
-                .and_then(|fallback: &&dyn FallbackStore<K, Value<'a>>| {
+                .and_then(|fallback: &&dyn FallbackStore<K, CrdtValue<'a>>| {
                     (**fallback).get_untracked(key)
                 })
-                .is_some_and(|value| !matches!(value, Value::None)),
+                .is_some_and(|value| !matches!(value, CrdtValue::None)),
         }
     }
 
@@ -142,7 +145,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
-    pub(super) fn get_or_populate_tracked(&mut self, key: &K) -> &mut Tracked<Value<'a>, Value<'a>>
+    pub(super) fn get_or_populate_tracked(
+        &mut self,
+        key: &K,
+    ) -> &mut Tracked<CrdtValue<'a>, CrdtValue<'a>>
     where
         K: Clone,
     {
@@ -159,9 +165,10 @@ impl<'a, K: std::hash::Hash + Eq> VmCache<'a, K> {
     }
 }
 
-/// VmCache as the fallback store for another VmCache,
+/// VmStateCache as the fallback store for another VmStateCache,
 /// allowing for a layered caching mechanism.
-impl<'store, 'cache, 'value, K> FallbackStore<'store, K, Value<'value>> for VmCache<'cache, K>
+impl<'store, 'cache, 'value, K> FallbackStore<'store, K, CrdtValue<'value>>
+    for VmStateCache<'cache, K>
 where
     K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,
@@ -172,7 +179,7 @@ where
     }
 
     /// Read without tracking; local deletions hide fallback values.
-    fn get(&self, key: &K) -> Option<&Value<'value>> {
+    fn get(&self, key: &K) -> Option<&CrdtValue<'value>> {
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {
@@ -189,7 +196,7 @@ where
         }
     }
 
-    fn get_untracked(&self, key: &K) -> Option<&Value<'value>> {
+    fn get_untracked(&self, key: &K) -> Option<&CrdtValue<'value>> {
         match self.cache.get(key) {
             Some(tracked) => Some(tracked.current()),
             None => self

@@ -1,5 +1,5 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::{StateError, Value};
+use crate::crdt::state::{StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
@@ -8,9 +8,9 @@ pub struct Bytes {
     pub(crate) delta: Option<Box<[u8]>>,
 }
 
-impl From<Bytes> for Value<'static> {
+impl From<Bytes> for CrdtValue<'static> {
     fn from(value: Bytes) -> Self {
-        Value::Bytes(Cow::Owned(value))
+        CrdtValue::Bytes(Cow::Owned(value))
     }
 }
 

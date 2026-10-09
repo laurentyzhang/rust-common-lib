@@ -1,5 +1,5 @@
 mod cache;
 mod writer;
 
-pub use cache::VmCache;
-pub use writer::VmCacheWriter;
+pub use cache::VmStateCache;
+pub use writer::VmStateCacheWriter;
