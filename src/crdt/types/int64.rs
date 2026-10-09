@@ -4,7 +4,7 @@ use crate::crdt::state::CrdtValue;
 use crate::crdt::state::{NumericError, StateError};
 use std::borrow::Cow;
 use std::cmp::Ordering;
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct I64 {
     pub(crate) value: i64,
     pub(crate) delta: i64,

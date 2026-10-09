@@ -4,7 +4,7 @@ use crate::crdt::state::{DeltaOp, StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct U64Set {
     pub(crate) entries: DeltaSet<u64>,
     pub(crate) delta: Option<Vec<DeltaOp<u64>>>,

@@ -1,76 +1,86 @@
 //! A revm `Database` over a `VmStateCache`, which falls back to its `FallbackStore` on a miss.
 
 use std::collections::HashMap;
-use std::convert::Infallible;
 
 use alloy_evm::revm::Database;
 use alloy_evm::revm::bytecode::Bytecode;
 use alloy_evm::revm::state::AccountInfo;
-use alloy_primitives::{Address, B256, KECCAK256_EMPTY, U256, keccak256};
+use alloy_primitives::{Address, B256, U256};
 
+use super::account_info::{AccountDecodeError, AccountInfoCodec};
 use crate::execution::VmStateCache;
+use crate::store::{StoreCodec, StoreError};
 
-/// Cache keys for the parts of an account.
+/// Cache keys for EVM accounts and storage slots.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum StateKey {
-    Balance(Address),
-    Nonce(Address),
-    Code(Address),
+pub enum Key {
+    Account(Address),
     Storage(Address, U256),
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyCodec;
+
+impl StoreCodec<Key> for KeyCodec {
+    fn encode(&self, value: &Key) -> Result<Vec<u8>, StoreError> {
+        match value {
+            Key::Account(address) => Ok(address.as_slice().to_vec()),
+            Key::Storage(address, slot) => {
+                let mut encoded = Vec::with_capacity(52);
+                encoded.extend_from_slice(address.as_slice());
+                encoded.extend_from_slice(&slot.to_be_bytes::<32>());
+                Ok(encoded)
+            }
+        }
+    }
+
+    fn decode(&self, encoded: &[u8]) -> Result<Key, StoreError> {
+        match encoded.len() {
+            20 => Ok(Key::Account(Address::from_slice(encoded))),
+            52 => Ok(Key::Storage(
+                Address::from_slice(&encoded[..20]),
+                U256::from_be_slice(&encoded[20..]),
+            )),
+            length => Err(StoreError::Codec(format!(
+                "invalid EVM key length {length}"
+            ))),
+        }
+    }
 }
 
 /// Reads accounts and storage through a `VmStateCache`. Writes are not supported yet.
 pub struct StateDB<'a> {
-    execution_cache: VmStateCache<'a, StateKey>,
+    execution_store: VmStateCache<'a, Key>,
     /// Code seen by `basic`, so `code_by_hash` can answer later.
     codes: HashMap<B256, Bytecode>,
 }
 
 impl<'a> StateDB<'a> {
-    pub fn new(execution_cache: VmStateCache<'a, StateKey>) -> Self {
+    pub fn new(execution_store: VmStateCache<'a, Key>) -> Self {
         Self {
-            execution_cache,
+            execution_store,
             codes: HashMap::new(),
         }
     }
 }
 
 impl Database for StateDB<'_> {
-    type Error = Infallible;
+    type Error = AccountDecodeError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let balance = self
-            .execution_cache
-            .get(&StateKey::Balance(address))
-            .and_then(|v| v.as_u256());
-        let nonce = self
-            .execution_cache
-            .get(&StateKey::Nonce(address))
-            .and_then(|v| v.as_u64());
-        let code = self
-            .execution_cache
-            .get(&StateKey::Code(address))
-            .and_then(|v| v.as_bytes().map(|b| b.to_vec()));
-
-        if balance.is_none() && nonce.is_none() && code.is_none() {
+        let Some(encoded) = self
+            .execution_store
+            .get(&Key::Account(address))
+            .and_then(|value| value.as_bytes().map(<[u8]>::to_vec))
+        else {
             return Ok(None);
-        }
-
-        let (code_hash, code) = match code {
-            Some(bytes) if !bytes.is_empty() => {
-                let hash = keccak256(&bytes);
-                let code = Bytecode::new_raw(bytes.into());
-                self.codes.insert(hash, code.clone());
-                (hash, Some(code))
-            }
-            _ => (KECCAK256_EMPTY, None),
         };
 
-        let mut info = AccountInfo::default();
-        info.balance = balance.unwrap_or_default();
-        info.nonce = nonce.unwrap_or_default();
-        info.code_hash = code_hash;
-        info.code = code;
+        let info = AccountInfo::decode(&encoded)?;
+        if let Some(code) = &info.code {
+            self.codes.insert(info.code_hash, code.clone());
+        }
+
         Ok(Some(info))
     }
 
@@ -80,8 +90,8 @@ impl Database for StateDB<'_> {
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
         Ok(self
-            .execution_cache
-            .get(&StateKey::Storage(address, index))
+            .execution_store
+            .get(&Key::Storage(address, index))
             .and_then(|v| v.as_u256())
             .unwrap_or_default())
     }

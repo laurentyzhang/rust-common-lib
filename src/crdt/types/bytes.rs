@@ -3,7 +3,7 @@ use crate::crdt::state::{StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-#[derive(Clone, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct Bytes {
     pub(crate) delta: Option<Box<[u8]>>,
 }

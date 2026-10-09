@@ -10,7 +10,7 @@ use std::collections::HashMap;
 pub struct VmStateCache<'a, K> {
     pub(super) id: u64,
     pub(super) cache: HashMap<K, Tracked<CrdtValue<'a>, CrdtValue<'a>>>,
-    pub(super) fallback: Option<&'a dyn FallbackStore<'a, K, CrdtValue<'a>>>,
+    pub(super) fallback: Option<&'a dyn FallbackStore<K, CrdtValue<'a>>>,
 }
 
 impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
@@ -25,7 +25,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     /// Create an empty cache backed by a read-only fallback.
     pub fn new_with_fallback(
         id: u64,
-        fallback: &'a dyn FallbackStore<'a, K, CrdtValue<'a>>,
+        fallback: &'a dyn FallbackStore<K, CrdtValue<'a>>,
     ) -> Self {
         Self {
             id,
@@ -46,15 +46,24 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     where
         K: Clone,
     {
-        let tracked = self.get_or_populate_tracked(key);
-        let touched = tracked.has_delta();
-        let value = tracked.get()?;
+        self.try_get(key).expect("fallback store read failed")
+    }
 
-        Some(if touched {
+    pub fn try_get(&mut self, key: &K) -> Result<Option<Cow<'_, CrdtValue<'a>>>, Error>
+    where
+        K: Clone,
+    {
+        let tracked = self.try_get_or_populate_tracked(key)?;
+        let touched = tracked.has_delta();
+        let Some(value) = tracked.get() else {
+            return Ok(None);
+        };
+
+        Ok(Some(if touched {
             Cow::Owned(value.applied())
         } else {
             Cow::Borrowed(value)
-        })
+        }))
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
@@ -66,7 +75,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
             return Err(StoreError::ValueCannotBeStripped.into());
         }
 
-        let tracked = self.get_or_populate_tracked(key);
+        let tracked = self.try_get_or_populate_tracked(key)?;
 
         if tracked.is_live() {
             tracked.check();
@@ -80,22 +89,25 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key)
+        self.try_get_or_populate_tracked(key)?
             .add_delta(delta)
             .map_err(Error::from)
     }
 
     /// Return whether a live value exists locally or in the fallback.
     pub fn exists(&self, key: &K) -> bool {
+        self.try_exists(key).expect("fallback store read failed")
+    }
+
+    pub fn try_exists(&self, key: &K) -> Result<bool, Error> {
         match self.cache.get(key) {
-            Some(tracked) => tracked.is_live(),
-            None => self
+            Some(tracked) => Ok(tracked.is_live()),
+            None => Ok(self
                 .fallback
-                .as_ref()
-                .and_then(|fallback: &&dyn FallbackStore<K, CrdtValue<'a>>| {
-                    (**fallback).get_untracked(key)
-                })
-                .is_some_and(|value| !matches!(value, CrdtValue::None)),
+                .map(|fallback| fallback.get_untracked(key))
+                .transpose()?
+                .flatten()
+                .is_some_and(|value| !matches!(value, CrdtValue::None))),
         }
     }
 
@@ -104,7 +116,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     where
         K: Clone,
     {
-        self.get_or_populate_tracked(key)
+        self.try_get_or_populate_tracked(key)?
             .remove()
             .map_err(Error::from)
     }
@@ -145,64 +157,70 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     }
 
     /// Get a local record, borrowing from fallback or tracking a missing value.
-    pub(super) fn get_or_populate_tracked(
+    pub(super) fn try_get_or_populate_tracked(
         &mut self,
         key: &K,
-    ) -> &mut Tracked<CrdtValue<'a>, CrdtValue<'a>>
+    ) -> Result<&mut Tracked<CrdtValue<'a>, CrdtValue<'a>>, StoreError>
     where
         K: Clone,
     {
-        let fallback = self.fallback.as_ref();
-
-        self.cache.entry(key.clone()).or_insert_with(|| {
-            fallback
-                .and_then(|fallback| fallback.get_untracked(key))
-                .map_or_else(
-                    || Tracked::new_owned_empty(self.id),
-                    |value| Tracked::new_borrowed(value, self.id),
-                )
-        })
+        if !self.cache.contains_key(key) {
+            let tracked = match self.fallback {
+                Some(fallback) => fallback
+                    .get_untracked(key)?
+                    .map_or_else(
+                        || Tracked::new_owned_empty(self.id),
+                        |value| Tracked::new_owned_existing(value, self.id),
+                    ),
+                None => Tracked::new_owned_empty(self.id),
+            };
+            self.cache.insert(key.clone(), tracked);
+        }
+        Ok(self.cache.get_mut(key).expect("tracked value was inserted"))
     }
 }
 
 /// VmStateCache as the fallback store for another VmStateCache,
 /// allowing for a layered caching mechanism.
-impl<'store, 'cache, 'value, K> FallbackStore<'store, K, CrdtValue<'value>>
+impl<'cache, 'value, K> FallbackStore<K, CrdtValue<'value>>
     for VmStateCache<'cache, K>
 where
     K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,
 {
     /// Check for a live value locally or in the fallback.
-    fn contains_key(&self, key: &K) -> bool {
-        self.exists(key)
+    fn contains_key(&self, key: &K) -> Result<bool, StoreError> {
+        self.try_exists(key).map_err(|error| match error {
+            Error::Store(error) => error,
+            Error::State(error) => StoreError::State(error),
+        })
     }
 
     /// Read without tracking; local deletions hide fallback values.
-    fn get(&self, key: &K) -> Option<&CrdtValue<'value>> {
+    fn get(&self, key: &K) -> Result<Option<CrdtValue<'value>>, StoreError> {
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {
-                    Some(tracked.current())
+                    Ok(Some(tracked.current().clone()))
                 } else {
-                    None
+                    Ok(None)
                 }
             }
 
-            None => self
-                .fallback
-                .as_ref()
-                .and_then(|fallback| fallback.get(key)),
+            None => match self.fallback {
+                Some(fallback) => fallback.get(key),
+                None => Ok(None),
+            },
         }
     }
 
-    fn get_untracked(&self, key: &K) -> Option<&CrdtValue<'value>> {
+    fn get_untracked(&self, key: &K) -> Result<Option<CrdtValue<'value>>, StoreError> {
         match self.cache.get(key) {
-            Some(tracked) => Some(tracked.current()),
-            None => self
-                .fallback
-                .as_ref()
-                .and_then(|fallback| fallback.get_untracked(key)),
+            Some(tracked) => Ok(Some(tracked.current().clone())),
+            None => match self.fallback {
+                Some(fallback) => fallback.get_untracked(key),
+                None => Ok(None),
+            },
         }
     }
 }

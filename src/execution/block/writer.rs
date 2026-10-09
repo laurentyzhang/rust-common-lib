@@ -1,5 +1,5 @@
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::{Status, CrdtValue};
+use crate::crdt::state::CrdtValue;
 use crate::execution::block::cache::BlockCache;
 use crate::store::traits::{FallbackStore, StoreError};
 
@@ -29,7 +29,7 @@ where
             if matches!(value, CrdtValue::None) {
                 deleted.insert(key.clone());
             } else if deleted.contains(key)
-                || matches!(self.block_cache.get_untracked(key), Some(CrdtValue::None))
+                || matches!(self.block_cache.get_untracked(key)?, Some(CrdtValue::None))
             {
                 return Err(StoreError::ValueCannotBeRecreated);
             }

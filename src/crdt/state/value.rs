@@ -8,7 +8,7 @@ pub struct Values<T0, T1> {
     pub(crate) current: T1,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum CrdtValue<'a> {
     Bytes(std::borrow::Cow<'a, crdt::bytes::Bytes>),
     U64Set(std::borrow::Cow<'a, crdt::u64_set::U64Set>),

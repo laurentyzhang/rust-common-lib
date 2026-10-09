@@ -2,7 +2,7 @@ use super::{Delta, StateError};
 use crate::crdt::Crdt;
 use std::cmp::Ordering;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Numeric<'a> {
     I64(std::borrow::Cow<'a, crate::crdt::int64::I64>),
     U64(std::borrow::Cow<'a, crate::crdt::uint64::U64>),

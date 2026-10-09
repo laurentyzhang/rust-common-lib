@@ -4,6 +4,7 @@
 //! REVM release. The Reth/REVM integration only needs to translate its call
 //! frame into [`CallHookInput`] and translate [`CallHookOutcome`] back.
 
+mod account_info;
 #[doc(hidden)]
 pub mod backend;
 mod block_executor;
@@ -13,6 +14,7 @@ mod factory;
 mod statedb;
 mod transaction;
 
+pub use account_info::{AccountDecodeError, AccountInfoCodec};
 pub use backend::ArcologyBlockExecutorFactory;
 pub use block_executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use call_router::{
@@ -21,5 +23,5 @@ pub use call_router::{
 };
 pub use dispatch::dispatch_precompile;
 pub use factory::{ArcologyEvm, ArcologyEvmFactory, PrecompileCollisionError};
-pub use statedb::{StateDB, StateKey};
+pub use statedb::{Key, KeyCodec, StateDB};
 pub use transaction::ArcologyTx;

@@ -1,6 +1,6 @@
 use super::cache::VmStateCache;
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::{Delta, Status, Tracked, CrdtValue};
+use crate::crdt::state::{Delta, Tracked, CrdtValue};
 use crate::store::traits::StoreError;
 
 pub struct VmStateCacheWriter<'a, K> {
@@ -26,11 +26,11 @@ where
     fn flush(&mut self, updates: Vec<(K, CrdtValue<'static>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
             if matches!(value, CrdtValue::None) {
-                self.vm_cache.get_or_populate_tracked(&key).remove()?;
+                self.vm_cache.try_get_or_populate_tracked(&key)?.remove()?;
                 continue;
             }
 
-            if self.vm_cache.get_or_populate_tracked(&key).is_deleted() {
+            if self.vm_cache.try_get_or_populate_tracked(&key)?.is_deleted() {
                 return Err(StoreError::ValueCannotBeRecreated);
             }
 
@@ -38,7 +38,7 @@ where
             if self.vm_cache.exists(&key) {
                 let delta = value.delta();
                 if !matches!(delta, Delta::None) {
-                    let tracked = self.vm_cache.get_or_populate_tracked(&key);
+                    let tracked = self.vm_cache.try_get_or_populate_tracked(&key)?;
                     tracked.add_delta(delta)?;
                     continue;
                 }

@@ -3,6 +3,10 @@ name = "rust-common-lib"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+mdbx = ["dep:reth-db"]
+
 [dependencies]
 im = "15.0.0"
 alloy-rlp = "0.3.16"
@@ -14,11 +18,13 @@ op-alloy = { git = "https://github.com/ethereum-optimism/optimism", branch = "de
 op-revm = { git = "https://github.com/ethereum-optimism/optimism", branch = "develop" }
 rayon = "1.11.0"
 quick_cache = { path = "../../quick-cache" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "8e3b5e6a99439561b73c5dd31bd3eced2e994d60", optional = true }
 
 [dev-dependencies]
 foyer-memory = "0.22.4"
 moka = { version = "0.12.16", features = ["sync"] }
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
+tempfile = "3.20.0"
 
 [[bench]]
 name = "cache_comparison"

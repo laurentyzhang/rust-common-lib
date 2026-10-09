@@ -13,11 +13,12 @@ fn write_cached<'a, K, V>(
     updates: Vec<(K, V)>,
 ) -> CachedStore<'a, K, V>
 where
-    K: Eq + std::hash::Hash,
+    K: Eq + std::hash::Hash + Clone,
+    V: Clone,
 {
-    let mut writer = CachedStoreWriter::new(store);
+    let mut writer = CachedStoreWriter::new(store.into_cache());
     writer.flush(updates).unwrap();
-    writer.into_inner()
+    CachedStore::from_cache(writer.into_inner(), None)
 }
 
 fn write_block<'a, K>(
@@ -47,18 +48,18 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     fallback = write_cached(fallback, vec![(7, original.clone())]);
 
     let mut cache = BlockCache::new_with_fallback(Some(&fallback));
-    assert!(cache.contains_key(&7));
-    assert!((cache.get(&7)) == Some(&original));
+    assert!(cache.contains_key(&7).unwrap());
+    assert!((cache.get(&7)) == Ok(Some(original.clone())));
 
     cache = write_block(cache, vec![(7, replacement.clone())]);
-    assert!(cache.contains_key(&7));
-    assert!((cache.get(&7)) == Some(&replacement));
-    assert!((fallback.get(&7)) == Some(&original));
+    assert!(cache.contains_key(&7).unwrap());
+    assert!((cache.get(&7)) == Ok(Some(replacement.clone())));
+    assert!((fallback.get(&7)) == Ok(Some(original.clone())));
 
     cache = write_block(cache, vec![(7, CrdtValue::None)]);
-    assert!(cache.contains_key(&7));
-    assert!(matches!(cache.get(&7), Some(CrdtValue::None)));
-    assert!((fallback.get(&7)) == Some(&original));
+    assert!(cache.contains_key(&7).unwrap());
+    assert!(matches!(cache.get(&7), Ok(Some(CrdtValue::None))));
+    assert!((fallback.get(&7)) == Ok(Some(original.clone())));
 
     let mut writer = BlockCacheWriter::new(cache);
     assert_eq!(
@@ -74,11 +75,11 @@ fn staged_updates_are_available_to_the_cache_even_without_fallback() {
 
     cache = write_block(cache, vec![(1, value.clone()), (2, numeric_u64(3))]);
 
-    assert!(cache.contains_key(&1));
-    assert!(cache.contains_key(&2));
-    assert!((cache.get(&1)) == Some(&value));
-    assert!((cache.get(&2)) == Some(&numeric_u64(3)));
-    assert!((cache.get(&3)) == None);
+    assert!(cache.contains_key(&1).unwrap());
+    assert!(cache.contains_key(&2).unwrap());
+    assert!((cache.get(&1)) == Ok(Some(value)));
+    assert!((cache.get(&2)) == Ok(Some(numeric_u64(3))));
+    assert!((cache.get(&3)) == Ok(None));
 }
 
 #[test]

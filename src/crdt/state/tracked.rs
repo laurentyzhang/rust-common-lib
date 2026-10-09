@@ -98,6 +98,16 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
         )
     }
 
+    pub fn new_owned_existing(value: CrdtValue<'a>, id: u64) -> Self {
+        Self::from_states(
+            id,
+            Values {
+                original: value.clone(),
+                current: value,
+            },
+        )
+    }
+
     pub fn new_borrowed(value: &'a CrdtValue<'_>, id: u64) -> Self {
         Self::from_states(
             id,

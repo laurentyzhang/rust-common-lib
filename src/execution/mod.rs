@@ -4,4 +4,4 @@ pub mod output;
 mod vm;
 pub use block::{BlockCache, BlockCacheWriter};
 pub use error::Error;
-pub use vm::{VmStateCache, VmStateCacheWriter};
+pub use vm::{VmStateCache};

@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::{NumericError, StateError};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct U256 {
     pub(crate) value: AlloyU256,
     pub(crate) delta: Option<DeltaOp<AlloyU256>>,

@@ -25,6 +25,17 @@ pub struct DeltaSet<K> {
     sequence: u64,
 }
 
+impl<K: std::fmt::Debug + std::hash::Hash + Eq> std::fmt::Debug for DeltaSet<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeltaSet")
+            .field("elements", &self.elements)
+            .field("keys", &self.keys)
+            .field("committed", &self.committed)
+            .field("sequence", &self.sequence)
+            .finish()
+    }
+}
+
 impl<K> PartialEq for DeltaSet<K>
 where
     K: Eq + std::hash::Hash,

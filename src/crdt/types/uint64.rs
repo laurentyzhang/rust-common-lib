@@ -3,7 +3,7 @@ use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct U64 {
     pub(crate) value: u64,
     pub(crate) delta: Option<DeltaOp<u64>>,
