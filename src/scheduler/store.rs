@@ -10,7 +10,7 @@ pub struct CalleeProfile {
 }
 
 /// Cache-backed store for scheduler records.
-pub type CalleeStore = CachedStore<'static, u64, crdt::Bytes>;
+pub type CalleeStore = CachedStore<'static, u64, crdt::NonComm<[u8]>>;
 
 impl CalleeStore {
     // fn get(&self, key: &u64) -> CalleeProfile {

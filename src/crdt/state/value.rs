@@ -1,6 +1,6 @@
 use super::{Numeric, StateError};
-use crate::crdt;
 use crate::crdt::Crdt;
+use crate::crdt::{self, NonComm, Set};
 
 /// The original and current states of a tracked value.
 #[derive(Clone, PartialEq)]
@@ -21,7 +21,7 @@ pub enum CrdtDelta {
 }
 
 /// An arithmetic operation used by numeric and set CRDT deltas.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeltaOp<T> {
     Add(T),
     Sub(T),
@@ -30,10 +30,22 @@ pub enum DeltaOp<T> {
 /// A CRDT value whose payload may be borrowed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtValue<'a> {
-    Bytes(std::borrow::Cow<'a, crdt::bytes::Bytes>),
-    U64Set(std::borrow::Cow<'a, crdt::u64_set::U64Set>),
+    Bytes(std::borrow::Cow<'a, NonComm<[u8]>>),
+    U64Set(std::borrow::Cow<'a, Set<u64>>),
     Numeric(Numeric<'a>),
     None,
+}
+
+impl From<NonComm<[u8]>> for CrdtValue<'static> {
+    fn from(value: NonComm<[u8]>) -> Self {
+        Self::Bytes(std::borrow::Cow::Owned(value))
+    }
+}
+
+impl From<Set<u64>> for CrdtValue<'static> {
+    fn from(value: Set<u64>) -> Self {
+        Self::U64Set(std::borrow::Cow::Owned(value))
+    }
 }
 
 impl<'a> CrdtValue<'a> {

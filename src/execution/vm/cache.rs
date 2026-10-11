@@ -126,7 +126,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
         &mut self,
     ) -> (
         Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-        Vec<ExecutionOutput<K, Tracked<(), CrdtValue>>>,
+        Vec<ExecutionOutput<K, Tracked<(), CrdtValue<'a>>>>,
     )
     where
         K: Clone,
@@ -149,7 +149,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
                     id: self.id,
                     value: ValueSnapshots {
                         original: (),
-                        current: tracked.value.current,
+                        current: tracked.value.current.clone().into_owned(),
                     },
                     operations: tracked.operations,
                 };

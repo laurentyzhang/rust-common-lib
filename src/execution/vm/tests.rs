@@ -1,7 +1,6 @@
 use crate::committer::{Committer, traits::TransitionWriter};
 use crate::crdt::{
-    Crdt,
-    bytes::Bytes,
+    Crdt, NonComm,
     state::{
         CrdtDelta, DeltaOp, Numeric, NumericError, StateError, Status, status::Tag,
         value::CrdtValue,
@@ -410,8 +409,8 @@ fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
     assert!(second.is_empty());
     assert_eq!(
         match first[0].data.current() {
-            Status::Value(value) => value.as_u64(),
-            Status::Tag(_) => None,
+            CrdtValue::Numeric(Numeric::U64(value)) => value.value().copied(),
+            _ => None,
         },
         Some(10)
     );
@@ -546,10 +545,7 @@ fn deleted_value_is_discarded_and_rejects_deltas() {
     let transitions = cache.drain().1;
     assert_eq!(transitions.len(), 1);
     assert_eq!(transitions[0].key, 1);
-    assert!(matches!(
-        transitions[0].data.current(),
-        Status::Tag(Tag::Deleted)
-    ));
+    assert!(matches!(transitions[0].data.current(), CrdtValue::None));
 }
 
 #[test]
@@ -567,10 +563,10 @@ fn vm_cache_with_vm_cache_fallback() {
     result = vm_cache.insert(&1, U64::new(0, 100).unwrap().into());
     assert!(result.is_ok());
 
-    result = vm_cache.insert(&1, Bytes::new(vec![70, 71, 72]).unwrap().into());
+    result = vm_cache.insert(&1, NonComm::<[u8]>::new(vec![70, 71, 72]).unwrap().into());
     assert!(result.is_err()); // This should fail because the key already exists with a different value.
 
-    result = vm_cache.insert(&2, Bytes::new(vec![70, 71, 72]).unwrap().into());
+    result = vm_cache.insert(&2, NonComm::<[u8]>::new(vec![70, 71, 72]).unwrap().into());
     assert!(result.is_ok()); // This should succeed.
 
     assert!(vm_cache.size() == 3);
@@ -634,7 +630,7 @@ fn vm_cache_with_vm_cache_fallback() {
 
     assert_eq!(vm_cache.size(), 2);
 
-    let mut result = vm_cache.insert(&3, crate::crdt::u64_set::U64Set::new().unwrap().into());
+    let mut result = vm_cache.insert(&3, crate::crdt::Set::<u64>::new().unwrap().into());
     assert!(result.is_ok());
 
     result = vm_cache.add_delta(&3, CrdtDelta::U64Set(vec![DeltaOp::Add(11)]).into());
@@ -717,7 +713,7 @@ fn vm_cache_with_vm_cache_fallback() {
 
     assert!(
         deletion_check_cache
-            .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
+            .insert(&1, NonComm::<[u8]>::new(vec![80, 81, 82]).unwrap().into())
             .is_ok()
     );
 }
@@ -745,11 +741,11 @@ fn vm_cache_with_block_cache_fallback() {
             .insert(&1, U64::new(0, 100).unwrap().into())
             .unwrap();
         assert!(matches!(
-            vm_cache.insert(&1, Bytes::new(vec![1]).unwrap().into()),
+            vm_cache.insert(&1, NonComm::<[u8]>::new(vec![1]).unwrap().into()),
             Err(Error::Store(StoreError::ValueCannotBeRecreated))
         ));
         vm_cache
-            .insert(&2, Bytes::new(vec![70, 71, 72]).unwrap().into())
+            .insert(&2, NonComm::<[u8]>::new(vec![70, 71, 72]).unwrap().into())
             .unwrap();
 
         vm_cache
@@ -814,7 +810,7 @@ fn vm_cache_with_block_cache_fallback() {
             .add_delta(&1, CrdtDelta::U64(DeltaOp::Add(5)))
             .unwrap();
         vm_cache
-            .insert(&3, crate::crdt::u64_set::U64Set::new().unwrap().into())
+            .insert(&3, crate::crdt::Set::<u64>::new().unwrap().into())
             .unwrap();
         vm_cache
             .add_delta(
@@ -883,7 +879,7 @@ fn vm_cache_with_block_cache_fallback() {
     assert!((&mut final_cache).get(&1).is_none());
     assert!(
         final_cache
-            .insert(&1, Bytes::new(vec![80, 81, 82]).unwrap().into())
+            .insert(&1, NonComm::<[u8]>::new(vec![80, 81, 82]).unwrap().into())
             .is_ok()
     );
     let value = (&mut final_cache)

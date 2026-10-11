@@ -11,8 +11,7 @@ pub use error::{NumericError, StateError};
 pub use numeric::Numeric;
 pub use status::Status;
 pub use tracked::Tracked;
-pub use value::{CrdtDelta, DeltaOp};
-// pub use value::CrdtValue;
+pub use value::{CrdtDelta, CrdtValue, DeltaOp};
 
 #[cfg(test)]
 #[path = "tests.rs"]

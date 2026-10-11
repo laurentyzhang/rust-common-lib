@@ -308,14 +308,15 @@ mod access_checker {
 
     #[test]
     fn creations_conflict_only_when_the_created_values_differ() {
-        use crate::crdt::bytes::Bytes;
+        use crate::crdt::NonComm;
         use std::borrow::Cow;
 
         let created_value = |id, bytes| {
             let mut data = record(missing(), present(), 0, 0, 1, 0);
             data.id = id;
-            data.value.current =
-                Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![bytes]).unwrap())));
+            data.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(
+                NonComm::<[u8]>::new(vec![bytes]).unwrap(),
+            )));
             ExecutionOutput {
                 id,
                 key: 7,
@@ -344,13 +345,17 @@ mod access_checker {
 
     #[test]
     fn concurrent_byte_deltas_conflict_in_both_directions() {
-        use crate::crdt::bytes::Bytes;
+        use crate::crdt::NonComm;
         use std::borrow::Cow;
 
         let mut left = record(present(), Tag::Stripped, 0, 0, 1, 0);
         let mut right = record(present(), Tag::Stripped, 0, 0, 1, 0);
-        left.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![1]).unwrap())));
-        right.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(Bytes::new(vec![2]).unwrap())));
+        left.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(
+            NonComm::<[u8]>::new(vec![1]).unwrap(),
+        )));
+        right.value.current = Status::Value(CrdtValue::Bytes(Cow::Owned(
+            NonComm::<[u8]>::new(vec![2]).unwrap(),
+        )));
 
         assert!(left.delta_conflict_with(&right).is_err());
         assert!(right.delta_conflict_with(&left).is_err());
@@ -471,8 +476,7 @@ mod access_checker {
 
 mod conflict_checker {
     use crate::crdt::{
-        Crdt,
-        bytes::Bytes,
+        Crdt, NonComm,
         int64::I64,
         state::{
             CrdtDelta, DeltaOp, Numeric, Tracked,
@@ -588,7 +592,7 @@ mod conflict_checker {
     #[test]
     fn vm_read_remove_conflicts_survive_drain_import_and_ordering() {
         for value in [
-            CrdtValue::from(Bytes::new(vec![1]).unwrap()),
+            CrdtValue::from(NonComm::<[u8]>::new(vec![1]).unwrap()),
             CrdtValue::from(crate::crdt::uint64::U64::default()),
         ] {
             for delete_reads_first in [false, true] {
@@ -634,7 +638,7 @@ mod conflict_checker {
     fn vm_delta_remove_conflicts_survive_drain_import_and_ordering() {
         for (value, delta) in [
             (
-                CrdtValue::from(Bytes::new(vec![1]).unwrap()),
+                CrdtValue::from(NonComm::<[u8]>::new(vec![1]).unwrap()),
                 CrdtDelta::Bytes(vec![2]),
             ),
             (CrdtValue::from(I64::default()), CrdtDelta::I64(1)),
@@ -647,7 +651,7 @@ mod conflict_checker {
                 CrdtDelta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
-                CrdtValue::from(crate::crdt::u64_set::U64Set::default()),
+                CrdtValue::from(crate::crdt::Set::<u64>::default()),
                 CrdtDelta::U64Set(vec![DeltaOp::Add(1)]),
             ),
         ] {
@@ -715,13 +719,13 @@ mod conflict_checker {
                 1,
                 7,
                 operations(0, 0, 1, 0),
-                Status::Value(Bytes::new(vec![1]).unwrap().into()),
+                Status::Value(NonComm::<[u8]>::new(vec![1]).unwrap().into()),
             ),
             output(
                 2,
                 7,
                 operations(0, 0, 1, 0),
-                Status::Value(Bytes::new(vec![2]).unwrap().into()),
+                Status::Value(NonComm::<[u8]>::new(vec![2]).unwrap().into()),
             ),
         ]);
 
@@ -817,7 +821,10 @@ mod sum_checker {
     use crate::crdt::{
         Crdt,
         int64::I64,
-        state::{CrdtDelta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag, value::ValueSnapshots},
+        state::{
+            CrdtDelta, CrdtValue, DeltaOp, Numeric, Status, Tracked, status::Tag,
+            value::ValueSnapshots,
+        },
         u256::U256,
         uint64::U64,
     };

@@ -1,10 +1,10 @@
-use crate::{collections::delta_set::DeltaSet, crdt::u64_set::U64Set};
+use crate::{collections::delta_set::DeltaSet, crdt::Set};
 
 use super::{Reader, Result, Writer, delta_op};
 
 const DELTA: u8 = 1;
 
-pub fn encoded_size(value: &U64Set) -> Result<u64> {
+pub fn encoded_size(value: &Set<u64>) -> Result<u64> {
     let slots = value.entries.slots();
     let bitmap_size = slots.len().div_ceil(8) as u64;
     let live_size = slots
@@ -26,7 +26,7 @@ pub fn encoded_size(value: &U64Set) -> Result<u64> {
     Ok(size)
 }
 
-pub fn encode(value: &U64Set) -> Result<Vec<u8>> {
+pub fn encode(value: &Set<u64>) -> Result<Vec<u8>> {
     let size =
         usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
@@ -34,7 +34,7 @@ pub fn encode(value: &U64Set) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub fn encode_to(value: &U64Set, output: &mut [u8]) -> Result<u64> {
+pub fn encode_to(value: &Set<u64>, output: &mut [u8]) -> Result<u64> {
     let size = encoded_size(value)?;
     if (output.len() as u64) < size {
         return Err("output buffer too small");
@@ -70,7 +70,7 @@ pub fn encode_to(value: &U64Set, output: &mut [u8]) -> Result<u64> {
     Ok(written)
 }
 
-pub fn decode(input: &[u8]) -> Result<U64Set> {
+pub fn decode(input: &[u8]) -> Result<Set<u64>> {
     let mut reader = Reader::new(input);
     let flags = reader.read_u8()?;
     if flags & !DELTA != 0 {
@@ -119,7 +119,7 @@ pub fn decode(input: &[u8]) -> Result<U64Set> {
     };
     reader.finish()?;
 
-    Ok(U64Set {
+    Ok(Set {
         entries: DeltaSet::try_from_slots(slots).ok_or("duplicate or unindexable U64Set entry")?,
         delta,
     })

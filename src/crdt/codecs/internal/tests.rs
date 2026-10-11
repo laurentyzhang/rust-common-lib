@@ -2,7 +2,7 @@ use alloy_primitives::U256 as AlloyU256;
 
 use crate::{
     collections::delta_set::DeltaSet,
-    crdt::{bytes::Bytes, int64::I64, state::DeltaOp, u64_set::U64Set, u256::U256, uint64::U64},
+    crdt::{NonComm, Set, int64::I64, state::DeltaOp, u256::U256, uint64::U64},
 };
 
 fn set_delta(added: Vec<u64>, removed: Vec<u64>) -> Vec<DeltaOp<u64>> {
@@ -20,7 +20,7 @@ use super::{
 
 #[test]
 fn every_internal_type_round_trips() {
-    let bytes_value = Bytes {
+    let bytes_value = NonComm::<[u8]> {
         delta: Some(vec![1, 2, 3].into_boxed_slice()),
     };
 
@@ -81,7 +81,7 @@ fn every_internal_type_round_trips() {
     let mut entries = DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap();
     entries.remove(&20);
     entries.commit();
-    let path = U64Set {
+    let path = Set {
         entries,
         delta: Some(delta),
     };
@@ -96,7 +96,7 @@ fn every_internal_type_round_trips() {
 
 #[test]
 fn encode_to_rejects_short_buffers_without_writing() {
-    let bytes_value = Bytes {
+    let bytes_value = NonComm::<[u8]> {
         delta: Some(vec![1, 2, 3].into_boxed_slice()),
     };
 
@@ -159,7 +159,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let path = U64Set {
+    let path = Set {
         entries: DeltaSet::try_from_slots(vec![Some(1), None, Some(2)]).unwrap(),
         delta: Some(delta),
     };
@@ -184,7 +184,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
 
 #[test]
 fn malformed_input_is_rejected() {
-    assert!(matches!(bytes::decode(&[2]), Err("invalid Bytes flags")));
+    assert!(matches!(bytes::decode::<[u8]>(&[2]), Err("invalid Bytes flags")));
     assert!(matches!(int64::decode(&[8]), Err("invalid I64 flags")));
     assert!(matches!(uint64::decode(&[8]), Err("invalid U64 flags")));
     assert!(matches!(u256::decode(&[8]), Err("invalid U256 flags")));
@@ -222,12 +222,12 @@ fn malformed_input_is_rejected() {
 
 #[test]
 fn every_truncated_encoding_is_rejected() {
-    let bytes_encoded = bytes::encode(&Bytes {
+    let bytes_encoded = bytes::encode(&NonComm::<[u8]> {
         delta: Some(vec![1, 2, 3].into_boxed_slice()),
     })
     .unwrap();
     for end in 0..bytes_encoded.len() {
-        assert!(bytes::decode(&bytes_encoded[..end]).is_err());
+        assert!(bytes::decode::<[u8]>(&bytes_encoded[..end]).is_err());
     }
 
     let int64_encoded = int64::encode(&I64 {
@@ -265,7 +265,7 @@ fn every_truncated_encoding_is_rejected() {
         assert!(delta_op::decode(&delta_encoded[..end]).is_err());
     }
 
-    let path_encoded = u64_set::encode(&U64Set {
+    let path_encoded = u64_set::encode(&Set {
         entries: DeltaSet::try_from_slots(vec![Some(1), None, Some(2)]).unwrap(),
         delta: Some(set_delta(vec![3], vec![1])),
     })
@@ -277,7 +277,7 @@ fn every_truncated_encoding_is_rejected() {
 
 #[test]
 fn primitive_encodings_match_golden_bytes() {
-    let bytes_value = Bytes {
+    let bytes_value = NonComm::<[u8]> {
         delta: Some(vec![0xaa, 0xbb].into_boxed_slice()),
     };
 
@@ -336,7 +336,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_delta.extend_from_slice(&2_u64.to_le_bytes());
     assert_eq!(delta_op::encode(&delta).unwrap(), expected_delta);
 
-    let path = U64Set {
+    let path = Set {
         entries: DeltaSet::try_from_slots(vec![Some(10), None, Some(30)]).unwrap(),
         delta: None,
     };
@@ -348,7 +348,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
     expected_path.extend_from_slice(&30_u64.to_le_bytes());
     assert_eq!(u64_set::encode(&path).unwrap(), expected_path);
 
-    let bytes_value = Bytes {
+    let bytes_value = NonComm::<[u8]> {
         delta: Some(vec![0xaa].into_boxed_slice()),
     };
 

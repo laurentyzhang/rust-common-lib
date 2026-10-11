@@ -1,11 +1,11 @@
 ﻿use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
-use crate::crdt::bytes::Bytes;
+use crate::crdt::NonComm;
 
-impl Encodable for Bytes {
+impl<T: ?Sized + AsRef<[u8]>> Encodable for NonComm<T> {
     fn encode(&self, out: &mut dyn BufMut) {
         let is_some = u8::from(self.delta.is_some());
-        let value = self.delta.as_deref().unwrap_or(&[]);
+        let value = self.delta.as_deref().map_or(&[][..], AsRef::as_ref);
         let payload_length = is_some.length() + value.length();
 
         Header {
@@ -19,13 +19,16 @@ impl Encodable for Bytes {
 
     fn length(&self) -> usize {
         let is_some = u8::from(self.delta.is_some());
-        let value = self.delta.as_deref().unwrap_or(&[]);
+        let value = self.delta.as_deref().map_or(&[][..], AsRef::as_ref);
         let payload_length = is_some.length() + value.length();
         payload_length + length_of_length(payload_length)
     }
 }
 
-impl Decodable for Bytes {
+impl<T: ?Sized> Decodable for NonComm<T>
+where
+    Box<T>: From<Vec<u8>>,
+{
     fn decode(input: &mut &[u8]) -> Result<Self, Error> {
         let mut payload = Header::decode_bytes(input, true)?;
         let is_some = u8::decode(&mut payload)?;
@@ -36,7 +39,7 @@ impl Decodable for Bytes {
         }
 
         Ok(Self {
-            delta: (is_some == 1).then(|| value.into_boxed_slice()),
+            delta: (is_some == 1).then(|| Box::<T>::from(value)),
         })
     }
 }
@@ -49,12 +52,12 @@ mod tests {
 
     #[test]
     fn bytes_storage_round_trip() {
-        let value = Bytes {
+        let value = NonComm::<[u8]> {
             delta: Some(vec![1, 2, 3].into_boxed_slice()),
         };
 
         let encoded = encode(&value);
-        let decoded = decode_exact::<Bytes>(&encoded).unwrap();
+        let decoded = decode_exact::<NonComm<[u8]>>(&encoded).unwrap();
 
         assert!(decoded == value);
         assert_eq!(value.length(), encoded.len());

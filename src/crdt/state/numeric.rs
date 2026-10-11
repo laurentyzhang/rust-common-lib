@@ -9,16 +9,20 @@ pub enum Numeric<'a> {
     U256(std::borrow::Cow<'a, crate::crdt::u256::U256>),
 }
 
-pub(crate) struct ComparableNumeric<'a> {
-    value: &'a Numeric<'static>,
+pub(crate) struct ComparableNumeric<'a, 'value> {
+    value: &'a Numeric<'value>,
 }
 
-impl<'a> ComparableNumeric<'a> {
-    pub(crate) fn new(value: &'a Numeric<'static>) -> Self {
+impl<'a, 'value> ComparableNumeric<'a, 'value> {
+    pub(crate) fn new(value: &'a Numeric<'value>) -> Self {
         Self { value }
     }
 
-    pub(crate) fn compare(&self, other: &Self, tie_breaker: impl FnOnce() -> Ordering) -> Ordering {
+    pub(crate) fn compare(
+        &self,
+        other: &ComparableNumeric<'_, 'value>,
+        tie_breaker: impl FnOnce() -> Ordering,
+    ) -> Ordering {
         let ordering = match (self.value, other.value) {
             (Numeric::I64(left), Numeric::I64(right)) => left.compare(right),
             (Numeric::U64(left), Numeric::U64(right)) => left.compare(right),
@@ -27,6 +31,50 @@ impl<'a> ComparableNumeric<'a> {
         };
 
         ordering.then_with(tie_breaker)
+    }
+}
+
+impl Eq for Numeric<'_> {}
+
+impl PartialOrd for Numeric<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Numeric<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (Self::I64(left), Self::I64(right)) => {
+                ComparableNumeric::new(self).compare(&ComparableNumeric::new(other), || {
+                    left.limits
+                        .cmp(&right.limits)
+                        .then_with(|| left.value.cmp(&right.value))
+                })
+            }
+            (Self::U64(left), Self::U64(right)) => {
+                ComparableNumeric::new(self).compare(&ComparableNumeric::new(other), || {
+                    left.delta
+                        .cmp(&right.delta)
+                        .then_with(|| left.limits.cmp(&right.limits))
+                        .then_with(|| left.value.cmp(&right.value))
+                })
+            }
+            (Self::U256(left), Self::U256(right)) => {
+                ComparableNumeric::new(self).compare(&ComparableNumeric::new(other), || {
+                    left.delta
+                        .cmp(&right.delta)
+                        .then_with(|| left.limits.cmp(&right.limits))
+                        .then_with(|| left.value.cmp(&right.value))
+                })
+            }
+            (Self::I64(_), Self::U64(_) | Self::U256(_)) | (Self::U64(_), Self::U256(_)) => {
+                Ordering::Less
+            }
+            (Self::U64(_) | Self::U256(_), Self::I64(_)) | (Self::U256(_), Self::U64(_)) => {
+                Ordering::Greater
+            }
+        }
     }
 }
 

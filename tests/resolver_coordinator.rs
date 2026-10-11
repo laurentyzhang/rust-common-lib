@@ -67,7 +67,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         ));
         assert!(matches!(
             rejected[1].1,
-            Reason::AccessConflict(AccessConflict::ReadDelete(_))
+            Reason::AccessConflict(AccessConflict::RemoveConflict(_))
         ));
     }
 }

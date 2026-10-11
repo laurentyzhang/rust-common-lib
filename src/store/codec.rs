@@ -1,7 +1,7 @@
 use super::StoreError;
 use crate::crdt::{
     codecs::internal,
-    state::{CrdtValue, Numeric},
+    state::{Numeric, value::CrdtValue},
 };
 
 pub trait StoreCodec<T>: Send + Sync {

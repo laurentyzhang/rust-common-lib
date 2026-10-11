@@ -1,8 +1,7 @@
 use crate::crdt::{
-    bytes::Bytes,
+    NonComm, Set,
     int64::I64,
     state::{DeltaOp, Status, Tracked},
-    u64_set::U64Set,
     u256::U256,
     uint64::U64,
 };
@@ -16,7 +15,7 @@ pub trait InternalEncode: Sync {
     fn encode_to(&self, output: &mut [u8]) -> Result<u64>;
 }
 
-impl InternalEncode for Bytes {
+impl<T: ?Sized + AsRef<[u8]> + Sync> InternalEncode for NonComm<T> {
     fn encoded_size(&self) -> Result<u64> {
         bytes::encoded_size(self)
     }
@@ -66,7 +65,7 @@ impl InternalEncode for Vec<DeltaOp<u64>> {
     }
 }
 
-impl InternalEncode for U64Set {
+impl InternalEncode for Set<u64> {
     fn encoded_size(&self) -> Result<u64> {
         u64_set::encoded_size(self)
     }

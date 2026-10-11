@@ -47,26 +47,48 @@ impl<K> Checker<K> for AccessChecker<K> {
 
     fn find_rejections_by_key(records: BTreeSet<Self::Input>) -> Vec<Rejected<K>> {
         let mut rejected = Vec::new();
-        let mut records = records.into_iter();
+        let mut records = records
+            .into_iter()
+            .filter(|record| {
+                let operations = &record.data.operations;
+                operations.reads.count() > 0
+                    || operations.existence_checks.count() > 0
+                    || operations.deltas.count() > 0
+                    || operations.removes.count() > 0
+            })
+            .collect::<Vec<_>>();
 
-        let Some(first) = records.find(|record| {
-            let operations = &record.data.operations;
-            operations.reads.count() > 0
-                || operations.existence_checks.count() > 0
-                || operations.deltas.count() > 0
-                || operations.removes.count() > 0
-        }) else {
+        let Some(first_index) = records
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| left.data.compare(&right.data))
+            .map(|(index, _)| index)
+        else {
             return rejected;
         };
 
+        let first = records.remove(first_index);
         for record in records {
-            let result = first
+            if record.data.operations.reads.count() > 0
+                && record.data.operations.deltas.count() > 0
+                && first.data.operations.deltas.count() > 0
+            {
+                rejected.push((
+                    record,
+                    Reason::AccessConflict(AccessConflict::ReadConflict(
+                        "Read conflict detected with earlier delta".to_string(),
+                    )),
+                ));
+                continue;
+            }
+
+            let result = record
                 .data
-                .read_conflict_with(&record.data)
-                .and_then(|_| first.data.creation_conflict_with(&record.data))
-                .and_then(|_| first.data.delta_conflict_with(&record.data))
-                .and_then(|_| first.data.existence_conflict_with(&record.data))
-                .and_then(|_| first.data.remove_conflict_with(&record.data));
+                .read_conflict_with(&first.data)
+                .and_then(|_| record.data.creation_conflict_with(&first.data))
+                .and_then(|_| record.data.delta_conflict_with(&first.data))
+                .and_then(|_| record.data.existence_conflict_with(&first.data))
+                .and_then(|_| record.data.remove_conflict_with(&first.data));
 
             if let Err(reason) = result {
                 rejected.push((record, reason));
@@ -84,10 +106,8 @@ impl Tracked<Status, Status> {
         }
 
         self.creation_conflict(other, "Creation".to_string())?;
-        // self.existence_conflict(other, "Reads".to_string())?;
-        // self.read_conflict(other, "Reads".to_string())?;
         self.delta_conflict(other, "Reads".to_string())?;
-        self.remove_conflict(other, "Delta".to_string())?;
+        self.remove_conflict(other, "Reads".to_string())?;
         Ok(())
     }
 
@@ -101,9 +121,7 @@ impl Tracked<Status, Status> {
         }
 
         self.creation_conflict(other, "Creation".to_string())?;
-        // self.existence_conflict(other, "Delta".to_string())?;
         self.read_conflict(other, "Delta".to_string())?;
-        // self.delta_conflict(other, "Delta".to_string())?;
         self.remove_conflict(other, "Remove".to_string())?;
 
         // Bytes do not support commutative delta writes.
@@ -167,7 +185,6 @@ impl Tracked<Status, Status> {
         self.existence_conflict(other, "Existence".to_string())?;
         self.read_conflict(other, "Read".to_string())?;
         self.delta_conflict(other, "Delta".to_string())?;
-        // self.remove_conflict(other, "Remove".to_string())?;
         Ok(())
     }
 }

@@ -1,8 +1,8 @@
 use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
-use crate::{collections::delta_set::DeltaSet, crdt::u64_set::U64Set};
+use crate::{collections::delta_set::DeltaSet, crdt::Set};
 
-impl Encodable for U64Set {
+impl Encodable for Set<u64> {
     fn encode(&self, out: &mut dyn BufMut) {
         let payload_length: usize = self.entries.iter_live().map(Encodable::length).sum();
 
@@ -22,7 +22,7 @@ impl Encodable for U64Set {
     }
 }
 
-impl Decodable for U64Set {
+impl Decodable for Set<u64> {
     fn decode(input: &mut &[u8]) -> Result<Self, Error> {
         let mut payload = Header::decode_bytes(input, true)?;
         let mut entries = Vec::new();
@@ -48,19 +48,19 @@ mod tests {
 
     #[test]
     fn path_meta_storage_round_trip_ignores_delta() {
-        let dirty = U64Set {
+        let dirty = Set {
             entries: DeltaSet::try_from_elements(vec![10, 20, 30]).unwrap(),
             delta: Some(vec![DeltaOp::Add(40), DeltaOp::Sub(10)]),
         };
 
-        let clean = U64Set {
+        let clean = Set {
             entries: dirty.entries.clone(),
             delta: None,
         };
 
         assert_eq!(encode(&dirty), encode(&clean));
         let encoded = encode(&dirty);
-        let decoded = decode_exact::<U64Set>(&encoded).unwrap();
+        let decoded = decode_exact::<Set<u64>>(&encoded).unwrap();
 
         assert!(decoded == clean);
         assert_eq!(dirty.length(), encoded.len());

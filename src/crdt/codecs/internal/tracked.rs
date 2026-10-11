@@ -1,7 +1,10 @@
 use std::borrow::Cow;
 
 use crate::crdt::state::{
-    Numeric, Status, Tracked, CrdtValue, op::Operations, status::Tag, value::ValueSnapshots,
+    Numeric, Status, Tracked,
+    op::Operations,
+    status::Tag,
+    value::{CrdtValue, ValueSnapshots},
 };
 
 use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
@@ -143,9 +146,9 @@ fn decode_value(tag: u8, payload: &[u8]) -> Result<Status> {
         I64 => Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(int64::decode(
             payload,
         )?)))),
-        U64 => Status::Value(CrdtValue::Numeric(Numeric::U64(Cow::Owned(uint64::decode(
-            payload,
-        )?)))),
+        U64 => Status::Value(CrdtValue::Numeric(Numeric::U64(Cow::Owned(
+            uint64::decode(payload)?,
+        )))),
         U256 => Status::Value(CrdtValue::Numeric(Numeric::U256(Cow::Owned(u256::decode(
             payload,
         )?)))),
@@ -165,10 +168,9 @@ mod tests {
     use alloy_primitives::U256 as AlloyU256;
 
     use crate::crdt::{
-        bytes::Bytes,
+        NonComm, Set,
         int64::I64,
         state::{status::Tag, value::ValueSnapshots},
-        u64_set::U64Set,
         u256::U256,
         uint64::U64,
     };
@@ -199,7 +201,7 @@ mod tests {
         let values = vec![
             Status::Tag(Tag::Default),
             Status::Tag(Tag::Stripped),
-            Status::Value(Bytes::new(vec![1, 2, 3]).unwrap().into()),
+            Status::Value(NonComm::<[u8]>::new(vec![1, 2, 3]).unwrap().into()),
             Status::Value(I64::new(-10, 10).unwrap().into()),
             Status::Value(U64::new(0, 100).unwrap().into()),
             Status::Value(
@@ -207,7 +209,7 @@ mod tests {
                     .unwrap()
                     .into(),
             ),
-            Status::Value(U64Set::new().unwrap().into()),
+            Status::Value(Set::<u64>::new().unwrap().into()),
         ];
 
         for value in values {
@@ -231,7 +233,7 @@ mod tests {
     fn malformed_and_truncated_encodings_are_rejected() {
         let expected = tracked(
             Status::Tag(Tag::Missing),
-            Status::Value(Bytes::new(vec![1, 2, 3]).unwrap().into()),
+            Status::Value(NonComm::<[u8]>::new(vec![1, 2, 3]).unwrap().into()),
         );
         let encoded = encode(&expected).unwrap();
         for end in 0..encoded.len() {
@@ -257,7 +259,7 @@ mod tests {
     fn short_buffer_is_rejected_without_writing() {
         let value = tracked(
             Status::Tag(Tag::Missing),
-            Status::Value(Bytes::new(vec![1, 2, 3]).unwrap().into()),
+            Status::Value(NonComm::<[u8]>::new(vec![1, 2, 3]).unwrap().into()),
         );
         let mut output = vec![0xaa; encoded_size(&value).unwrap() as usize - 1];
 

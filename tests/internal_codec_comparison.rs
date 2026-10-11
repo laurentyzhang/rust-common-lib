@@ -3,8 +3,7 @@ use std::{hint::black_box, time::Instant};
 use alloy_primitives::U256 as AlloyU256;
 use alloy_rlp::{Decodable, Encodable, decode_exact, encode};
 use rust_common_lib::crdt::{
-    bytes::Bytes, codecs::internal, crdt::Crdt, int64::I64, state::DeltaOp, u64_set::U64Set,
-    u256::U256, uint64::U64,
+    NonComm, Set, codecs::internal, crdt::Crdt, int64::I64, state::DeltaOp, u256::U256, uint64::U64,
 };
 
 const ITERATIONS: usize = 10_000;
@@ -77,7 +76,7 @@ fn compare<T>(
 
 #[test]
 fn compare_internal_codec_with_rlp_on_same_objects() {
-    let mut bytes = Bytes::default();
+    let mut bytes = NonComm::<[u8]>::default();
     bytes.add_delta(&[1; 128]).unwrap();
     bytes.apply_delta();
     bytes.add_delta(&[2; 64]).unwrap();
@@ -130,7 +129,7 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::u256::decode,
     );
 
-    let mut path = U64Set::new().unwrap();
+    let mut path = Set::<u64>::new().unwrap();
     let initial_delta = (0..64).map(DeltaOp::Add).collect::<Vec<_>>();
     path.add_delta(&initial_delta).unwrap();
     path.apply_delta();

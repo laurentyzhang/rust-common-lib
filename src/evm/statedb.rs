@@ -10,7 +10,7 @@ use alloy_primitives::{Address, B256, U256};
 use super::account_info::{AccountDecodeError, AccountInfoCodec};
 use crate::committer::traits::TransitionWriter;
 use crate::crdt::state::{DeltaOp, value::CrdtValue};
-use crate::crdt::{Bytes as CrdtBytes, U256 as CrdtU256};
+use crate::crdt::{NonComm as CrdtNonComm, U256 as CrdtU256};
 use crate::execution::{VmStateCache, VmStateCacheWriter};
 use crate::store::{StoreCodec, StoreError};
 
@@ -88,7 +88,7 @@ impl DatabaseCommit for StateDB<'_> {
             }
 
             let encoded = account.info.encode();
-            let value = CrdtBytes::new(encoded)
+            let value = CrdtNonComm::<[u8]>::new(encoded)
                 .expect("encoded EVM account must be a valid byte value")
                 .into();
             updates.push((Key::Account(address), value));
