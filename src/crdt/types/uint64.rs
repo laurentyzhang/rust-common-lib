@@ -1,5 +1,5 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, CrdtValue};
+use crate::crdt::state::{DeltaOp, Numeric, NumericError, StateError, value::CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 

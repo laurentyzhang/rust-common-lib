@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::crdt::state::CrdtValue;
+use crate::crdt::state::value::CrdtValue;
 use crate::store::traits::FallbackStore;
 
 /// A cache for storing all state transitions within a block.

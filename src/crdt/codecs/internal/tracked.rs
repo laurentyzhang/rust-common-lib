@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::crdt::state::{
-    Numeric, Status, Tracked, CrdtValue, op::Operations, status::Tag, value::Values,
+    Numeric, Status, Tracked, CrdtValue, op::Operations, status::Tag, value::ValueSnapshots,
 };
 
 use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
@@ -126,7 +126,7 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Status, Status>> {
 
     let tracked = Tracked {
         id,
-        value: Values { original, current },
+        value: ValueSnapshots { original, current },
         operations: Operations {
             reads: reads.into(),
             existence_checks: existence_checks.into(),
@@ -167,7 +167,7 @@ mod tests {
     use crate::crdt::{
         bytes::Bytes,
         int64::I64,
-        state::{status::Tag, value::Values},
+        state::{status::Tag, value::ValueSnapshots},
         u64_set::U64Set,
         u256::U256,
         uint64::U64,
@@ -178,7 +178,7 @@ mod tests {
     fn tracked(original: Status, current: Status) -> Tracked<Status, Status> {
         Tracked {
             id: 42,
-            value: Values { original, current },
+            value: ValueSnapshots { original, current },
             operations: Operations {
                 reads: 1.into(),
                 existence_checks: 2.into(),

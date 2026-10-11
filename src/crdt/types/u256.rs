@@ -1,4 +1,4 @@
-use crate::crdt::state::{DeltaOp, Numeric, CrdtValue};
+use crate::crdt::state::{DeltaOp, Numeric, value::CrdtValue};
 use alloy_primitives::U256 as AlloyU256;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -30,6 +30,14 @@ impl From<U256> for CrdtValue<'static> {
 }
 
 impl U256 {
+    pub fn from_delta(delta: DeltaOp<AlloyU256>) -> Self {
+        Self {
+            value: AlloyU256::ZERO,
+            delta: Some(delta),
+            limits: (AlloyU256::ZERO, AlloyU256::MAX),
+        }
+    }
+
     pub fn delta_abs_u64(&self) -> u64 {
         let delta = self.delta_abs_u256();
 

@@ -1,6 +1,6 @@
 use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
-use crate::crdt::state::{DeltaOp, StateError, CrdtValue};
+use crate::crdt::state::{DeltaOp, StateError, value::CrdtValue};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 

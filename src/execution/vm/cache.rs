@@ -1,5 +1,5 @@
-use crate::crdt::state::Delta;
-use crate::crdt::state::{CrdtValue, Status, Tracked, status};
+use crate::crdt::state::CrdtDelta;
+use crate::crdt::state::{Status, Tracked, status, value::CrdtValue, value::ValueSnapshots};
 use crate::execution::error::Error;
 use crate::execution::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
@@ -23,10 +23,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(
-        id: u64,
-        fallback: &'a dyn FallbackStore<K, CrdtValue<'a>>,
-    ) -> Self {
+    pub fn new_with_fallback(id: u64, fallback: &'a dyn FallbackStore<K, CrdtValue<'a>>) -> Self {
         Self {
             id,
             cache: HashMap::new(),
@@ -36,6 +33,10 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
 
     pub fn size(&self) -> u64 {
         self.cache.len() as u64
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Populate the cache if needed and record a tracked read.
@@ -85,7 +86,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     }
 
     /// Record a delta attempt and return any state validation error.
-    pub fn add_delta(&mut self, key: &K, delta: Delta) -> Result<(), Error>
+    pub fn add_delta(&mut self, key: &K, delta: CrdtDelta) -> Result<(), Error>
     where
         K: Clone,
     {
@@ -125,7 +126,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
         &mut self,
     ) -> (
         Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-        Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
+        Vec<ExecutionOutput<K, Tracked<(), CrdtValue>>>,
     )
     where
         K: Clone,
@@ -134,25 +135,33 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
         let mut transitions = Vec::new();
 
         for (key, tracked) in self.cache.drain() {
-            let states = status::strip(&tracked.value);
-
-            if !tracked.is_read_only() && !tracked.is_creation_cancelled() {
-                transitions.push(ExecutionOutput {
-                    id: self.id,
-                    key: key.clone(),
-                    gas_used: 0,
-                    data: tracked.clone_with_states(states.clone()),
-                });
-            }
-
+            let states = status::reduce_to_statuses(&tracked.value);
+            let k = key.clone();
             access_records.push(ExecutionOutput {
                 id: self.id,
                 key,
                 gas_used: 0,
                 data: tracked.clone_with_states(states),
             });
-        }
 
+            if !tracked.is_read_only() && !tracked.is_creation_cancelled() {
+                let new_tracked = Tracked {
+                    id: self.id,
+                    value: ValueSnapshots {
+                        original: (),
+                        current: tracked.value.current,
+                    },
+                    operations: tracked.operations,
+                };
+
+                transitions.push(ExecutionOutput {
+                    id: self.id,
+                    key: k,
+                    gas_used: 0,
+                    data: new_tracked,
+                });
+            }
+        }
         (access_records, transitions)
     }
 
@@ -166,12 +175,10 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     {
         if !self.cache.contains_key(key) {
             let tracked = match self.fallback {
-                Some(fallback) => fallback
-                    .get_untracked(key)?
-                    .map_or_else(
-                        || Tracked::new_owned_empty(self.id),
-                        |value| Tracked::new_owned_existing(value, self.id),
-                    ),
+                Some(fallback) => fallback.get_untracked(key)?.map_or_else(
+                    || Tracked::new_owned_empty(self.id),
+                    |value| Tracked::new_owned_existing(value, self.id),
+                ),
                 None => Tracked::new_owned_empty(self.id),
             };
             self.cache.insert(key.clone(), tracked);
@@ -182,8 +189,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
 
 /// VmStateCache as the fallback store for another VmStateCache,
 /// allowing for a layered caching mechanism.
-impl<'cache, 'value, K> FallbackStore<K, CrdtValue<'value>>
-    for VmStateCache<'cache, K>
+impl<'cache, 'value, K> FallbackStore<K, CrdtValue<'value>> for VmStateCache<'cache, K>
 where
     K: std::hash::Hash + Eq + Send + Sync,
     'cache: 'value,

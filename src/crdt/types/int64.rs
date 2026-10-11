@@ -1,6 +1,6 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::Numeric;
-use crate::crdt::state::CrdtValue;
+use crate::crdt::state::value::CrdtValue;
 use crate::crdt::state::{NumericError, StateError};
 use std::borrow::Cow;
 use std::cmp::Ordering;

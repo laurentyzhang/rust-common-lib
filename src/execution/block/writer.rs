@@ -1,5 +1,5 @@
 use crate::committer::traits::TransitionWriter;
-use crate::crdt::state::CrdtValue;
+use crate::crdt::state::value::CrdtValue;
 use crate::execution::block::cache::BlockCache;
 use crate::store::traits::{FallbackStore, StoreError};
 

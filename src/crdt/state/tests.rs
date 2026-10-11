@@ -1,6 +1,6 @@
 use super::*;
 use crate::crdt::Crdt;
-use crate::crdt::state::{DeltaOp, NumericError, CrdtValue};
+use crate::crdt::state::{DeltaOp, NumericError, value::CrdtValue};
 
 macro_rules! unsigned_delta_tests {
     ($module:ident, $crdt:ty, $number:ty, $variant:ident, $error:ident, $accessor:ident, $codec:ident) => {
@@ -14,33 +14,33 @@ macro_rules! unsigned_delta_tests {
             fn mixed_deltas_are_deferred_and_cancel_in_both_directions() {
                 let mut value: CrdtValue<'static> = <$crdt>::default().into();
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Add(n(10))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Add(n(10))))
                     .unwrap();
                 value.apply_delta();
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(n(7))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(7))))
                     .unwrap();
                 assert_eq!(value.$accessor(), Some(n(10)));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Add(n(9))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Add(n(9))))
                     .unwrap();
                 assert_eq!(value.applied().$accessor(), Some(n(12)));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(n(5))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(5))))
                     .unwrap();
                 assert_eq!(value.applied().$accessor(), Some(n(7)));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Add(n(3))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Add(n(3))))
                     .unwrap();
                 assert_eq!(value.applied().$accessor(), Some(n(10)));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(n(10))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(10))))
                     .unwrap();
                 value.apply_delta();
                 value.apply_delta();
                 assert_eq!(value.$accessor(), Some(n(0)));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(n(0))))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(0))))
                     .unwrap();
                 assert_eq!(value.applied().$accessor(), Some(n(0)));
             }
@@ -50,35 +50,35 @@ macro_rules! unsigned_delta_tests {
                 let mut value: CrdtValue<'static> = <$crdt>::default().into();
                 let before = value.clone();
                 assert!(matches!(
-                    value.add_delta(&Delta::$variant(DeltaOp::Sub(n(1)))),
+                    value.add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(1)))),
                     Err(StateError::$error(NumericError::Underflow(_)))
                 ));
                 assert!(value == before);
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Add(<$number>::MAX)))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Add(<$number>::MAX)))
                     .unwrap();
                 let before = value.clone();
                 assert!(matches!(
-                    value.add_delta(&Delta::$variant(DeltaOp::Add(n(1)))),
+                    value.add_delta(&CrdtDelta::$variant(DeltaOp::Add(n(1)))),
                     Err(StateError::$error(NumericError::Overflow(_)))
                 ));
                 assert!(value == before);
                 value.apply_delta();
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(<$number>::MAX)))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(<$number>::MAX)))
                     .unwrap();
                 let before = value.clone();
                 assert!(matches!(
-                    value.add_delta(&Delta::$variant(DeltaOp::Sub(n(1)))),
+                    value.add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(1)))),
                     Err(StateError::$error(NumericError::Underflow(_)))
                 ));
                 assert!(value == before);
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Add(<$number>::MAX)))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Add(<$number>::MAX)))
                     .unwrap();
                 assert_eq!(value.applied().$accessor(), Some(<$number>::MAX));
                 value
-                    .add_delta(&Delta::$variant(DeltaOp::Sub(<$number>::MAX)))
+                    .add_delta(&CrdtDelta::$variant(DeltaOp::Sub(<$number>::MAX)))
                     .unwrap();
                 value.apply_delta();
                 assert_eq!(value.$accessor(), Some(n(0)));
@@ -158,11 +158,13 @@ fn unsigned_subtraction_rejects_other_numeric_types() {
     let mut u64_value: CrdtValue<'static> = crate::crdt::uint64::U64::default().into();
     let mut u256_value: CrdtValue<'static> = crate::crdt::u256::U256::default().into();
     assert_eq!(
-        u64_value.add_delta(&Delta::U256(DeltaOp::Sub(alloy_primitives::U256::ZERO,))),
+        u64_value.add_delta(&CrdtDelta::U256(
+            DeltaOp::Sub(alloy_primitives::U256::ZERO,)
+        )),
         Err(StateError::TypeMismatch)
     );
     assert_eq!(
-        u256_value.add_delta(&Delta::U64(DeltaOp::Sub(0))),
+        u256_value.add_delta(&CrdtDelta::U64(DeltaOp::Sub(0))),
         Err(StateError::TypeMismatch)
     );
 }
@@ -170,7 +172,7 @@ fn unsigned_subtraction_rejects_other_numeric_types() {
 mod tracked {
     use super::Tracked;
     use crate::crdt::{
-        state::{Delta, Numeric, CrdtValue},
+        state::{CrdtDelta, Numeric, value::CrdtValue},
         uint64::U64,
     };
 
@@ -179,7 +181,7 @@ mod tracked {
         let mut tracked = Tracked::new_owned(U64::default().into(), 7);
         let _ = tracked.get();
         tracked.check();
-        assert!(tracked.add_delta(Delta::None).is_ok());
+        assert!(tracked.add_delta(CrdtDelta::None).is_ok());
         assert!(tracked.remove().is_ok());
         assert!(tracked.is_missing());
         assert!(matches!(tracked.current(), CrdtValue::None));
@@ -259,12 +261,12 @@ mod tracked {
 
 mod tracked_creation {
     use super::*;
-    use crate::crdt::state::{Status, Tracked, status::Tag, value::Values};
+    use crate::crdt::state::{Status, Tracked, status::Tag, value::ValueSnapshots};
 
     fn status_record(original: Status, current: Status) -> Tracked<Status, Status> {
         Tracked {
             id: 0,
-            value: Values { original, current },
+            value: ValueSnapshots { original, current },
             operations: Default::default(),
         }
     }

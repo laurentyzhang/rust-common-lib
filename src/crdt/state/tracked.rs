@@ -1,6 +1,6 @@
 use super::{
-    Delta, Numeric, StateError, Status, CrdtValue, numeric::ComparableNumeric, op::Operations,
-    status::Tag, value::Values,
+    CrdtDelta, Numeric, StateError, Status, numeric::ComparableNumeric, op::Operations,
+    status::Tag, value::CrdtValue, value::ValueSnapshots,
 };
 
 // use crate::crdt::state::status::Tag;
@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 pub struct Tracked<T0, T1> {
     pub(crate) id: u64,
-    pub(crate) value: Values<T0, T1>,
+    pub(crate) value: ValueSnapshots<T0, T1>,
     pub(crate) operations: Operations,
 }
 
@@ -26,7 +26,7 @@ impl<T0, T1> Tracked<T0, T1> {
         self.value.current
     }
 
-    pub fn clone_with_states<U0, U1>(&self, value: Values<U0, U1>) -> Tracked<U0, U1> {
+    pub fn clone_with_states<U0, U1>(&self, value: ValueSnapshots<U0, U1>) -> Tracked<U0, U1> {
         Tracked {
             id: self.id,
             value,
@@ -37,7 +37,7 @@ impl<T0, T1> Tracked<T0, T1> {
     pub fn map_current<U>(self, map: impl FnOnce(T1) -> U) -> Tracked<T0, U> {
         Tracked {
             id: self.id,
-            value: Values {
+            value: ValueSnapshots {
                 original: self.value.original,
                 current: map(self.value.current),
             },
@@ -81,7 +81,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn new_owned_empty(id: u64) -> Self {
         Self::from_states(
             id,
-            Values {
+            ValueSnapshots {
                 original: CrdtValue::None,
                 current: CrdtValue::None,
             },
@@ -91,7 +91,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn new_owned(value: CrdtValue<'a>, id: u64) -> Self {
         Self::from_states(
             id,
-            Values {
+            ValueSnapshots {
                 original: CrdtValue::None,
                 current: value,
             },
@@ -101,7 +101,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn new_owned_existing(value: CrdtValue<'a>, id: u64) -> Self {
         Self::from_states(
             id,
-            Values {
+            ValueSnapshots {
                 original: value.clone(),
                 current: value,
             },
@@ -111,7 +111,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn new_borrowed(value: &'a CrdtValue<'_>, id: u64) -> Self {
         Self::from_states(
             id,
-            Values {
+            ValueSnapshots {
                 original: CrdtValue::from_borrowed(value),
                 current: CrdtValue::from_borrowed(value),
             },
@@ -119,7 +119,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     }
 
     pub fn owned_clone(&self) -> Tracked<CrdtValue<'static>, CrdtValue<'static>> {
-        self.clone_with_states(Values {
+        self.clone_with_states(ValueSnapshots {
             original: self.value.original.clone().into_owned(),
             current: self.value.current.clone().into_owned(),
         })
@@ -128,7 +128,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     pub fn into_owned(self) -> Tracked<CrdtValue<'static>, CrdtValue<'static>> {
         Tracked {
             id: self.id,
-            value: Values {
+            value: ValueSnapshots {
                 original: self.value.original.into_owned(),
                 current: self.value.current.into_owned(),
             },
@@ -151,7 +151,20 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
         Ok(())
     }
 
-    pub fn add_delta(&mut self, delta: Delta) -> Result<(), StateError> {
+    pub fn replace(&mut self, value: CrdtValue<'a>) -> Result<(), StoreError> {
+        if matches!(value, CrdtValue::None) {
+            return Err(StoreError::SetNoneToValue);
+        }
+        if self.is_deleted() {
+            return Err(StoreError::ValueCannotBeRecreated);
+        }
+
+        self.operations.deltas.increment();
+        self.value.current = value;
+        Ok(())
+    }
+
+    pub fn add_delta(&mut self, delta: CrdtDelta) -> Result<(), StateError> {
         if !self.is_live() {
             return Err(StateError::CannotAddDeltaToMissingValue);
         }
@@ -188,7 +201,8 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     }
 
     pub fn is_creation_cancelled(&self) -> bool {
-        matches!(self.value.original, CrdtValue::None) && matches!(self.value.current, CrdtValue::None)
+        matches!(self.value.original, CrdtValue::None)
+            && matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_live(&self) -> bool {
@@ -200,11 +214,13 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
     }
 
     pub fn is_deleted(&self) -> bool {
-        matches!(self.value.current, CrdtValue::None) && !matches!(self.value.original, CrdtValue::None)
+        matches!(self.value.current, CrdtValue::None)
+            && !matches!(self.value.original, CrdtValue::None)
     }
 
     pub fn is_created(&self) -> bool {
-        matches!(self.value.original, CrdtValue::None) && !matches!(self.value.current, CrdtValue::None)
+        matches!(self.value.original, CrdtValue::None)
+            && !matches!(self.value.current, CrdtValue::None)
     }
 
     pub fn is_preexisting(&self) -> bool {
@@ -217,7 +233,7 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
 }
 
 impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
-    fn from_states(id: u64, value: Values<CrdtValue<'a>, CrdtValue<'a>>) -> Self {
+    fn from_states(id: u64, value: ValueSnapshots<CrdtValue<'a>, CrdtValue<'a>>) -> Self {
         Self {
             id,
             value,

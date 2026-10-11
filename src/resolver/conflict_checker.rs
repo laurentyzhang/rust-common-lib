@@ -7,7 +7,7 @@ use super::{
 use crate::crdt::state::{
     Tracked,
     status::{Status, Tag},
-    value::{CrdtValue, Values},
+    value::{CrdtValue, ValueSnapshots},
 };
 use crate::execution::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
@@ -53,7 +53,7 @@ impl<K> ConflictChecker<K> {
                     .entry(transition.key.clone())
                     .or_insert_with(BTreeSet::new)
                     .insert(
-                        transition.clone_with_data(transition.data.clone_with_states(Values {
+                        transition.clone_with_data(transition.data.clone_with_states(ValueSnapshots {
                             original: transition.data.value.original.clone(),
                             current: value,
                         })),

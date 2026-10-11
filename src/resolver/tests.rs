@@ -22,7 +22,7 @@ mod access_checker {
     ) -> Tracked<Status, Status> {
         Tracked {
             id: 0,
-            value: crate::crdt::state::value::Values {
+            value: crate::crdt::state::value::ValueSnapshots {
                 original: Status::Tag(original),
                 current: Status::Tag(current),
             },
@@ -475,10 +475,10 @@ mod conflict_checker {
         bytes::Bytes,
         int64::I64,
         state::{
-            Delta, DeltaOp, Numeric, Tracked,
+            CrdtDelta, DeltaOp, Numeric, Tracked,
             op::Operations,
             status::{Status, Tag},
-            value::{CrdtValue, Values},
+            value::{CrdtValue, ValueSnapshots},
         },
     };
     use crate::execution::VmStateCache;
@@ -511,7 +511,7 @@ mod conflict_checker {
             gas_used: 0,
             data: Tracked {
                 id,
-                value: Values {
+                value: ValueSnapshots {
                     original: Status::Tag(Tag::Missing),
                     current,
                 },
@@ -635,20 +635,20 @@ mod conflict_checker {
         for (value, delta) in [
             (
                 CrdtValue::from(Bytes::new(vec![1]).unwrap()),
-                Delta::Bytes(vec![2]),
+                CrdtDelta::Bytes(vec![2]),
             ),
-            (CrdtValue::from(I64::default()), Delta::I64(1)),
+            (CrdtValue::from(I64::default()), CrdtDelta::I64(1)),
             (
                 CrdtValue::from(crate::crdt::uint64::U64::default()),
-                Delta::U64(DeltaOp::Add(1)),
+                CrdtDelta::U64(DeltaOp::Add(1)),
             ),
             (
                 CrdtValue::from(crate::crdt::u256::U256::default()),
-                Delta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
+                CrdtDelta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
                 CrdtValue::from(crate::crdt::u64_set::U64Set::default()),
-                Delta::U64Set(vec![DeltaOp::Add(1)]),
+                CrdtDelta::U64Set(vec![DeltaOp::Add(1)]),
             ),
         ] {
             for delete_writes_first in [false, true] {
@@ -817,7 +817,7 @@ mod sum_checker {
     use crate::crdt::{
         Crdt,
         int64::I64,
-        state::{Delta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag, value::Values},
+        state::{CrdtDelta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag, value::ValueSnapshots},
         u256::U256,
         uint64::U64,
     };
@@ -881,7 +881,7 @@ mod sum_checker {
                     key,
                     gas_used: 0,
                     data: Tracked::<CrdtValue<'static>, CrdtValue<'static>>::new_owned_empty(tx_id)
-                        .clone_with_states(Values {
+                        .clone_with_states(ValueSnapshots {
                             original: Status::Tag(Tag::Missing),
                             current: value,
                         }),
@@ -893,7 +893,7 @@ mod sum_checker {
 
     fn assert_mixed_sign_rejections(
         base: Numeric<'static>,
-        deltas: Vec<Delta>,
+        deltas: Vec<CrdtDelta>,
         underflow_id: u64,
         overflow_ids: &[u64],
     ) {
@@ -1033,7 +1033,7 @@ mod sum_checker {
             base.apply_delta();
             assert_mixed_sign_rejections(
                 Numeric::I64(Cow::Owned(base)),
-                deltas.into_iter().map(Delta::I64).collect(),
+                deltas.into_iter().map(CrdtDelta::I64).collect(),
                 2,
                 &overflow_ids,
             );
@@ -1060,7 +1060,7 @@ mod sum_checker {
         ];
         assert_mixed_sign_rejections(
             Numeric::U64(Cow::Owned(base)),
-            deltas.into_iter().map(Delta::U64).collect(),
+            deltas.into_iter().map(CrdtDelta::U64).collect(),
             2,
             &[7, 8],
         );
@@ -1089,7 +1089,7 @@ mod sum_checker {
         ];
         assert_mixed_sign_rejections(
             Numeric::U256(Cow::Owned(base)),
-            deltas.into_iter().map(Delta::U256).collect(),
+            deltas.into_iter().map(CrdtDelta::U256).collect(),
             2,
             &[7, 8],
         );

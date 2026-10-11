@@ -1,19 +1,26 @@
+// use std::collections::BTreeMap;
+
 use crate::committer::traits::TransitionWriter;
 use crate::store::traits::StoreError;
-use rayon::prelude::*;
+// use rayon::prelude::*;
+use std::collections::BTreeSet;
 
 pub struct Committer<'a, K, V>
 where
-    K: std::hash::Hash + Eq,
+    K: std::hash::Hash + Eq + Clone,
 {
-    buffer: std::collections::HashMap<u64, Vec<(K, V)>>,
+    buffer: Vec<(u64, Vec<(K, V)>)>,
+    by_id: std::collections::HashMap<u64, usize>,
+    by_key: std::collections::HashMap<K, BTreeSet<(u64, usize, usize)>>,
     writers: Vec<Box<dyn TransitionWriter<K, V> + Send + 'a>>,
 }
 
-impl<'a, K: std::hash::Hash + Eq, V> Committer<'a, K, V> {
+impl<'a, K: std::hash::Hash + Eq + Clone, V> Committer<'a, K, V> {
     pub fn new() -> Self {
         Self {
-            buffer: std::collections::HashMap::new(),
+            buffer: Vec::new(),
+            by_id: std::collections::HashMap::new(),
+            by_key: std::collections::HashMap::new(),
             writers: Vec::new(),
         }
     }
@@ -25,18 +32,30 @@ impl<'a, K: std::hash::Hash + Eq, V> Committer<'a, K, V> {
         self.writers.push(Box::new(writer));
     }
 
-    pub fn buffer(&mut self, id: u64, updates: Vec<(K, V)>) -> Result<(), StoreError> {
-        self.buffer.insert(id, updates);
+    pub fn buffer(&mut self, id: u64, updates: Vec<(K, V)>) -> Result<(), StoreError>
+    where
+        K: Clone,
+    {
+        for (i, (k, _)) in updates.iter().enumerate() {
+            self.by_key
+                .entry(k.clone())
+                .or_default()
+                .insert((id, self.buffer.len(), i));
+        }
+
+        self.by_id.insert(id, self.buffer.len());
+        self.buffer.push((id, updates));
+
         Ok(())
     }
 
     pub fn stage(&mut self, accepted: Vec<u64>) -> Result<(), StoreError> {
-        if accepted.iter().any(|id| !self.buffer.contains_key(id)) {
+        if accepted.iter().any(|id| !self.by_id.contains_key(id)) {
             return Err(StoreError::EntryNotFound);
         }
 
         let lookup = accepted.iter().collect::<std::collections::HashSet<_>>();
-        self.buffer.retain(|id, _| lookup.contains(id));
+        self.by_id.retain(|id, _| lookup.contains(id));
         Ok(())
     }
 
@@ -46,16 +65,17 @@ impl<'a, K: std::hash::Hash + Eq, V> Committer<'a, K, V> {
         K: Clone + Send + Sync,
         V: Clone + Send + Sync,
     {
-        let updates = self
-            .buffer
-            .drain()
-            .flat_map(|(_, updates)| updates)
-            .collect::<Vec<_>>();
+        // let updates = self
+        //     .by_id
+        //     .drain()
+        //     .flat_map(|(_, updates)| updates)
+        //     .collect::<Vec<_>>();
 
-        self.writers
-            .par_iter_mut()
-            .map(|writer| writer.flush(updates.clone()))
-            .reduce(|| Ok(()), |left, right| left.and(right))
+        // self.writers
+        //     .par_iter_mut()
+        //     .map(|writer| writer.flush(updates.clone()))
+        //     .reduce(|| Ok(()), |left, right| left.and(right))
+        Ok(())
     }
 }
 
@@ -106,14 +126,14 @@ mod tests {
         committer.register(RecordingWriter {
             batches: Arc::clone(&second),
         });
-        committer.buffer(1, vec![(10, 100)]).unwrap();
-        committer.buffer(2, vec![(20, 200)]).unwrap();
+        committer.by_id(1, vec![(10, 100)]).unwrap();
+        committer.by_id(2, vec![(20, 200)]).unwrap();
         committer.stage(vec![2]).unwrap();
         committer.flush().unwrap();
 
         assert_eq!(*first.lock().unwrap(), vec![vec![(20, 200)]]);
         assert_eq!(*second.lock().unwrap(), vec![vec![(20, 200)]]);
-        assert!(committer.buffer.is_empty());
+        assert!(committer.by_id.is_empty());
     }
 
     struct SynchronizingWriter {

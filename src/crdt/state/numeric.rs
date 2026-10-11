@@ -1,4 +1,4 @@
-use super::{Delta, StateError};
+use super::{CrdtDelta, StateError};
 use crate::crdt::Crdt;
 use std::cmp::Ordering;
 
@@ -47,17 +47,17 @@ impl<'a> Numeric<'a> {
         }
     }
 
-    pub fn delta(&self) -> Delta {
+    pub fn delta(&self) -> CrdtDelta {
         match self {
             Self::I64(value) => value
                 .delta()
-                .map_or(Delta::None, |delta| Delta::I64(*delta)),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::I64(*delta)),
             Self::U64(value) => value
                 .delta()
-                .map_or(Delta::None, |delta| Delta::U64(delta.clone())),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U64(delta.clone())),
             Self::U256(value) => value
                 .delta()
-                .map_or(Delta::None, |delta| Delta::U256(delta.clone())),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U256(delta.clone())),
         }
     }
 
@@ -77,12 +77,18 @@ impl<'a> Numeric<'a> {
         }
     }
 
-    pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
+    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<(), StateError> {
         match (self, delta) {
-            (_, Delta::None) => Ok(()),
-            (Self::I64(value), Delta::I64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U64(value), Delta::U64(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
-            (Self::U256(value), Delta::U256(delta)) => value.to_mut().add_delta(delta).map(|_| ()),
+            (_, CrdtDelta::None) => Ok(()),
+            (Self::I64(value), CrdtDelta::I64(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
+            (Self::U64(value), CrdtDelta::U64(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
+            (Self::U256(value), CrdtDelta::U256(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
             _ => Err(StateError::TypeMismatch),
         }
     }

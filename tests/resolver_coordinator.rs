@@ -2,7 +2,7 @@ use alloy_primitives::U256 as Number;
 use rust_common_lib::{
     crdt::{
         Crdt, I64, U64, U256,
-        state::{Delta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag},
+        state::{CrdtDelta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag},
     },
     execution::{VmStateCache, output::ExecutionOutput},
     resolver::{
@@ -25,9 +25,9 @@ fn combined_records() -> Vec<Record> {
     let mut reader = VmStateCache::new_with_fallback(30, &fallback);
     assert!(reader.get(&10).is_some());
     let mut first_delta = VmStateCache::new_with_fallback(5, &fallback);
-    first_delta.add_delta(&20, Delta::I64(3)).unwrap();
+    first_delta.add_delta(&20, CrdtDelta::I64(3)).unwrap();
     let mut second_delta = VmStateCache::new_with_fallback(20, &fallback);
-    second_delta.add_delta(&20, Delta::I64(4)).unwrap();
+    second_delta.add_delta(&20, CrdtDelta::I64(4)).unwrap();
 
     [
         reader.drain().0,
@@ -108,10 +108,10 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
         .insert(&7, CrdtValue::from(I64::new(-5, 5).unwrap()))
         .unwrap();
     let mut first = VmStateCache::new_with_fallback(1, &fallback);
-    first.add_delta(&7, Delta::I64(3)).unwrap();
+    first.add_delta(&7, CrdtDelta::I64(3)).unwrap();
     let mut second = VmStateCache::new_with_fallback(2, &fallback);
     assert!(second.get(&7).is_some());
-    second.add_delta(&7, Delta::I64(4)).unwrap();
+    second.add_delta(&7, CrdtDelta::I64(4)).unwrap();
 
     let mut detector = ConflictChecker::new();
     detector.import(second.drain().0);
@@ -176,11 +176,11 @@ fn consumes_both_stages_and_accepts_a_fresh_batch() {
 #[test]
 fn numeric_reads_remain_visible_to_access_detection() {
     for (value, delta) in [
-        (CrdtValue::from(I64::default()), Delta::I64(1)),
-        (CrdtValue::from(U64::default()), Delta::U64(DeltaOp::Add(1))),
+        (CrdtValue::from(I64::default()), CrdtDelta::I64(1)),
+        (CrdtValue::from(U64::default()), CrdtDelta::U64(DeltaOp::Add(1))),
         (
             CrdtValue::from(U256::default()),
-            Delta::U256(DeltaOp::Add(Number::from(1))),
+            CrdtDelta::U256(DeltaOp::Add(Number::from(1))),
         ),
     ] {
         let mut fallback = VmStateCache::new(0);
@@ -218,38 +218,38 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
     for (value, first_delta, second_delta, underflow) in [
         (
             CrdtValue::from(I64::default()),
-            Delta::I64(1),
-            Delta::I64(i64::MAX),
+            CrdtDelta::I64(1),
+            CrdtDelta::I64(i64::MAX),
             false,
         ),
         (
             CrdtValue::from(I64::default()),
-            Delta::I64(i64::MIN + 1),
-            Delta::I64(i64::MIN + 2),
+            CrdtDelta::I64(i64::MIN + 1),
+            CrdtDelta::I64(i64::MIN + 2),
             true,
         ),
         (
             CrdtValue::from(U64::default()),
-            Delta::U64(DeltaOp::Add(1)),
-            Delta::U64(DeltaOp::Add(u64::MAX)),
+            CrdtDelta::U64(DeltaOp::Add(1)),
+            CrdtDelta::U64(DeltaOp::Add(u64::MAX)),
             false,
         ),
         (
             CrdtValue::from(u64_base),
-            Delta::U64(DeltaOp::Sub(6)),
-            Delta::U64(DeltaOp::Sub(5)),
+            CrdtDelta::U64(DeltaOp::Sub(6)),
+            CrdtDelta::U64(DeltaOp::Sub(5)),
             true,
         ),
         (
             CrdtValue::from(U256::default()),
-            Delta::U256(DeltaOp::Add(Number::from(1))),
-            Delta::U256(DeltaOp::Add(Number::MAX)),
+            CrdtDelta::U256(DeltaOp::Add(Number::from(1))),
+            CrdtDelta::U256(DeltaOp::Add(Number::MAX)),
             false,
         ),
         (
             CrdtValue::from(u256_base),
-            Delta::U256(DeltaOp::Sub(Number::from(6))),
-            Delta::U256(DeltaOp::Sub(Number::from(5))),
+            CrdtDelta::U256(DeltaOp::Sub(Number::from(6))),
+            CrdtDelta::U256(DeltaOp::Sub(Number::from(5))),
             true,
         ),
     ] {

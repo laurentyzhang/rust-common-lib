@@ -2,13 +2,16 @@
 
 use std::collections::HashMap;
 
-use alloy_evm::revm::Database;
 use alloy_evm::revm::bytecode::Bytecode;
-use alloy_evm::revm::state::AccountInfo;
+use alloy_evm::revm::state::{AccountInfo, EvmState};
+use alloy_evm::revm::{Database, DatabaseCommit};
 use alloy_primitives::{Address, B256, U256};
 
 use super::account_info::{AccountDecodeError, AccountInfoCodec};
-use crate::execution::VmStateCache;
+use crate::committer::traits::TransitionWriter;
+use crate::crdt::state::{DeltaOp, value::CrdtValue};
+use crate::crdt::{Bytes as CrdtBytes, U256 as CrdtU256};
+use crate::execution::{VmStateCache, VmStateCacheWriter};
 use crate::store::{StoreCodec, StoreError};
 
 /// Cache keys for EVM accounts and storage slots.
@@ -48,7 +51,7 @@ impl StoreCodec<Key> for KeyCodec {
     }
 }
 
-/// Reads accounts and storage through a `VmStateCache`. Writes are not supported yet.
+/// Reads and writes EVM state through a `VmStateCache`.
 pub struct StateDB<'a> {
     execution_store: VmStateCache<'a, Key>,
     /// Code seen by `basic`, so `code_by_hash` can answer later.
@@ -61,6 +64,65 @@ impl<'a> StateDB<'a> {
             execution_store,
             codes: HashMap::new(),
         }
+    }
+}
+
+impl DatabaseCommit for StateDB<'_> {
+    fn commit(&mut self, changes: EvmState) {
+        let mut updates = Vec::new();
+
+        for (address, account) in changes {
+            if !account.is_touched() {
+                continue;
+            }
+
+            if account.is_selfdestructed() {
+                updates.push((Key::Account(address), CrdtValue::None));
+                updates.extend(
+                    account
+                        .storage
+                        .into_keys()
+                        .map(|slot| (Key::Storage(address, slot), CrdtValue::None)),
+                );
+                continue;
+            }
+
+            let encoded = account.info.encode();
+            let value = CrdtBytes::new(encoded)
+                .expect("encoded EVM account must be a valid byte value")
+                .into();
+            updates.push((Key::Account(address), value));
+
+            updates.extend(account.storage.into_iter().filter_map(|(slot, value)| {
+                if !value.is_changed() {
+                    return None;
+                }
+
+                let present = value.present_value();
+                if present.is_zero() {
+                    return Some((Key::Storage(address, slot), CrdtValue::None));
+                }
+
+                let original = value.original_value();
+                let delta = if present > original {
+                    DeltaOp::Add(present - original)
+                } else {
+                    DeltaOp::Sub(original - present)
+                };
+                Some((
+                    Key::Storage(address, slot),
+                    CrdtU256::from_delta(delta).into(),
+                ))
+            }));
+        }
+
+        let id = self.execution_store.id();
+        let cache = std::mem::replace(&mut self.execution_store, VmStateCache::new(id));
+        let mut writer = VmStateCacheWriter::new(cache);
+        writer
+            .flush(updates)
+            .expect("failed to commit EVM state to the VM cache");
+        self.execution_store = writer.into_inner();
     }
 }
 
@@ -99,5 +161,42 @@ impl Database for StateDB<'_> {
     /// Block hashes are not kept in the cache.
     fn block_hash(&mut self, _number: u64) -> Result<B256, Self::Error> {
         Ok(B256::ZERO)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_evm::revm::state::{Account, EvmStorageSlot};
+
+    #[test]
+    fn commit_writes_account_and_storage_to_vm_cache() {
+        let address = Address::repeat_byte(0x11);
+        let slot = U256::from(7);
+        let storage_value = U256::from(42);
+        let info = AccountInfo {
+            balance: U256::from(100),
+            nonce: 3,
+            ..AccountInfo::default()
+        };
+        let account = Account::from(info.clone())
+            .with_storage(
+                [(
+                    slot,
+                    EvmStorageSlot::new_changed(U256::ZERO, storage_value, Default::default()),
+                )]
+                .into_iter(),
+            )
+            .with_touched_mark();
+        let mut changes = EvmState::default();
+        changes.insert(address, account);
+
+        let mut db = StateDB::new(VmStateCache::new(9));
+        db.commit(changes);
+
+        assert_eq!(db.execution_store.id(), 9);
+        assert_eq!(db.basic(address).unwrap(), Some(info));
+        assert_eq!(db.storage(address, slot).unwrap(), storage_value);
+        assert_eq!(db.execution_store.drain().1.len(), 2);
     }
 }

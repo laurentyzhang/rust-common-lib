@@ -1,13 +1,33 @@
-use super::{Delta, Numeric, StateError};
+use super::{Numeric, StateError};
 use crate::crdt;
 use crate::crdt::Crdt;
 
+/// The original and current states of a tracked value.
 #[derive(Clone, PartialEq)]
-pub struct Values<T0, T1> {
+pub struct ValueSnapshots<T0, T1> {
     pub(crate) original: T0,
     pub(crate) current: T1,
 }
 
+/// A pending update for a [`CrdtValue`]. `None` means there is no delta.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CrdtDelta {
+    Bytes(Vec<u8>),
+    I64(i64),
+    U64(DeltaOp<u64>),
+    U256(DeltaOp<alloy_primitives::U256>),
+    U64Set(Vec<DeltaOp<u64>>),
+    None,
+}
+
+/// An arithmetic operation used by numeric and set CRDT deltas.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeltaOp<T> {
+    Add(T),
+    Sub(T),
+}
+
+/// A CRDT value whose payload may be borrowed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtValue<'a> {
     Bytes(std::borrow::Cow<'a, crdt::bytes::Bytes>),
@@ -86,27 +106,27 @@ impl<'a> CrdtValue<'a> {
         }
     }
 
-    pub fn delta(&self) -> Delta {
+    pub fn delta(&self) -> CrdtDelta {
         match self {
             Self::Bytes(value) => value
                 .delta()
-                .map_or(Delta::None, |delta| Delta::Bytes(delta.to_vec())),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::Bytes(delta.to_vec())),
             Self::U64Set(value) => value
                 .delta()
-                .map_or(Delta::None, |delta| Delta::U64Set(delta.to_vec())),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U64Set(delta.to_vec())),
             Self::Numeric(value) => value.delta(),
-            Self::None => Delta::None,
+            Self::None => CrdtDelta::None,
         }
     }
 
-    pub fn add_delta(&mut self, delta: &Delta) -> Result<(), StateError> {
+    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<(), StateError> {
         match (self, delta) {
-            (_, Delta::None) => Ok(()),
-            (Self::Bytes(value), Delta::Bytes(delta)) => {
+            (_, CrdtDelta::None) => Ok(()),
+            (Self::Bytes(value), CrdtDelta::Bytes(delta)) => {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 
-            (Self::U64Set(value), Delta::U64Set(delta)) => {
+            (Self::U64Set(value), CrdtDelta::U64Set(delta)) => {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 

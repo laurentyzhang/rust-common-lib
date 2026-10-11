@@ -1,4 +1,4 @@
-use super::value::{CrdtValue, Values};
+use super::value::{CrdtValue, ValueSnapshots};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
@@ -14,9 +14,11 @@ pub enum Status {
     Value(CrdtValue<'static>),
 }
 
-/// Strips the given `Values` by converting them into `Status` representations.
+/// Strips the given `ValueSnapshots` by converting them into `Status` representations.
 /// This is mainly for reducing the memory footprint when checking conflicts.
-pub fn strip(value: &Values<CrdtValue<'_>, CrdtValue<'_>>) -> Values<Status, Status> {
+pub fn reduce_to_statuses(
+    value: &ValueSnapshots<CrdtValue<'_>, CrdtValue<'_>>,
+) -> ValueSnapshots<Status, Status> {
     let original = match &value.original {
         CrdtValue::None => Status::Tag(Tag::Missing),
         _ => Status::Tag(Tag::Stripped),
@@ -46,5 +48,5 @@ pub fn strip(value: &Values<CrdtValue<'_>, CrdtValue<'_>>) -> Values<Status, Sta
             }
         }
     };
-    Values { original, current }
+    ValueSnapshots { original, current }
 }

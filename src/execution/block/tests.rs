@@ -2,7 +2,7 @@ use crate::committer::traits::TransitionWriter;
 use crate::execution::{BlockCache, BlockCacheWriter};
 
 use crate::crdt::{
-    state::{Numeric, CrdtValue},
+    state::{Numeric, value::CrdtValue},
     uint64::U64,
 };
 use crate::store::traits::FallbackStore;
