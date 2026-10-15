@@ -2,7 +2,7 @@ use alloy_primitives::U256 as AlloyU256;
 
 use crate::{
     collections::delta_set::DeltaSet,
-    crdt::{NonComm, Set, int64::I64, state::DeltaOp, u256::U256, uint64::U64},
+    crdt::{NonComm, Scalar, Set, state::DeltaOp},
 };
 
 fn set_delta(added: Vec<u64>, removed: Vec<u64>) -> Vec<DeltaOp<u64>> {
@@ -31,9 +31,9 @@ fn every_internal_type_round_trips() {
     );
     assert!(bytes::decode(&encoded).unwrap() == bytes_value);
 
-    let int64_value = I64 {
+    let int64_value = Scalar::<i64> {
         value: -100,
-        delta: 25,
+        delta: Some(DeltaOp::Add(25)),
         limits: (-1_000, 1_000),
     };
 
@@ -44,7 +44,7 @@ fn every_internal_type_round_trips() {
     );
     assert!(int64::decode(&encoded).unwrap() == int64_value);
 
-    let uint64_value = U64 {
+    let uint64_value = Scalar::<u64> {
         value: 100,
         delta: Some(DeltaOp::Add(25)),
         limits: (0, 1_000),
@@ -57,7 +57,7 @@ fn every_internal_type_round_trips() {
     );
     assert!(uint64::decode(&encoded).unwrap() == uint64_value);
 
-    let u256_value = U256 {
+    let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(1_u64) << 200,
         delta: Some(DeltaOp::Add(AlloyU256::from(25))),
         limits: (AlloyU256::ZERO, AlloyU256::MAX),
@@ -108,9 +108,9 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let int64_value = I64 {
+    let int64_value = Scalar::<i64> {
         value: 10,
-        delta: 2,
+        delta: Some(DeltaOp::Add(2)),
         limits: (0, 100),
     };
 
@@ -122,7 +122,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let uint64_value = U64 {
+    let uint64_value = Scalar::<u64> {
         value: 10,
         delta: Some(DeltaOp::Add(2)),
         limits: (0, 100),
@@ -136,7 +136,7 @@ fn encode_to_rejects_short_buffers_without_writing() {
     );
     assert!(output.iter().all(|byte| *byte == 0xaa));
 
-    let u256_value = U256 {
+    let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(10),
         delta: Some(DeltaOp::Add(AlloyU256::from(2))),
         limits: (AlloyU256::ZERO, AlloyU256::from(100)),
@@ -184,7 +184,10 @@ fn encode_to_rejects_short_buffers_without_writing() {
 
 #[test]
 fn malformed_input_is_rejected() {
-    assert!(matches!(bytes::decode::<[u8]>(&[2]), Err("invalid Bytes flags")));
+    assert!(matches!(
+        bytes::decode::<[u8]>(&[2]),
+        Err("invalid Bytes flags")
+    ));
     assert!(matches!(int64::decode(&[8]), Err("invalid I64 flags")));
     assert!(matches!(uint64::decode(&[8]), Err("invalid U64 flags")));
     assert!(matches!(u256::decode(&[8]), Err("invalid U256 flags")));
@@ -209,9 +212,9 @@ fn malformed_input_is_rejected() {
 
     assert!(delta_op::decode(&u64::MAX.to_le_bytes()).is_err());
 
-    let valid = I64 {
+    let valid = Scalar::<i64> {
         value: 1,
-        delta: 0,
+        delta: None,
         limits: (i64::MIN, i64::MAX),
     };
 
@@ -230,9 +233,9 @@ fn every_truncated_encoding_is_rejected() {
         assert!(bytes::decode::<[u8]>(&bytes_encoded[..end]).is_err());
     }
 
-    let int64_encoded = int64::encode(&I64 {
+    let int64_encoded = int64::encode(&Scalar::<i64> {
         value: -10,
-        delta: 2,
+        delta: Some(DeltaOp::Add(2)),
         limits: (-100, 100),
     })
     .unwrap();
@@ -240,7 +243,7 @@ fn every_truncated_encoding_is_rejected() {
         assert!(int64::decode(&int64_encoded[..end]).is_err());
     }
 
-    let uint64_encoded = uint64::encode(&U64 {
+    let uint64_encoded = uint64::encode(&Scalar::<u64> {
         value: 10,
         delta: Some(DeltaOp::Add(2)),
         limits: (0, 100),
@@ -250,7 +253,7 @@ fn every_truncated_encoding_is_rejected() {
         assert!(uint64::decode(&uint64_encoded[..end]).is_err());
     }
 
-    let u256_encoded = u256::encode(&U256 {
+    let u256_encoded = u256::encode(&Scalar::<AlloyU256> {
         value: AlloyU256::from(10),
         delta: Some(DeltaOp::Add(AlloyU256::from(2))),
         limits: (AlloyU256::ZERO, AlloyU256::from(100)),
@@ -286,20 +289,19 @@ fn primitive_encodings_match_golden_bytes() {
     expected.extend_from_slice(&[0xaa, 0xbb]);
     assert_eq!(bytes::encode(&bytes_value).unwrap(), expected);
 
-    let int64_value = I64 {
+    let int64_value = Scalar::<i64> {
         value: -2,
-        delta: 0,
+        delta: None,
         limits: (i64::MIN, i64::MAX),
     };
 
-    let mut expected = vec![7];
+    let mut expected = vec![5];
     expected.extend_from_slice(&(-2_i64).to_le_bytes());
-    expected.extend_from_slice(&0_i64.to_le_bytes());
     expected.extend_from_slice(&i64::MIN.to_le_bytes());
     expected.extend_from_slice(&i64::MAX.to_le_bytes());
     assert_eq!(int64::encode(&int64_value).unwrap(), expected);
 
-    let uint64_value = U64 {
+    let uint64_value = Scalar::<u64> {
         value: 1,
         delta: Some(DeltaOp::Add(2)),
         limits: (3, 4),
@@ -312,7 +314,7 @@ fn primitive_encodings_match_golden_bytes() {
     expected.extend_from_slice(&4_u64.to_le_bytes());
     assert_eq!(uint64::encode(&uint64_value).unwrap(), expected);
 
-    let u256_value = U256 {
+    let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(1),
         delta: Some(DeltaOp::Add(AlloyU256::ZERO)),
         limits: (AlloyU256::ZERO, AlloyU256::MAX),
@@ -352,7 +354,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
         delta: Some(vec![0xaa].into_boxed_slice()),
     };
 
-    let uint64_value = U64 {
+    let uint64_value = Scalar::<u64> {
         value: 7,
         delta: Some(DeltaOp::Add(0)),
         limits: (u64::MIN, u64::MAX),
@@ -378,7 +380,7 @@ fn path_and_batch_encodings_match_golden_bytes() {
 #[test]
 fn large_batch_uses_non_overlapping_parallel_sections() {
     let stored = vec![
-        U64 {
+        Scalar::<u64> {
             value: 7,
             delta: Some(DeltaOp::Add(0)),
             limits: (u64::MIN, u64::MAX),

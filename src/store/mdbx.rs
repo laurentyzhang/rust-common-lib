@@ -149,10 +149,10 @@ mod tests {
     fn evm_key_and_crdt_value_round_trip() {
         use crate::{
             crdt::{
+                Scalar,
                 state::{CrdtValue, Numeric},
-                uint64::U64,
             },
-            evm::{Key, KeyCodec},
+            execution::evm::{Key, KeyCodec},
             store::CrdtValueCodec,
         };
 
@@ -160,9 +160,9 @@ mod tests {
         let mut mdbx: MdbxStore<Key, CrdtValue<'static>, _, _> =
             MdbxStore::open(directory.path(), KeyCodec, CrdtValueCodec).unwrap();
         let key = Key::Account(alloy_primitives::Address::repeat_byte(0x11));
-        let value = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
+        let value = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(Scalar {
             value: 42,
-            ..U64::default()
+            ..Scalar::<u64>::default()
         })));
 
         mdbx.flush(vec![(key.clone(), value.clone())]).unwrap();

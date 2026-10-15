@@ -2,6 +2,8 @@ use super::value::{CrdtValue, ValueSnapshots};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
+    Read,
+    Load,
     Missing,
     Deleted,
     Default,
@@ -26,25 +28,18 @@ pub fn reduce_to_statuses(
 
     let current = match &value.current {
         CrdtValue::Numeric(value) => Status::Value(CrdtValue::Numeric(value.clone().into_owned())),
-        CrdtValue::Bytes(value) => {
-            if value.delta.is_none() {
-                Status::Tag(Tag::Default)
-            } else {
-                Status::Tag(Tag::Stripped)
-            }
-        }
-        CrdtValue::U64Set(value) => {
-            if value.delta.is_none() {
-                Status::Tag(Tag::Default) // no pending changes
-            } else {
-                Status::Tag(Tag::Stripped) // has pending changes, strip the details.
-            }
-        }
         CrdtValue::None => {
             if original == Status::Tag(Tag::Missing) {
                 Status::Tag(Tag::Missing) // Original value was missing too.
             } else {
                 Status::Tag(Tag::Deleted) // Original was present, current missing. A deletion.
+            }
+        }
+        _ => {
+            if value.current.has_delta() {
+                Status::Tag(Tag::Stripped)
+            } else {
+                Status::Tag(Tag::Default)
             }
         }
     };

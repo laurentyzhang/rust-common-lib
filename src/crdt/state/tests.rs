@@ -136,7 +136,7 @@ macro_rules! unsigned_delta_tests {
 
 unsigned_delta_tests!(
     u64_delta,
-    crate::crdt::uint64::U64,
+    crate::crdt::Scalar<u64>,
     u64,
     U64,
     U64,
@@ -145,7 +145,7 @@ unsigned_delta_tests!(
 );
 unsigned_delta_tests!(
     u256_delta,
-    crate::crdt::u256::U256,
+    crate::crdt::Scalar<alloy_primitives::U256>,
     alloy_primitives::U256,
     U256,
     U256,
@@ -155,8 +155,9 @@ unsigned_delta_tests!(
 
 #[test]
 fn unsigned_subtraction_rejects_other_numeric_types() {
-    let mut u64_value: CrdtValue<'static> = crate::crdt::uint64::U64::default().into();
-    let mut u256_value: CrdtValue<'static> = crate::crdt::u256::U256::default().into();
+    let mut u64_value: CrdtValue<'static> = crate::crdt::Scalar::<u64>::default().into();
+    let mut u256_value: CrdtValue<'static> =
+        crate::crdt::Scalar::<alloy_primitives::U256>::default().into();
     assert_eq!(
         u64_value.add_delta(&CrdtDelta::U256(
             DeltaOp::Sub(alloy_primitives::U256::ZERO,)
@@ -172,13 +173,13 @@ fn unsigned_subtraction_rejects_other_numeric_types() {
 mod tracked {
     use super::Tracked;
     use crate::crdt::{
+        Scalar,
         state::{CrdtDelta, Numeric, value::CrdtValue},
-        uint64::U64,
     };
 
     #[test]
     fn deleting_created_value_returns_it_to_missing() {
-        let mut tracked = Tracked::new_owned(U64::default().into(), 7);
+        let mut tracked = Tracked::new_owned(Scalar::<u64>::default().into(), 7);
         let _ = tracked.get();
         tracked.check();
         assert!(tracked.add_delta(CrdtDelta::None).is_ok());
@@ -193,8 +194,9 @@ mod tracked {
 
     #[test]
     fn deleting_preexisting_value_is_permanent() {
-        let value: CrdtValue<'static> =
-            CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+        let value: CrdtValue<'static> = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+            Scalar::<u64>::default(),
+        )));
         let mut tracked = Tracked::new_borrowed(&value, 7);
 
         assert!(tracked.remove().is_ok());
@@ -211,12 +213,12 @@ mod tracked {
         assert!(matches!(empty.original(), CrdtValue::None));
         assert!(matches!(empty.current(), CrdtValue::None));
 
-        let owned = Tracked::new_owned(U64::default().into(), 11);
+        let owned = Tracked::new_owned(Scalar::<u64>::default().into(), 11);
         assert_eq!(owned.id, 11);
         assert!(owned.is_created());
         assert!(matches!(owned.original(), CrdtValue::None));
 
-        let value: CrdtValue<'static> = U64::default().into();
+        let value: CrdtValue<'static> = Scalar::<u64>::default().into();
         let borrowed = Tracked::new_borrowed(&value, 12);
         assert_eq!(borrowed.id, 12);
         assert!(!borrowed.is_created());
@@ -227,7 +229,7 @@ mod tracked {
 
     #[test]
     fn only_mutations_make_a_record_non_read_only() {
-        let value: CrdtValue<'static> = U64::default().into();
+        let value: CrdtValue<'static> = Scalar::<u64>::default().into();
         let mut tracked = Tracked::new_borrowed(&value, 7);
         assert!(tracked.is_read_only());
 
@@ -238,7 +240,7 @@ mod tracked {
         assert!(tracked.is_read_only());
 
         assert_eq!(
-            tracked.set(U64::default().into()),
+            tracked.set(Scalar::<u64>::default().into()),
             Err(crate::store::traits::StoreError::ValueCannotBeRecreated)
         );
         assert!(!tracked.is_read_only());
@@ -246,7 +248,7 @@ mod tracked {
 
     #[test]
     fn ownership_conversions_preserve_id() {
-        let value: CrdtValue<'static> = U64::default().into();
+        let value: CrdtValue<'static> = Scalar::<u64>::default().into();
         let tracked = Tracked::new_borrowed(&value, 42);
         let cloned = tracked.owned_clone();
 

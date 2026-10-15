@@ -1,6 +1,6 @@
 use super::{Numeric, StateError};
 use crate::crdt::Crdt;
-use crate::crdt::{self, NonComm, Set};
+use crate::crdt::{NonComm, Set};
 
 /// The original and current states of a tracked value.
 #[derive(Clone, PartialEq)]
@@ -13,7 +13,7 @@ pub struct ValueSnapshots<T0, T1> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtDelta {
     Bytes(Vec<u8>),
-    I64(i64),
+    I64(DeltaOp<u64>),
     U64(DeltaOp<u64>),
     U256(DeltaOp<alloy_primitives::U256>),
     U64Set(Vec<DeltaOp<u64>>),
@@ -21,10 +21,20 @@ pub enum CrdtDelta {
 }
 
 /// An arithmetic operation used by numeric and set CRDT deltas.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeltaOp<T> {
     Add(T),
     Sub(T),
+}
+
+impl From<i64> for DeltaOp<u64> {
+    fn from(value: i64) -> Self {
+        if value < 0 {
+            Self::Sub(value.unsigned_abs())
+        } else {
+            Self::Add(value as u64)
+        }
+    }
 }
 
 /// A CRDT value whose payload may be borrowed.
@@ -128,6 +138,17 @@ impl<'a> CrdtValue<'a> {
                 .map_or(CrdtDelta::None, |delta| CrdtDelta::U64Set(delta.to_vec())),
             Self::Numeric(value) => value.delta(),
             Self::None => CrdtDelta::None,
+        }
+    }
+
+    pub fn has_delta(&self) -> bool {
+        match self {
+            Self::Bytes(value) => value.delta().is_some(),
+            Self::U64Set(value) => value.delta().is_some(),
+            Self::Numeric(Numeric::I64(value)) => value.delta().is_some(),
+            Self::Numeric(Numeric::U64(value)) => value.delta().is_some(),
+            Self::Numeric(Numeric::U256(value)) => value.delta().is_some(),
+            Self::None => false,
         }
     }
 

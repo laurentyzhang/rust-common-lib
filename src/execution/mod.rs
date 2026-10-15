@@ -1,7 +1,4 @@
-mod block;
-mod error;
+pub mod cache;
+pub mod evm;
 pub mod output;
-mod vm;
-pub use block::{BlockCache, BlockCacheWriter};
-pub use error::Error;
-pub use vm::{VmStateCache, VmStateCacheWriter};
+pub use cache::{BlockCache, BlockCacheWriter, Entry, VmStateCache, VmStateCacheWriter};

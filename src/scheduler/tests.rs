@@ -20,12 +20,7 @@ fn ids(generation: &Generation<()>) -> Vec<u64> {
     let mut ids = generation
         .sequences
         .iter()
-        .flat_map(|sequence| {
-            sequence
-                .jobs
-                .iter()
-                .map(|transaction| transaction.id)
-        })
+        .flat_map(|sequence| sequence.jobs.iter().map(|transaction| transaction.id))
         .collect::<Vec<_>>();
     ids.sort_unstable();
     ids
@@ -265,11 +260,7 @@ fn isolated_transaction_stays_alone_regardless_of_parallel_peer_seed_order() {
         let plan = scheduler.schedule([transaction(isolated_id, 1, 0, 1), parallel]);
 
         assert_eq!(plan.len(), 2);
-        assert!(
-            plan
-                .iter()
-                .all(|generation| ids(generation).len() == 1)
-        );
+        assert!(plan.iter().all(|generation| ids(generation).len() == 1));
     }
 }
 
@@ -284,10 +275,7 @@ fn replacing_a_profile_removes_its_stale_incoming_conflict_edges() {
         },
     );
     let transactions = [transaction(1, 1, 0, 1), transaction(2, 2, 0, 2)];
-    assert_eq!(
-        scheduler.schedule(transactions.clone()).len(),
-        2
-    );
+    assert_eq!(scheduler.schedule(transactions.clone()).len(), 2);
 
     scheduler.set_profile(1, CalleeProfile::default());
     let plan = scheduler.schedule(transactions);
@@ -420,7 +408,6 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
     assert!(location(&plan, 20).0 <= location(&plan, 10).0);
     assert!(location(&plan, 10).0 <= location(&plan, 30).0);
     let marked_deferred = plan
-        
         .iter()
         .flat_map(|generation| &generation.sequences)
         .flat_map(|sequence| &sequence.jobs)

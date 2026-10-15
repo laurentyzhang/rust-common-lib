@@ -1,6 +1,6 @@
 use alloy_primitives::U256 as AlloyU256;
 
-use crate::crdt::u256::U256;
+use crate::crdt::Scalar;
 
 use super::{Reader, Result, Writer};
 
@@ -10,11 +10,11 @@ const LIMITS: u8 = 4;
 // Existing additive encodings retain their original flags and layout.
 const SUBTRACT: u8 = 8;
 
-pub fn encoded_size(value: &U256) -> Result<u64> {
+pub fn encoded_size(value: &Scalar<AlloyU256>) -> Result<u64> {
     Ok(97 + u64::from(value.delta.is_some()) * 32)
 }
 
-pub fn encode(value: &U256) -> Result<Vec<u8>> {
+pub fn encode(value: &Scalar<AlloyU256>) -> Result<Vec<u8>> {
     let size =
         usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
@@ -22,7 +22,7 @@ pub fn encode(value: &U256) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub fn encode_to(value: &U256, output: &mut [u8]) -> Result<u64> {
+pub fn encode_to(value: &Scalar<AlloyU256>, output: &mut [u8]) -> Result<u64> {
     let size = encoded_size(value)?;
     if (output.len() as u64) < size {
         return Err("output buffer too small");
@@ -49,7 +49,7 @@ pub fn encode_to(value: &U256, output: &mut [u8]) -> Result<u64> {
     Ok(writer.finish() as u64)
 }
 
-pub fn decode(input: &[u8]) -> Result<U256> {
+pub fn decode(input: &[u8]) -> Result<Scalar<AlloyU256>> {
     let mut reader = Reader::new(input);
     let flags = reader.read_u8()?;
     if flags & !(VALUE | DELTA | LIMITS | SUBTRACT) != 0
@@ -84,7 +84,7 @@ pub fn decode(input: &[u8]) -> Result<U256> {
     };
     reader.finish()?;
 
-    Ok(U256 {
+    Ok(Scalar {
         value,
         delta,
         limits,

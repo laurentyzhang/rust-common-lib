@@ -4,9 +4,9 @@ use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Numeric<'a> {
-    I64(std::borrow::Cow<'a, crate::crdt::int64::I64>),
-    U64(std::borrow::Cow<'a, crate::crdt::uint64::U64>),
-    U256(std::borrow::Cow<'a, crate::crdt::u256::U256>),
+    I64(std::borrow::Cow<'a, crate::crdt::Scalar<i64>>),
+    U64(std::borrow::Cow<'a, crate::crdt::Scalar<u64>>),
+    U256(std::borrow::Cow<'a, crate::crdt::Scalar<alloy_primitives::U256>>),
 }
 
 pub(crate) struct ComparableNumeric<'a, 'value> {
@@ -47,9 +47,11 @@ impl Ord for Numeric<'_> {
         match (self, other) {
             (Self::I64(left), Self::I64(right)) => {
                 ComparableNumeric::new(self).compare(&ComparableNumeric::new(other), || {
-                    left.limits
-                        .cmp(&right.limits)
-                        .then_with(|| left.value.cmp(&right.value))
+                    left.delta.cmp(&right.delta).then_with(|| {
+                        left.limits
+                            .cmp(&right.limits)
+                            .then_with(|| left.value.cmp(&right.value))
+                    })
                 })
             }
             (Self::U64(left), Self::U64(right)) => {
@@ -99,29 +101,13 @@ impl<'a> Numeric<'a> {
         match self {
             Self::I64(value) => value
                 .delta()
-                .map_or(CrdtDelta::None, |delta| CrdtDelta::I64(*delta)),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::I64(delta.clone())),
             Self::U64(value) => value
                 .delta()
                 .map_or(CrdtDelta::None, |delta| CrdtDelta::U64(delta.clone())),
             Self::U256(value) => value
                 .delta()
                 .map_or(CrdtDelta::None, |delta| CrdtDelta::U256(delta.clone())),
-        }
-    }
-
-    pub fn delta_abs_u64(&self) -> u64 {
-        match self {
-            Self::I64(value) => value.delta_abs_u64(),
-            Self::U64(value) => value.delta_abs_u64(),
-            Self::U256(value) => value.delta_abs_u64(),
-        }
-    }
-
-    pub fn delta_abs_u256(&self) -> alloy_primitives::U256 {
-        match self {
-            Self::I64(value) => value.delta_abs_u256(),
-            Self::U64(value) => value.delta_abs_u256(),
-            Self::U256(value) => value.delta_abs_u256(),
         }
     }
 

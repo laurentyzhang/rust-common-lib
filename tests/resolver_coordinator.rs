@@ -1,8 +1,8 @@
 use alloy_primitives::U256 as Number;
 use rust_common_lib::{
     crdt::{
-        Crdt, I64, U64, U256,
-        state::{CrdtDelta, DeltaOp, Numeric, Status, Tracked, CrdtValue, status::Tag},
+        Crdt, Scalar,
+        state::{CrdtDelta, CrdtValue, DeltaOp, Numeric, Status, Tracked, status::Tag},
     },
     execution::{VmStateCache, output::ExecutionOutput},
     resolver::{
@@ -15,9 +15,11 @@ type Record = ExecutionOutput<u64, Tracked<Status, Status>>;
 
 fn combined_records() -> Vec<Record> {
     let mut fallback = VmStateCache::new(0);
-    fallback.insert(&10, CrdtValue::from(U64::default())).unwrap();
     fallback
-        .insert(&20, CrdtValue::from(I64::new(-5, 5).unwrap()))
+        .insert(&10, CrdtValue::from(Scalar::<u64>::default()))
+        .unwrap();
+    fallback
+        .insert(&20, CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap()))
         .unwrap();
 
     let mut deleter = VmStateCache::new_with_fallback(11, &fallback);
@@ -25,9 +27,13 @@ fn combined_records() -> Vec<Record> {
     let mut reader = VmStateCache::new_with_fallback(30, &fallback);
     assert!(reader.get(&10).is_some());
     let mut first_delta = VmStateCache::new_with_fallback(5, &fallback);
-    first_delta.add_delta(&20, CrdtDelta::I64(3)).unwrap();
+    first_delta
+        .add_delta(&20, CrdtDelta::I64(DeltaOp::Add(3)))
+        .unwrap();
     let mut second_delta = VmStateCache::new_with_fallback(20, &fallback);
-    second_delta.add_delta(&20, CrdtDelta::I64(4)).unwrap();
+    second_delta
+        .add_delta(&20, CrdtDelta::I64(DeltaOp::Add(4)))
+        .unwrap();
 
     [
         reader.drain().0,
@@ -105,13 +111,17 @@ fn conflict_result_builds_commit_and_reject_plans() {
 fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     let mut fallback = VmStateCache::new(0);
     fallback
-        .insert(&7, CrdtValue::from(I64::new(-5, 5).unwrap()))
+        .insert(&7, CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap()))
         .unwrap();
     let mut first = VmStateCache::new_with_fallback(1, &fallback);
-    first.add_delta(&7, CrdtDelta::I64(3)).unwrap();
+    first
+        .add_delta(&7, CrdtDelta::I64(DeltaOp::Add(3)))
+        .unwrap();
     let mut second = VmStateCache::new_with_fallback(2, &fallback);
     assert!(second.get(&7).is_some());
-    second.add_delta(&7, CrdtDelta::I64(4)).unwrap();
+    second
+        .add_delta(&7, CrdtDelta::I64(DeltaOp::Add(4)))
+        .unwrap();
 
     let mut detector = ConflictChecker::new();
     detector.import(second.drain().0);
@@ -138,7 +148,7 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
         ) && matches!(
             record.data.current(),
             Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
-                if value.delta().copied() == Some(4)
+                if value.delta().copied() == Some(DeltaOp::Add(4))
         )
     }));
 
@@ -176,10 +186,16 @@ fn consumes_both_stages_and_accepts_a_fresh_batch() {
 #[test]
 fn numeric_reads_remain_visible_to_access_detection() {
     for (value, delta) in [
-        (CrdtValue::from(I64::default()), CrdtDelta::I64(1)),
-        (CrdtValue::from(U64::default()), CrdtDelta::U64(DeltaOp::Add(1))),
         (
-            CrdtValue::from(U256::default()),
+            CrdtValue::from(Scalar::<i64>::default()),
+            CrdtDelta::I64(DeltaOp::Add(1)),
+        ),
+        (
+            CrdtValue::from(Scalar::<u64>::default()),
+            CrdtDelta::U64(DeltaOp::Add(1)),
+        ),
+        (
+            CrdtValue::from(Scalar::<Number>::default()),
             CrdtDelta::U256(DeltaOp::Add(Number::from(1))),
         ),
     ] {
@@ -206,10 +222,10 @@ fn numeric_reads_remain_visible_to_access_detection() {
 
 #[test]
 fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type() {
-    let mut u64_base = U64::default();
+    let mut u64_base = Scalar::<u64>::default();
     u64_base.add_delta(&DeltaOp::Add(10)).unwrap();
     u64_base.apply_delta();
-    let mut u256_base = U256::default();
+    let mut u256_base = Scalar::<Number>::default();
     u256_base
         .add_delta(&DeltaOp::Add(Number::from(10)))
         .unwrap();
@@ -217,19 +233,19 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
 
     for (value, first_delta, second_delta, underflow) in [
         (
-            CrdtValue::from(I64::default()),
-            CrdtDelta::I64(1),
-            CrdtDelta::I64(i64::MAX),
+            CrdtValue::from(Scalar::<i64>::default()),
+            CrdtDelta::I64(DeltaOp::Add(1)),
+            CrdtDelta::I64(DeltaOp::Add(i64::MAX as u64)),
             false,
         ),
         (
-            CrdtValue::from(I64::default()),
-            CrdtDelta::I64(i64::MIN + 1),
-            CrdtDelta::I64(i64::MIN + 2),
+            CrdtValue::from(Scalar::<i64>::default()),
+            CrdtDelta::I64(DeltaOp::from(i64::MIN + 1)),
+            CrdtDelta::I64(DeltaOp::from(i64::MIN + 2)),
             true,
         ),
         (
-            CrdtValue::from(U64::default()),
+            CrdtValue::from(Scalar::<u64>::default()),
             CrdtDelta::U64(DeltaOp::Add(1)),
             CrdtDelta::U64(DeltaOp::Add(u64::MAX)),
             false,
@@ -241,7 +257,7 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
             true,
         ),
         (
-            CrdtValue::from(U256::default()),
+            CrdtValue::from(Scalar::<Number>::default()),
             CrdtDelta::U256(DeltaOp::Add(Number::from(1))),
             CrdtDelta::U256(DeltaOp::Add(Number::MAX)),
             false,

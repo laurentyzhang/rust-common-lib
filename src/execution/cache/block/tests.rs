@@ -1,9 +1,9 @@
 use crate::committer::traits::TransitionWriter;
-use crate::execution::{BlockCache, BlockCacheWriter};
+use crate::execution::{BlockCache, BlockCacheWriter, cache::Entry};
 
 use crate::crdt::{
+    Scalar,
     state::{Numeric, value::CrdtValue},
-    uint64::U64,
 };
 use crate::store::traits::FallbackStore;
 use crate::store::{CachedStoreWriter, cache::CachedStore};
@@ -23,7 +23,7 @@ where
 
 fn write_block<'a, K>(
     cache: BlockCache<'a, K>,
-    updates: Vec<(K, CrdtValue<'static>)>,
+    updates: Vec<(K, Entry<'static>)>,
 ) -> BlockCache<'a, K>
 where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
@@ -33,11 +33,13 @@ where
     writer.into_inner()
 }
 
-fn numeric_u64(number: u64) -> CrdtValue<'static> {
-    CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
-        value: number,
-        ..U64::default()
-    })))
+fn numeric_u64(number: u64) -> Entry<'static> {
+    Entry::Crdt(CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+        Scalar {
+            value: number,
+            ..Scalar::<u64>::default()
+        },
+    ))))
 }
 
 #[test]
@@ -56,9 +58,12 @@ fn fallback_values_are_visible_and_stage_updates_override_them() {
     assert!((cache.get(&7)) == Ok(Some(replacement.clone())));
     assert!((fallback.get(&7)) == Ok(Some(original.clone())));
 
-    cache = write_block(cache, vec![(7, CrdtValue::None)]);
+    cache = write_block(cache, vec![(7, Entry::Crdt(CrdtValue::None))]);
     assert!(cache.contains_key(&7).unwrap());
-    assert!(matches!(cache.get(&7), Ok(Some(CrdtValue::None))));
+    assert!(matches!(
+        cache.get(&7),
+        Ok(Some(Entry::Crdt(CrdtValue::None)))
+    ));
     assert!((fallback.get(&7)) == Ok(Some(original.clone())));
 
     let mut writer = BlockCacheWriter::new(cache);
@@ -88,7 +93,24 @@ fn deletion_cannot_be_followed_by_recreation_in_the_same_batch() {
     let mut writer = BlockCacheWriter::new(cache);
 
     assert_eq!(
-        writer.flush(vec![(7, CrdtValue::None), (7, numeric_u64(42)),]),
+        writer.flush(vec![
+            (7, Entry::Crdt(CrdtValue::None)),
+            (7, numeric_u64(42)),
+        ]),
         Err(crate::store::StoreError::ValueCannotBeRecreated)
+    );
+}
+
+#[test]
+fn block_cache_stores_opaque_entries() {
+    let cache = BlockCache::<u64, String>::new();
+    let mut writer = BlockCacheWriter::new(cache);
+    writer
+        .flush(vec![(7, Entry::Other("opaque".to_owned()))])
+        .unwrap();
+
+    assert_eq!(
+        writer.into_inner().get(&7),
+        Ok(Some(Entry::Other("opaque".to_owned())))
     );
 }

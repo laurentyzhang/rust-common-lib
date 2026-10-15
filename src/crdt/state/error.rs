@@ -31,13 +31,21 @@ impl NumericError {
         Self::AboveUpperLimit(format!("value {value} is above limits [{lower}, {upper}]"))
     }
 
-    pub(crate) fn overflow<T: Display>(value: &T, pending_delta: &T, delta: &T) -> Self {
+    pub(crate) fn overflow<V: Display, P: Display, D: Display>(
+        value: &V,
+        pending_delta: &P,
+        delta: &D,
+    ) -> Self {
         Self::Overflow(format!(
             "operation overflowed: value {value}, pending delta {pending_delta}, incoming delta {delta}"
         ))
     }
 
-    pub(crate) fn underflow<T: Display>(value: &T, pending_delta: &T, delta: &T) -> Self {
+    pub(crate) fn underflow<V: Display, P: Display, D: Display>(
+        value: &V,
+        pending_delta: &P,
+        delta: &D,
+    ) -> Self {
         Self::Underflow(format!(
             "operation underflowed: value {value}, pending delta {pending_delta}, incoming delta {delta}"
         ))

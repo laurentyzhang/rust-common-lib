@@ -476,8 +476,7 @@ mod access_checker {
 
 mod conflict_checker {
     use crate::crdt::{
-        Crdt, NonComm,
-        int64::I64,
+        Crdt, NonComm, Scalar,
         state::{
             CrdtDelta, DeltaOp, Numeric, Tracked,
             op::Operations,
@@ -486,7 +485,7 @@ mod conflict_checker {
         },
     };
     use crate::execution::VmStateCache;
-    use crate::execution::output::ExecutionOutput;
+    use crate::execution::{cache::Entry, output::ExecutionOutput};
     use crate::resolver::access_checker::AccessChecker;
     use crate::resolver::conflict_checker::*;
     use crate::resolver::reason::{AccessConflict, Reason};
@@ -593,14 +592,14 @@ mod conflict_checker {
     fn vm_read_remove_conflicts_survive_drain_import_and_ordering() {
         for value in [
             CrdtValue::from(NonComm::<[u8]>::new(vec![1]).unwrap()),
-            CrdtValue::from(crate::crdt::uint64::U64::default()),
+            CrdtValue::from(Scalar::<u64>::default()),
         ] {
             for delete_reads_first in [false, true] {
                 for reverse_import in [false, true] {
                     for same_key in [false, true] {
-                        let mut fallback = VmStateCache::new(0);
-                        fallback.insert(&7, value.clone()).unwrap();
-                        fallback.insert(&8, value.clone()).unwrap();
+                        let mut fallback: VmStateCache<'_, i32> = VmStateCache::new(0);
+                        fallback.insert(&7, Entry::Crdt(value.clone())).unwrap();
+                        fallback.insert(&8, Entry::Crdt(value.clone())).unwrap();
                         let mut reader = VmStateCache::new_with_fallback(1, &fallback);
                         let mut deleter = VmStateCache::new_with_fallback(2, &fallback);
                         let delete_key = if same_key { 7 } else { 8 };
@@ -641,13 +640,16 @@ mod conflict_checker {
                 CrdtValue::from(NonComm::<[u8]>::new(vec![1]).unwrap()),
                 CrdtDelta::Bytes(vec![2]),
             ),
-            (CrdtValue::from(I64::default()), CrdtDelta::I64(1)),
             (
-                CrdtValue::from(crate::crdt::uint64::U64::default()),
+                CrdtValue::from(Scalar::<i64>::default()),
+                CrdtDelta::I64(DeltaOp::Add(1)),
+            ),
+            (
+                CrdtValue::from(Scalar::<u64>::default()),
                 CrdtDelta::U64(DeltaOp::Add(1)),
             ),
             (
-                CrdtValue::from(crate::crdt::u256::U256::default()),
+                CrdtValue::from(Scalar::<alloy_primitives::U256>::default()),
                 CrdtDelta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
@@ -658,9 +660,9 @@ mod conflict_checker {
             for delete_writes_first in [false, true] {
                 for reverse_import in [false, true] {
                     for same_key in [false, true] {
-                        let mut fallback = VmStateCache::new(0);
-                        fallback.insert(&7, value.clone()).unwrap();
-                        fallback.insert(&8, value.clone()).unwrap();
+                        let mut fallback: VmStateCache<'_, i32> = VmStateCache::new(0);
+                        fallback.insert(&7, Entry::Crdt(value.clone())).unwrap();
+                        fallback.insert(&8, Entry::Crdt(value.clone())).unwrap();
                         let mut writer = VmStateCache::new_with_fallback(1, &fallback);
                         let mut deleter = VmStateCache::new_with_fallback(2, &fallback);
                         let delete_key = if same_key { 7 } else { 8 };
@@ -770,10 +772,10 @@ mod conflict_checker {
 
     #[test]
     fn import_splits_numeric_data_between_access_and_arithmetic_checks() {
-        let mut first = I64::new(-10, 10).unwrap();
-        first.add_delta(&3).unwrap();
-        let mut second = I64::new(-10, 10).unwrap();
-        second.add_delta(&9).unwrap();
+        let mut first = Scalar::<i64>::new(-10, 10).unwrap();
+        first.add_delta(&DeltaOp::Add(3)).unwrap();
+        let mut second = Scalar::<i64>::new(-10, 10).unwrap();
+        second.add_delta(&DeltaOp::Add(9)).unwrap();
 
         let mut detector = ConflictChecker::new();
         detector.import(vec![
@@ -808,7 +810,7 @@ mod conflict_checker {
         }));
         assert!(rejected.iter().any(|(record, reason)| {
             matches!(record.data.current(), Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
-                    if value.delta().copied() == Some(9))
+                    if value.delta().copied() == Some(DeltaOp::Add(9)))
                 && matches!(
                     reason,
                     Reason::NumericError(crate::resolver::reason::NumericError::AboveUpperLimit(_))
@@ -819,14 +821,11 @@ mod conflict_checker {
 
 mod sum_checker {
     use crate::crdt::{
-        Crdt,
-        int64::I64,
+        Crdt, Scalar,
         state::{
             CrdtDelta, CrdtValue, DeltaOp, Numeric, Status, Tracked, status::Tag,
             value::ValueSnapshots,
         },
-        u256::U256,
-        uint64::U64,
     };
     use crate::execution::output::ExecutionOutput;
     use crate::resolver::reason::Reason;
@@ -835,13 +834,13 @@ mod sum_checker {
     use std::collections::{BTreeSet, HashMap};
 
     fn u256_value(delta: alloy_primitives::U256) -> Numeric<'static> {
-        let mut value = U256::default();
+        let mut value = Scalar::<alloy_primitives::U256>::default();
         value.add_delta(&DeltaOp::Add(delta)).unwrap();
         Numeric::U256(Cow::Owned(value))
     }
 
     fn u256_operation(operation: DeltaOp<alloy_primitives::U256>) -> Numeric<'static> {
-        let mut value = U256::default();
+        let mut value = Scalar::<alloy_primitives::U256>::default();
         value
             .add_delta(&DeltaOp::Add(alloy_primitives::U256::from(10)))
             .unwrap();
@@ -851,13 +850,13 @@ mod sum_checker {
     }
 
     fn u64_value(delta: u64) -> Numeric<'static> {
-        let mut value = U64::default();
+        let mut value = Scalar::<u64>::default();
         value.add_delta(&DeltaOp::Add(delta)).unwrap();
         Numeric::U64(Cow::Owned(value))
     }
 
     fn u64_operation(operation: DeltaOp<u64>) -> Numeric<'static> {
-        let mut value = U64::default();
+        let mut value = Scalar::<u64>::default();
         value.add_delta(&DeltaOp::Add(10)).unwrap();
         value.apply_delta();
         value.add_delta(&operation).unwrap();
@@ -865,8 +864,8 @@ mod sum_checker {
     }
 
     fn i64_value(delta: i64, lower: i64, upper: i64) -> Numeric<'static> {
-        let mut value = I64::new(lower, upper).unwrap();
-        value.add_delta(&delta).unwrap();
+        let mut value = Scalar::<i64>::new(lower, upper).unwrap();
+        value.add_delta(&delta.into()).unwrap();
         Numeric::I64(Cow::Owned(value))
     }
 
@@ -1035,12 +1034,15 @@ mod sum_checker {
                 [9, 10],
             ),
         ] {
-            let mut base = I64::default();
-            base.add_delta(&initial).unwrap();
+            let mut base = Scalar::<i64>::default();
+            base.add_delta(&initial.into()).unwrap();
             base.apply_delta();
             assert_mixed_sign_rejections(
                 Numeric::I64(Cow::Owned(base)),
-                deltas.into_iter().map(CrdtDelta::I64).collect(),
+                deltas
+                    .into_iter()
+                    .map(|delta| CrdtDelta::I64(delta.into()))
+                    .collect(),
                 2,
                 &overflow_ids,
             );
@@ -1049,7 +1051,7 @@ mod sum_checker {
 
     #[test]
     fn accumulate_u64_mixed_signs_reports_underflow_and_overflow() {
-        let mut base = U64::default();
+        let mut base = Scalar::<u64>::default();
         base.add_delta(&DeltaOp::Add(10)).unwrap();
         base.apply_delta();
 
@@ -1077,7 +1079,7 @@ mod sum_checker {
     fn accumulate_u256_mixed_signs_reports_underflow_and_overflow() {
         use alloy_primitives::U256 as Number;
 
-        let mut base = U256::default();
+        let mut base = Scalar::<alloy_primitives::U256>::default();
         base.add_delta(&DeltaOp::Add(Number::from(10))).unwrap();
         base.apply_delta();
 
@@ -1225,7 +1227,7 @@ mod sum_checker {
         assert!(matches!(
             record.data.current(),
             Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
-                if value.delta().copied() == Some(4)
+                if value.delta().copied() == Some(DeltaOp::Add(4))
         ));
         assert!(matches!(
             reason,

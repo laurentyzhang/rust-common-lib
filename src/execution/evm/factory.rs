@@ -296,7 +296,3 @@ impl PostExecEvmFactoryHooks for ArcologyEvmFactory {
         evm.seed_refund_snapshot(state);
     }
 }
-
-#[cfg(test)]
-#[path = "factory_tests.rs"]
-mod tests;

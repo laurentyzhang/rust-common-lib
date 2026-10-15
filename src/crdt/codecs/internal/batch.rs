@@ -1,10 +1,8 @@
 use crate::crdt::{
-    NonComm, Set,
-    int64::I64,
+    NonComm, Scalar, Set,
     state::{DeltaOp, Status, Tracked},
-    u256::U256,
-    uint64::U64,
 };
+use alloy_primitives::U256 as AlloyU256;
 
 use super::{Result, Writer, bytes, delta_op, int64, tracked, u64_set, u256, uint64};
 
@@ -25,7 +23,7 @@ impl<T: ?Sized + AsRef<[u8]> + Sync> InternalEncode for NonComm<T> {
     }
 }
 
-impl InternalEncode for I64 {
+impl InternalEncode for Scalar<i64> {
     fn encoded_size(&self) -> Result<u64> {
         int64::encoded_size(self)
     }
@@ -35,7 +33,7 @@ impl InternalEncode for I64 {
     }
 }
 
-impl InternalEncode for U64 {
+impl InternalEncode for Scalar<u64> {
     fn encoded_size(&self) -> Result<u64> {
         uint64::encoded_size(self)
     }
@@ -45,7 +43,7 @@ impl InternalEncode for U64 {
     }
 }
 
-impl InternalEncode for U256 {
+impl InternalEncode for Scalar<AlloyU256> {
     fn encoded_size(&self) -> Result<u64> {
         u256::encoded_size(self)
     }

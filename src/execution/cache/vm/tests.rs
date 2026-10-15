@@ -1,13 +1,13 @@
 use crate::committer::{Committer, traits::TransitionWriter};
 use crate::crdt::{
-    Crdt, NonComm,
-    state::{
-        CrdtDelta, DeltaOp, Numeric, NumericError, StateError, Status, status::Tag,
-        value::CrdtValue,
-    },
-    uint64::U64,
+    Crdt, NonComm, Scalar,
+    state::{CrdtDelta, DeltaOp, Numeric, NumericError, StateError, value::CrdtValue},
 };
-use crate::execution::{BlockCache, BlockCacheWriter, Error, VmStateCache, vm::VmStateCacheWriter};
+use crate::execution::{
+    BlockCache, BlockCacheWriter, VmStateCache,
+    cache::Entry,
+    cache::vm::{Error, VmStateCacheWriter},
+};
 use crate::store::StoreError;
 use crate::store::traits::FallbackStore;
 use crate::store::{CachedStoreWriter, cache::CachedStore};
@@ -42,7 +42,7 @@ where
 
 fn write_vm<'a, K>(
     cache: VmStateCache<'a, K>,
-    updates: Vec<(K, CrdtValue<'static>)>,
+    updates: Vec<(K, Entry<'static>)>,
 ) -> VmStateCache<'a, K>
 where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
@@ -54,7 +54,7 @@ where
 
 fn write_block<'a, K>(
     cache: BlockCache<'a, K>,
-    updates: Vec<(K, CrdtValue<'static>)>,
+    updates: Vec<(K, Entry<'static>)>,
 ) -> BlockCache<'a, K>
 where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
@@ -64,7 +64,7 @@ where
     writer.into_inner()
 }
 
-fn drain_values<'a, K>(cache: &mut VmStateCache<'a, K>) -> Vec<(K, CrdtValue<'static>)>
+fn drain_values<'a, K>(cache: &mut VmStateCache<'a, K>) -> Vec<(K, Entry<'static>)>
 where
     K: Eq + std::hash::Hash + Clone,
 {
@@ -79,16 +79,18 @@ where
     transitions
 }
 
-fn numeric_u64(number: u64) -> CrdtValue<'static> {
-    CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64 {
-        value: number,
-        ..U64::default()
-    })))
+fn numeric_u64(number: u64) -> Entry<'static> {
+    Entry::Crdt(CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+        Scalar {
+            value: number,
+            ..Scalar::<u64>::default()
+        },
+    ))))
 }
 
 #[test]
 fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
-    let fallback = CachedStore::new(4, None);
+    let fallback = CachedStore::<i32, Entry<'_>>::new(4, None);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
     assert!((cache).get(&7).unwrap().is_none());
     assert!(!cache.exists(&7));
@@ -100,6 +102,21 @@ fn repeated_missing_reads_keep_one_record_and_agree_with_exists() {
         assert!(!cache.exists(&7));
         assert_eq!(cache.cache.len(), 1);
     }
+}
+
+#[test]
+fn vm_cache_stores_opaque_entries_without_crdt_operations() {
+    let mut cache = VmStateCache::<u64, String>::new(CACHE_ID);
+    cache.insert(&7, Entry::Other("opaque".to_owned())).unwrap();
+
+    assert_eq!(
+        (&mut cache).get(&7).as_deref(),
+        Some(&Entry::Other("opaque".to_owned()))
+    );
+    assert_eq!(
+        cache.add_delta(&7, CrdtDelta::U64(DeltaOp::Add(1))),
+        Err(Error::State(StateError::TypeMismatch))
+    );
 }
 
 #[test]
@@ -277,7 +294,9 @@ fn short_operation_sequences_match_value_existence_model() {
 #[test]
 fn missing_key_can_be_deleted_created_read_and_deleted_again() {
     let key = 7;
-    let expected = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+    let expected: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
+        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    )));
     let fallback = CachedStore::new(4, None);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
 
@@ -300,7 +319,7 @@ fn missing_key_can_be_deleted_created_read_and_deleted_again() {
 #[test]
 fn deleting_a_previously_read_missing_key_succeeds() {
     let key = 7;
-    let fallback = CachedStore::new(4, None);
+    let fallback = CachedStore::<i32, Entry<'_>>::new(4, None);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
 
     assert!((&mut cache).get(&key).is_none());
@@ -311,7 +330,9 @@ fn deleting_a_previously_read_missing_key_succeeds() {
 
 #[test]
 fn create_handles_existing_records_and_rejects_live_values() {
-    let value = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
+        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, value.clone())]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
@@ -339,7 +360,9 @@ fn create_handles_existing_records_and_rejects_live_values() {
 #[test]
 fn receiver_mutability_selects_cache_population() {
     let key = 7;
-    let value = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
+        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(key, value.clone())]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
@@ -356,7 +379,9 @@ fn receiver_mutability_selects_cache_population() {
 #[test]
 fn mutable_read_populates_only_the_outer_cache() {
     let key = 7;
-    let value = CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(U64::default())));
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
+        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(key, value.clone())]);
     let inner = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
@@ -409,7 +434,7 @@ fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
     assert!(second.is_empty());
     assert_eq!(
         match first[0].data.current() {
-            CrdtValue::Numeric(Numeric::U64(value)) => value.value().copied(),
+            Entry::Crdt(CrdtValue::Numeric(Numeric::U64(value))) => value.value().copied(),
             _ => None,
         },
         Some(10)
@@ -424,7 +449,7 @@ fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
 
 #[test]
 fn create_then_delete_produces_no_transition() {
-    let fallback = CachedStore::<u64, CrdtValue<'_>>::new(4, None);
+    let fallback = CachedStore::<u64, Entry<'_>>::new(4, None);
     let mut block_cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
 
     let transitions = {
@@ -448,7 +473,7 @@ fn staged_deletion_hides_fallback_and_cannot_be_recreated() {
     fallback = write_cached(fallback, vec![(1, original)]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
 
-    cache = write_vm(cache, vec![(1, CrdtValue::None)]);
+    cache = write_vm(cache, vec![(1, Entry::Crdt(CrdtValue::None))]);
     assert!(!cache.exists(&1));
     assert!(cache.get(&1).unwrap().is_none());
 
@@ -477,7 +502,7 @@ fn stage_adds_a_delta_to_an_existing_value() {
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
-    let mut update = U64::default();
+    let mut update = Scalar::<u64>::default();
     update.add_delta(&DeltaOp::Add(5)).unwrap();
 
     cache = write_vm(cache, vec![(1, update.into())]);
@@ -496,7 +521,7 @@ fn stage_deletes_an_existing_value() {
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
 
-    cache = write_vm(cache, vec![(1, CrdtValue::None)]);
+    cache = write_vm(cache, vec![(1, Entry::Crdt(CrdtValue::None))]);
 
     assert!(!cache.exists(&1));
     assert!((&mut cache).get(&1).is_none());
@@ -507,7 +532,7 @@ fn stage_returns_delta_errors_without_changing_the_value() {
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, numeric_u64(u64::MAX))]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
-    let mut update = U64::default();
+    let mut update = Scalar::<u64>::default();
     update.add_delta(&DeltaOp::Add(1)).unwrap();
 
     let mut writer = VmStateCacheWriter::new(cache);
@@ -545,12 +570,15 @@ fn deleted_value_is_discarded_and_rejects_deltas() {
     let transitions = cache.drain().1;
     assert_eq!(transitions.len(), 1);
     assert_eq!(transitions[0].key, 1);
-    assert!(matches!(transitions[0].data.current(), CrdtValue::None));
+    assert!(matches!(
+        transitions[0].data.current(),
+        Entry::Crdt(CrdtValue::None)
+    ));
 }
 
 #[test]
 fn vm_cache_with_vm_cache_fallback() {
-    let fallback = CachedStore::<u64, CrdtValue<'_>>::new(4, None);
+    let fallback = CachedStore::<u64, Entry<'_>>::new(4, None);
     let mut block_cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
     let mut vm_cache = VmStateCache::new_with_fallback(CACHE_ID, &block_cache);
 
@@ -560,7 +588,7 @@ fn vm_cache_with_vm_cache_fallback() {
 
     let mut result: Result<(), Error>;
 
-    result = vm_cache.insert(&1, U64::new(0, 100).unwrap().into());
+    result = vm_cache.insert(&1, Scalar::<u64>::new(0, 100).unwrap().into());
     assert!(result.is_ok());
 
     result = vm_cache.insert(&1, NonComm::<[u8]>::new(vec![70, 71, 72]).unwrap().into());
@@ -720,7 +748,7 @@ fn vm_cache_with_vm_cache_fallback() {
 
 #[test]
 fn vm_cache_with_block_cache_fallback() {
-    let mut fallback = CachedStore::<u64, CrdtValue<'_>>::new(8, None);
+    let mut fallback = CachedStore::<u64, Entry<'_>>::new(8, None);
     fallback = write_cached(fallback, vec![(4, numeric_u64(44))]);
     let mut block_cache = BlockCache::new_with_fallback(Some(&fallback));
 
@@ -738,7 +766,7 @@ fn vm_cache_with_block_cache_fallback() {
         assert!(!block_cache.cache.contains_key(&4));
 
         vm_cache
-            .insert(&1, U64::new(0, 100).unwrap().into())
+            .insert(&1, Scalar::<u64>::new(0, 100).unwrap().into())
             .unwrap();
         assert!(matches!(
             vm_cache.insert(&1, NonComm::<[u8]>::new(vec![1]).unwrap().into()),
@@ -872,7 +900,10 @@ fn vm_cache_with_block_cache_fallback() {
     };
     block_cache = write_block(block_cache, transitions);
     assert!(block_cache.contains_key(&1).unwrap());
-    assert!(matches!(block_cache.get(&1), Ok(Some(CrdtValue::None))));
+    assert!(matches!(
+        block_cache.get(&1),
+        Ok(Some(Entry::Crdt(CrdtValue::None)))
+    ));
 
     let mut final_cache = VmStateCache::new_with_fallback(CACHE_ID, &block_cache);
     assert!(!final_cache.exists(&1));

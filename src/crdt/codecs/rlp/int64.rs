@@ -1,8 +1,8 @@
 use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
-use crate::crdt::int64::I64;
+use crate::crdt::Scalar;
 
-impl Encodable for I64 {
+impl Encodable for Scalar<i64> {
     fn encode(&self, out: &mut dyn BufMut) {
         let has_value = 1_u8;
         let value = self.value;
@@ -46,7 +46,7 @@ impl Encodable for I64 {
     }
 }
 
-impl Decodable for I64 {
+impl Decodable for Scalar<i64> {
     fn decode(input: &mut &[u8]) -> Result<Self, Error> {
         let mut payload = Header::decode_bytes(input, true)?;
         let has_value = u8::decode(&mut payload)?;
@@ -64,7 +64,7 @@ impl Decodable for I64 {
 
         Ok(Self {
             value: if has_value == 1 { value } else { 0 },
-            delta: 0,
+            delta: None,
             limits: if has_limits == 1 {
                 (lower, upper)
             } else {
@@ -82,21 +82,21 @@ mod tests {
 
     #[test]
     fn i64_storage_round_trip_ignores_delta() {
-        let dirty = I64 {
+        let dirty = Scalar {
             value: -100,
-            delta: 25,
+            delta: Some(crate::crdt::state::DeltaOp::Add(25)),
             limits: (-1_000, 1_000),
         };
 
-        let clean = I64 {
+        let clean = Scalar {
             value: dirty.value,
-            delta: 0,
+            delta: None,
             limits: dirty.limits,
         };
 
         assert_eq!(encode(&dirty), encode(&clean));
         let encoded = encode(&dirty);
-        let decoded = decode_exact::<I64>(&encoded).unwrap();
+        let decoded = decode_exact::<Scalar<i64>>(&encoded).unwrap();
 
         assert!(decoded == clean);
         assert_eq!(dirty.length(), encoded.len());

@@ -1,19 +1,23 @@
+use super::Error;
 use crate::crdt::state::CrdtDelta;
-use crate::crdt::state::{Status, Tracked, status, value::CrdtValue, value::ValueSnapshots};
-use crate::execution::error::Error;
+use crate::crdt::state::{
+    StateError, Status, Tracked, op::Operations, status::Tag, value::CrdtValue,
+    value::ValueSnapshots,
+};
+use crate::execution::cache::Entry;
 use crate::execution::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-pub struct VmStateCache<'a, K> {
+pub struct VmStateCache<'a, K, T = ()> {
     pub(super) id: u64,
-    pub(super) cache: HashMap<K, Tracked<CrdtValue<'a>, CrdtValue<'a>>>,
-    pub(super) fallback: Option<&'a dyn FallbackStore<K, CrdtValue<'a>>>,
+    pub(super) cache: HashMap<K, Tracked<Entry<'a, T>, Entry<'a, T>>>,
+    pub(super) fallback: Option<&'a dyn FallbackStore<K, Entry<'a, T>>>,
 }
 
-impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
+impl<'a, K: std::hash::Hash + Eq, T: Clone> VmStateCache<'a, K, T> {
     pub fn new(id: u64) -> Self {
         Self {
             id,
@@ -23,7 +27,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     }
 
     /// Create an empty cache backed by a read-only fallback.
-    pub fn new_with_fallback(id: u64, fallback: &'a dyn FallbackStore<K, CrdtValue<'a>>) -> Self {
+    pub fn new_with_fallback(id: u64, fallback: &'a dyn FallbackStore<K, Entry<'a, T>>) -> Self {
         Self {
             id,
             cache: HashMap::new(),
@@ -43,20 +47,20 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     ///
     /// Use `(&mut cache).get(key)` to select this method when `FallbackStore`
     /// is in scope. `(&cache).get(key)` selects the untracked trait method.
-    pub fn get(&mut self, key: &K) -> Option<Cow<'_, CrdtValue<'a>>>
+    pub fn get(&mut self, key: &K) -> Option<Cow<'_, Entry<'a, T>>>
     where
         K: Clone,
     {
         self.try_get(key).expect("fallback store read failed")
     }
 
-    pub fn try_get(&mut self, key: &K) -> Result<Option<Cow<'_, CrdtValue<'a>>>, Error>
+    pub fn try_get(&mut self, key: &K) -> Result<Option<Cow<'_, Entry<'a, T>>>, Error>
     where
         K: Clone,
     {
         let tracked = self.try_get_or_populate_tracked(key)?;
         let touched = tracked.has_delta();
-        let Some(value) = tracked.get() else {
+        let Some(value) = tracked.get_entry() else {
             return Ok(None);
         };
 
@@ -68,18 +72,18 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     }
 
     /// Check whether creation is allowed and record checks for tracked keys.
-    pub fn insert(&mut self, key: &K, value: CrdtValue<'static>) -> Result<(), Error>
+    pub fn insert(&mut self, key: &K, value: Entry<'static, T>) -> Result<(), Error>
     where
         K: Clone,
     {
-        if matches!(value, CrdtValue::None) {
+        if value.is_missing() {
             return Err(StoreError::ValueCannotBeStripped.into());
         }
 
         let tracked = self.try_get_or_populate_tracked(key)?;
 
         if tracked.is_live() {
-            tracked.check();
+            tracked.check_entry();
             return Err(StoreError::ValueCannotBeRecreated.into());
         }
         tracked.set(value).map_err(Error::from)
@@ -108,7 +112,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
                 .map(|fallback| fallback.get_untracked(key))
                 .transpose()?
                 .flatten()
-                .is_some_and(|value| !matches!(value, CrdtValue::None))),
+                .is_some_and(|value| !value.is_missing())),
         }
     }
 
@@ -126,7 +130,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
         &mut self,
     ) -> (
         Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-        Vec<ExecutionOutput<K, Tracked<(), CrdtValue<'a>>>>,
+        Vec<ExecutionOutput<K, Tracked<(), Entry<'static, T>>>>,
     )
     where
         K: Clone,
@@ -135,7 +139,7 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
         let mut transitions = Vec::new();
 
         for (key, tracked) in self.cache.drain() {
-            let states = status::reduce_to_statuses(&tracked.value);
+            let states = reduce_entry_statuses(&tracked.value);
             let k = key.clone();
             access_records.push(ExecutionOutput {
                 id: self.id,
@@ -169,17 +173,17 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
     pub(super) fn try_get_or_populate_tracked(
         &mut self,
         key: &K,
-    ) -> Result<&mut Tracked<CrdtValue<'a>, CrdtValue<'a>>, StoreError>
+    ) -> Result<&mut Tracked<Entry<'a, T>, Entry<'a, T>>, StoreError>
     where
         K: Clone,
     {
         if !self.cache.contains_key(key) {
             let tracked = match self.fallback {
                 Some(fallback) => fallback.get_untracked(key)?.map_or_else(
-                    || Tracked::new_owned_empty(self.id),
-                    |value| Tracked::new_owned_existing(value, self.id),
+                    || Tracked::new_entry_empty(self.id),
+                    |value| Tracked::new_entry_existing(value, self.id),
                 ),
-                None => Tracked::new_owned_empty(self.id),
+                None => Tracked::new_entry_empty(self.id),
             };
             self.cache.insert(key.clone(), tracked);
         }
@@ -189,9 +193,10 @@ impl<'a, K: std::hash::Hash + Eq> VmStateCache<'a, K> {
 
 /// VmStateCache as the fallback store for another VmStateCache,
 /// allowing for a layered caching mechanism.
-impl<'cache, 'value, K> FallbackStore<K, CrdtValue<'value>> for VmStateCache<'cache, K>
+impl<'cache, 'value, K, T> FallbackStore<K, Entry<'value, T>> for VmStateCache<'cache, K, T>
 where
     K: std::hash::Hash + Eq + Send + Sync,
+    T: Clone + Send + Sync,
     'cache: 'value,
 {
     /// Check for a live value locally or in the fallback.
@@ -203,7 +208,7 @@ where
     }
 
     /// Read without tracking; local deletions hide fallback values.
-    fn get(&self, key: &K) -> Result<Option<CrdtValue<'value>>, StoreError> {
+    fn get(&self, key: &K) -> Result<Option<Entry<'value, T>>, StoreError> {
         match self.cache.get(key) {
             Some(tracked) => {
                 if tracked.is_live() {
@@ -220,7 +225,7 @@ where
         }
     }
 
-    fn get_untracked(&self, key: &K) -> Result<Option<CrdtValue<'value>>, StoreError> {
+    fn get_untracked(&self, key: &K) -> Result<Option<Entry<'value, T>>, StoreError> {
         match self.cache.get(key) {
             Some(tracked) => Ok(Some(tracked.current().clone())),
             None => match self.fallback {
@@ -229,6 +234,133 @@ where
             },
         }
     }
+}
+
+impl<'a, T: Clone> Tracked<Entry<'a, T>, Entry<'a, T>> {
+    fn new_entry_empty(id: u64) -> Self {
+        Self::new_entry_states(
+            id,
+            ValueSnapshots {
+                original: Entry::Crdt(CrdtValue::None),
+                current: Entry::Crdt(CrdtValue::None),
+            },
+        )
+    }
+
+    fn new_entry_existing(value: Entry<'a, T>, id: u64) -> Self {
+        Self::new_entry_states(
+            id,
+            ValueSnapshots {
+                original: value.clone(),
+                current: value,
+            },
+        )
+    }
+
+    fn new_entry_states(id: u64, value: ValueSnapshots<Entry<'a, T>, Entry<'a, T>>) -> Self {
+        Self {
+            id,
+            value,
+            operations: Operations::default(),
+        }
+    }
+
+    pub(super) fn set(&mut self, value: Entry<'a, T>) -> Result<(), StoreError> {
+        if value.is_missing() {
+            return Err(StoreError::SetNoneToValue);
+        }
+        self.operations.deltas.increment();
+        if self.is_live() || self.is_deleted() {
+            return Err(StoreError::ValueCannotBeRecreated);
+        }
+        self.value.current = value;
+        Ok(())
+    }
+
+    pub(super) fn replace(&mut self, value: Entry<'a, T>) -> Result<(), StoreError> {
+        if value.is_missing() {
+            return Err(StoreError::SetNoneToValue);
+        }
+        if self.is_deleted() {
+            return Err(StoreError::ValueCannotBeRecreated);
+        }
+        self.operations.deltas.increment();
+        self.value.current = value;
+        Ok(())
+    }
+
+    pub(super) fn add_delta(&mut self, delta: CrdtDelta) -> Result<(), StateError> {
+        if !self.is_live() {
+            return Err(StateError::CannotAddDeltaToMissingValue);
+        }
+        self.operations.deltas.increment();
+        match &mut self.value.current {
+            Entry::Crdt(value) => value.add_delta(&delta),
+            Entry::Other(_) => Err(StateError::TypeMismatch),
+        }
+    }
+
+    pub(super) fn remove(&mut self) -> Result<(), StoreError> {
+        self.operations.removes.increment();
+        self.value.current = Entry::Crdt(CrdtValue::None);
+        Ok(())
+    }
+
+    fn get_entry(&mut self) -> Option<&Entry<'a, T>> {
+        self.operations.reads.increment();
+        self.is_live().then_some(&self.value.current)
+    }
+
+    fn check_entry(&mut self) {
+        self.operations.existence_checks.increment();
+    }
+
+    fn has_delta(&self) -> bool {
+        self.operations.deltas.count() > 0
+    }
+
+    fn is_live(&self) -> bool {
+        !self.value.current.is_missing()
+    }
+
+    pub(super) fn is_deleted(&self) -> bool {
+        self.value.current.is_missing() && !self.value.original.is_missing()
+    }
+
+    fn is_creation_cancelled(&self) -> bool {
+        self.value.current.is_missing() && self.value.original.is_missing()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.operations.deltas.count() == 0 && self.operations.removes.count() == 0
+    }
+}
+
+fn reduce_entry_statuses<T>(
+    value: &ValueSnapshots<Entry<'_, T>, Entry<'_, T>>,
+) -> ValueSnapshots<Status, Status> {
+    let original = if value.original.is_missing() {
+        Status::Tag(Tag::Missing)
+    } else {
+        Status::Tag(Tag::Stripped)
+    };
+
+    let current = match &value.current {
+        Entry::Crdt(CrdtValue::Numeric(value)) => {
+            Status::Value(CrdtValue::Numeric(value.clone().into_owned()))
+        }
+        Entry::Crdt(CrdtValue::None) => {
+            if original == Status::Tag(Tag::Missing) {
+                Status::Tag(Tag::Missing)
+            } else {
+                Status::Tag(Tag::Deleted)
+            }
+        }
+        Entry::Crdt(value) if value.has_delta() => Status::Tag(Tag::Stripped),
+        Entry::Crdt(_) | Entry::Other(_) => Status::Tag(Tag::Default),
+    };
+
+    ValueSnapshots { original, current }
 }
 
 #[cfg(test)]

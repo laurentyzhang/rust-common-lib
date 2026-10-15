@@ -11,8 +11,13 @@ mod block_executor;
 mod call_router;
 mod dispatch;
 mod factory;
+pub mod inspector;
+pub mod key;
 mod statedb;
 mod transaction;
+
+#[cfg(test)]
+mod tests;
 
 pub use account_info::{AccountDecodeError, AccountInfoCodec};
 pub use backend::ArcologyBlockExecutorFactory;
@@ -23,5 +28,6 @@ pub use call_router::{
 };
 pub use dispatch::dispatch_precompile;
 pub use factory::{ArcologyEvm, ArcologyEvmFactory, PrecompileCollisionError};
-pub use statedb::{Key, KeyCodec, StateDB};
+// pub use key::Key;
+pub use statedb::StateDB;
 pub use transaction::ArcologyTx;

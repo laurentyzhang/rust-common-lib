@@ -1,9 +1,9 @@
 use alloy_primitives::U256 as AlloyU256;
 use alloy_rlp::{BufMut, Decodable, Encodable, Error, Header, length_of_length};
 
-use crate::crdt::u256::U256;
+use crate::crdt::Scalar;
 
-impl Encodable for U256 {
+impl Encodable for Scalar<AlloyU256> {
     fn encode(&self, out: &mut dyn BufMut) {
         let has_value = 1_u8;
         let value = self.value;
@@ -41,7 +41,7 @@ impl Encodable for U256 {
     }
 }
 
-impl Decodable for U256 {
+impl Decodable for Scalar<AlloyU256> {
     fn decode(input: &mut &[u8]) -> Result<Self, Error> {
         let mut payload = Header::decode_bytes(input, true)?;
         let has_value = u8::decode(&mut payload)?;
@@ -79,13 +79,13 @@ mod tests {
 
     #[test]
     fn u256_storage_round_trip_ignores_delta() {
-        let dirty = U256 {
+        let dirty = Scalar {
             value: AlloyU256::from(1_u64) << 200,
             delta: Some(DeltaOp::Add(AlloyU256::from(25))),
             limits: (AlloyU256::ZERO, AlloyU256::MAX),
         };
 
-        let clean = U256 {
+        let clean = Scalar {
             value: dirty.value,
             delta: None,
             limits: dirty.limits,
@@ -93,7 +93,7 @@ mod tests {
 
         assert_eq!(encode(&dirty), encode(&clean));
         let encoded = encode(&dirty);
-        let decoded = decode_exact::<U256>(&encoded).unwrap();
+        let decoded = decode_exact::<Scalar<AlloyU256>>(&encoded).unwrap();
 
         assert!(decoded == clean);
         assert_eq!(dirty.length(), encoded.len());

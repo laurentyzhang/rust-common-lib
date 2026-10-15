@@ -1,14 +1,16 @@
-pub mod int64;
-pub mod non_comm;
-pub mod set;
-pub mod u256;
-pub mod uint64;
+pub mod commutative;
+pub mod non_commutative;
 
-pub use int64::I64;
-pub use non_comm::NonComm;
-pub use set::Set;
-pub use u256::U256;
-pub use uint64::U64;
+pub use commutative::{Scalar, Set, Type};
+pub use non_commutative::NonComm;
+
+pub mod set {
+    pub use super::commutative::set::Set;
+}
+
+pub mod non_comm {
+    pub use super::non_commutative::NonComm;
+}
 
 #[cfg(test)]
 pub mod tests;

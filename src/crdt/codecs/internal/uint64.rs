@@ -1,4 +1,4 @@
-use crate::crdt::uint64::U64;
+use crate::crdt::Scalar;
 
 use super::{Reader, Result, Writer};
 
@@ -8,11 +8,11 @@ const LIMITS: u8 = 4;
 // Existing additive encodings retain their original flags and layout.
 const SUBTRACT: u8 = 8;
 
-pub fn encoded_size(value: &U64) -> Result<u64> {
+pub fn encoded_size(value: &Scalar<u64>) -> Result<u64> {
     Ok(25 + u64::from(value.delta.is_some()) * 8)
 }
 
-pub fn encode(value: &U64) -> Result<Vec<u8>> {
+pub fn encode(value: &Scalar<u64>) -> Result<Vec<u8>> {
     let size =
         usize::try_from(encoded_size(value)?).map_err(|_| "encoded size exceeds usize::MAX")?;
     let mut output = vec![0; size];
@@ -20,7 +20,7 @@ pub fn encode(value: &U64) -> Result<Vec<u8>> {
     Ok(output)
 }
 
-pub fn encode_to(value: &U64, output: &mut [u8]) -> Result<u64> {
+pub fn encode_to(value: &Scalar<u64>, output: &mut [u8]) -> Result<u64> {
     let size = encoded_size(value)?;
     if (output.len() as u64) < size {
         return Err("output buffer too small");
@@ -46,7 +46,7 @@ pub fn encode_to(value: &U64, output: &mut [u8]) -> Result<u64> {
     Ok(writer.finish() as u64)
 }
 
-pub fn decode(input: &[u8]) -> Result<U64> {
+pub fn decode(input: &[u8]) -> Result<Scalar<u64>> {
     let mut reader = Reader::new(input);
     let flags = reader.read_u8()?;
     if flags & !(VALUE | DELTA | LIMITS | SUBTRACT) != 0
@@ -78,7 +78,7 @@ pub fn decode(input: &[u8]) -> Result<U64> {
     };
     reader.finish()?;
 
-    Ok(U64 {
+    Ok(Scalar {
         value,
         delta,
         limits,

@@ -1,3 +1,5 @@
+//! Commutative set CRDT.
+
 use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
 use crate::crdt::state::{DeltaOp, StateError};

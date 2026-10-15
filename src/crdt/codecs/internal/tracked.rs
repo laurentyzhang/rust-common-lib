@@ -168,11 +168,8 @@ mod tests {
     use alloy_primitives::U256 as AlloyU256;
 
     use crate::crdt::{
-        NonComm, Set,
-        int64::I64,
+        NonComm, Scalar, Set,
         state::{status::Tag, value::ValueSnapshots},
-        u256::U256,
-        uint64::U64,
     };
 
     use super::*;
@@ -202,10 +199,10 @@ mod tests {
             Status::Tag(Tag::Default),
             Status::Tag(Tag::Stripped),
             Status::Value(NonComm::<[u8]>::new(vec![1, 2, 3]).unwrap().into()),
-            Status::Value(I64::new(-10, 10).unwrap().into()),
-            Status::Value(U64::new(0, 100).unwrap().into()),
+            Status::Value(Scalar::<i64>::new(-10, 10).unwrap().into()),
+            Status::Value(Scalar::<u64>::new(0, 100).unwrap().into()),
             Status::Value(
-                U256::new(AlloyU256::ZERO, AlloyU256::from(100))
+                Scalar::<AlloyU256>::new(AlloyU256::ZERO, AlloyU256::from(100))
                     .unwrap()
                     .into(),
             ),

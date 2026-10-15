@@ -62,29 +62,3 @@ impl AccountInfoCodec for AccountInfo {
         })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn account_info_round_trips() {
-        let code = Bytecode::new_raw(vec![0x60, 0x01, 0x00].into());
-        let info = AccountInfo::new(U256::from(42), 7, code.hash_slow(), code);
-
-        let decoded = AccountInfo::decode(&info.encode()).unwrap();
-
-        assert_eq!(decoded.balance, info.balance);
-        assert_eq!(decoded.nonce, info.nonce);
-        assert_eq!(decoded.code_hash, info.code_hash);
-        assert_eq!(
-            decoded.code.unwrap().original_bytes(),
-            info.code.unwrap().original_bytes()
-        );
-    }
-
-    #[test]
-    fn malformed_account_info_is_rejected() {
-        assert_eq!(AccountInfo::decode(&[]), Err(AccountDecodeError));
-    }
-}
