@@ -4,6 +4,10 @@ use super::{
     ClosureCallHook, ExitStatus, RegisterHookError, StateDB, arcology_address,
 };
 use crate::execution::VmStateCache;
+use crate::{
+    execution::evm::key::{Key, KeyCodec},
+    store::StoreCodec,
+};
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
     revm::{
@@ -43,6 +47,22 @@ fn input(target: Address, gas_limit: u64) -> CallHookInput<'static> {
         input: &[0xde, 0xad, 0xbe, 0xef],
         gas_limit,
         scheme: CallScheme::Call,
+    }
+}
+
+#[test]
+fn evm_keys_round_trip() {
+    let address = Address::repeat_byte(0x11);
+    let keys = [
+        Key::Account(address),
+        Key::Balance(address),
+        Key::Code(address),
+        Key::Storage(address, U256::from(7)),
+    ];
+
+    for key in keys {
+        let encoded = KeyCodec.encode(&key).unwrap();
+        assert_eq!(KeyCodec.decode(&encoded).unwrap(), key);
     }
 }
 

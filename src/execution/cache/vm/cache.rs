@@ -17,6 +17,16 @@ pub struct VmStateCache<'a, K, T = ()> {
     pub(super) fallback: Option<&'a dyn FallbackStore<K, Entry<'a, T>>>,
 }
 
+impl<'a, K: std::hash::Hash + Eq, T: Clone> Default for VmStateCache<'a, K, T> {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            cache: HashMap::new(),
+            fallback: None,
+        }
+    }
+}
+
 impl<'a, K: std::hash::Hash + Eq, T: Clone> VmStateCache<'a, K, T> {
     pub fn new(id: u64) -> Self {
         Self {

@@ -6,32 +6,45 @@ use alloy_evm::revm::bytecode::Bytecode;
 use alloy_evm::revm::state::{AccountInfo, EvmState};
 use alloy_evm::revm::{Database, DatabaseCommit};
 use alloy_primitives::{Address, B256, U256};
+use op_revm::revm::state::bal::Bal;
 
-use super::account_info::{AccountDecodeError, AccountInfoCodec};
+use super::account_info::AccountDecodeError;
 use super::key::Key;
 use crate::committer::traits::TransitionWriter;
+use crate::crdt::Scalar;
 use crate::crdt::state::{DeltaOp, value::CrdtValue};
-use crate::crdt::{NonComm as CrdtNonComm, Scalar};
 use crate::execution::{VmStateCache, VmStateCacheWriter, cache::Entry};
 // use crate::store::StoreError;
 
 /// Reads and writes EVM state through a `VmStateCache`.
 pub struct StateDB<'a> {
-    execution_store: VmStateCache<'a, Key>,
+    execution_store: VmStateCache<'a, Key, AccountInfo>,
     /// Code seen by `basic`, so `code_by_hash` can answer later.
     codes: HashMap<B256, Bytecode>,
 }
 
 impl<'a> StateDB<'a> {
-    pub fn new(execution_store: VmStateCache<'a, Key>) -> Self {
+    pub fn new(execution_store: VmStateCache<'a, Key, AccountInfo>) -> Self {
         Self {
             execution_store,
             codes: HashMap::new(),
         }
     }
 
+    pub fn get_balance(&mut self, address: Address) -> Scalar<U256> {
+        self.execution_store
+            .get(&Key::Balance(address))
+            .and_then(|entry| match entry.as_crdt()? {
+                CrdtValue::Numeric(crate::crdt::state::Numeric::U256(balance)) => {
+                    Some(balance.as_ref().clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     #[cfg(test)]
-    pub(super) fn execution_store(&mut self) -> &mut VmStateCache<'a, Key> {
+    pub(super) fn execution_store(&mut self) -> &mut VmStateCache<'a, Key, AccountInfo> {
         &mut self.execution_store
     }
 }
@@ -40,15 +53,22 @@ impl Database for StateDB<'_> {
     type Error = AccountDecodeError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let Some(encoded) = self
+        // Here we assume that a code read has already occurred.
+        // Unlike the balance, code is only accessed when needed.
+        // It is only accessed when the account info indicates that code exists.
+        self.execution_store.get(&Key::Code(address));
+
+        let Some(info) = self
             .execution_store
             .get(&Key::Account(address))
-            .and_then(|value| value.as_bytes().map(<[u8]>::to_vec))
+            .and_then(|entry| match entry.as_ref() {
+                Entry::Other(info) => Some(info.clone()),
+                Entry::Crdt(_) => None,
+            })
         else {
             return Ok(None);
         };
 
-        let info = AccountInfo::decode(&encoded)?;
         if let Some(code) = &info.code {
             self.codes.insert(info.code_hash, code.clone());
         }
@@ -94,11 +114,7 @@ impl DatabaseCommit for StateDB<'_> {
                 continue;
             }
 
-            let encoded = account.info.encode();
-            let value = CrdtNonComm::<[u8]>::new(encoded)
-                .expect("encoded EVM account must be a valid byte value")
-                .into();
-            updates.push((Key::Account(address), Entry::Crdt(value)));
+            updates.push((Key::Account(address), Entry::Other(account.info)));
 
             updates.extend(account.storage.into_iter().filter_map(|(slot, value)| {
                 if !value.is_changed() {
