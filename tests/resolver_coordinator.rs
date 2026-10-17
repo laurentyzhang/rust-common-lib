@@ -4,7 +4,7 @@ use rust_common_lib::{
         Crdt, Scalar,
         state::{CrdtDelta, CrdtValue, DeltaOp, Numeric, Status, Tracked, status::Tag},
     },
-    execution::{VmStateCache, output::ExecutionOutput},
+    execution::{Entry, VmStateCache, output::ExecutionOutput},
     resolver::{
         ConflictChecker,
         reason::{AccessConflict, NumericError, Reason},
@@ -14,12 +14,15 @@ use rust_common_lib::{
 type Record = ExecutionOutput<u64, Tracked<Status, Status>>;
 
 fn combined_records() -> Vec<Record> {
-    let mut fallback = VmStateCache::new(0);
+    let mut fallback: VmStateCache<'_, u64> = VmStateCache::new(0);
     fallback
-        .insert(&10, CrdtValue::from(Scalar::<u64>::default()))
+        .insert(&10, Entry::Crdt(CrdtValue::from(Scalar::<u64>::default())))
         .unwrap();
     fallback
-        .insert(&20, CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap()))
+        .insert(
+            &20,
+            Entry::Crdt(CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap())),
+        )
         .unwrap();
 
     let mut deleter = VmStateCache::new_with_fallback(11, &fallback);
@@ -109,9 +112,12 @@ fn conflict_result_builds_commit_and_reject_plans() {
 
 #[test]
 fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
-    let mut fallback = VmStateCache::new(0);
+    let mut fallback: VmStateCache<'_, u64> = VmStateCache::new(0);
     fallback
-        .insert(&7, CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap()))
+        .insert(
+            &7,
+            Entry::Crdt(CrdtValue::from(Scalar::<i64>::new(-5, 5).unwrap())),
+        )
         .unwrap();
     let mut first = VmStateCache::new_with_fallback(1, &fallback);
     first
@@ -199,8 +205,8 @@ fn numeric_reads_remain_visible_to_access_detection() {
             CrdtDelta::U256(DeltaOp::Add(Number::from(1))),
         ),
     ] {
-        let mut fallback = VmStateCache::new(0);
-        fallback.insert(&7, value).unwrap();
+        let mut fallback: VmStateCache<'_, u64> = VmStateCache::new(0);
+        fallback.insert(&7, Entry::Crdt(value)).unwrap();
         let mut reader = VmStateCache::new_with_fallback(1, &fallback);
         assert!(reader.get(&7).is_some());
         let mut writer = VmStateCache::new_with_fallback(2, &fallback);
@@ -269,8 +275,8 @@ fn numeric_overflow_and_underflow_reach_the_coordinator_for_every_numeric_type()
             true,
         ),
     ] {
-        let mut fallback = VmStateCache::new(0);
-        fallback.insert(&7, value).unwrap();
+        let mut fallback: VmStateCache<'_, u64> = VmStateCache::new(0);
+        fallback.insert(&7, Entry::Crdt(value)).unwrap();
         let mut first = VmStateCache::new_with_fallback(1, &fallback);
         first.add_delta(&7, first_delta).unwrap();
         let mut second = VmStateCache::new_with_fallback(2, &fallback);

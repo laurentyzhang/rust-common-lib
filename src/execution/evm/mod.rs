@@ -7,12 +7,14 @@
 mod account_info;
 #[doc(hidden)]
 pub mod backend;
-mod block_executor;
 mod call_router;
 mod dispatch;
+mod executor;
 mod factory;
 pub mod inspector;
 pub mod key;
+mod outcome;
+mod result_and_state;
 mod statedb;
 mod transaction;
 
@@ -21,13 +23,16 @@ mod tests;
 
 pub use account_info::{AccountDecodeError, AccountInfoCodec};
 pub use backend::ArcologyBlockExecutorFactory;
-pub use block_executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use call_router::{
     ArcologyApi, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
     CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, arcology_address,
 };
 pub use dispatch::dispatch_precompile;
+pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig, ScheduledTransactionResult};
 pub use factory::{ArcologyEvm, ArcologyEvmFactory, PrecompileCollisionError};
+pub use inspector::StateReads;
+pub use outcome::TransactionOutcome;
 // pub use key::Key;
+pub use result_and_state::MergeableResultAndState;
 pub use statedb::StateDB;
 pub use transaction::ArcologyTx;

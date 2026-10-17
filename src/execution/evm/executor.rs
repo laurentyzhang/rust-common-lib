@@ -1,15 +1,15 @@
 //! Arcology's parallel execution worker set.
 
 use alloy_evm::block::{
-    BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, GasOutput, StateDB,
+    BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult,
 };
-use alloy_evm::revm::inspector::NoOpInspector;
-use alloy_evm::{EvmEnv, EvmFactory};
+use alloy_evm::{Evm, EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
 
-use alloy_evm::revm::context_interface::Transaction;
+use alloy_evm::revm::context_interface::{Transaction, result::HaltReason};
 
-use crate::scheduler::{Generation, Job, Scheduler};
+use super::{inspector::StateReadRecorder, outcome::TransactionOutcome};
+use crate::scheduler::{Generation, ID, Job, Scheduler};
 
 /// Settings shared by every worker of a block.
 pub struct ParaBlockConfig<F: BlockExecutorFactory> {
@@ -18,8 +18,11 @@ pub struct ParaBlockConfig<F: BlockExecutorFactory> {
     pub ctx: OpBlockExecutionCtx,
 }
 
-/// A result tagged with the job's original index in the block.
-pub type IndexedResult<R> = (u64, Result<(GasOutput, R), BlockExecutionError>);
+/// A transaction result tagged with its stable global ID and scheduled location.
+pub struct ScheduledTransactionResult<R, H = HaltReason> {
+    pub id: ID,
+    pub outcome: Result<TransactionOutcome<R, H>, BlockExecutionError>,
+}
 
 /// Runs the transactions of a generation on parallel workers.
 ///
@@ -33,7 +36,7 @@ pub struct ArcologyParaBlockExecutor<F: BlockExecutorFactory> {
 
 impl<F: BlockExecutorFactory> ArcologyParaBlockExecutor<F> {
     /// `set_cumulative` writes a cumulative gas value into a receipt.
-    pub(super) fn new(
+    pub fn new(
         factory: F,
         config: ParaBlockConfig<F>,
         set_cumulative: impl Fn(&mut F::Receipt, u64) + Send + Sync + 'static,
@@ -50,23 +53,32 @@ impl<F: BlockExecutorFactory> ArcologyParaBlockExecutor<F> {
     /// Failed transactions don't count toward the total.
     pub fn finish_block(
         &self,
-        mut results: Vec<IndexedResult<F::Receipt>>,
-    ) -> Vec<IndexedResult<F::Receipt>> {
+        mut results: Vec<
+            ScheduledTransactionResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>,
+        >,
+    ) -> Vec<ScheduledTransactionResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
+    {
         // Please note that the results are sorted by the original transaction index.
         // So the execution order is NOT necessarily the same as the original order.
-        results.sort_by_key(|(index, _)| *index);
+        results.sort_by_key(|result| result.id);
         self.apply_cumulative_gas(&mut results);
         results
     }
 
     /// Writes the running gas total into each successful receipt, in the given order,
     /// and returns the total.
-    pub fn apply_cumulative_gas(&self, results: &mut [IndexedResult<F::Receipt>]) -> u64 {
+    pub fn apply_cumulative_gas(
+        &self,
+        results: &mut [ScheduledTransactionResult<
+            F::Receipt,
+            <F::EvmFactory as EvmFactory>::HaltReason,
+        >],
+    ) -> u64 {
         let mut cumulative = 0;
-        for (_, result) in results.iter_mut() {
-            if let Ok((gas, receipt)) = result {
-                cumulative += gas.tx_gas_used();
-                (self.set_cumulative)(receipt, cumulative);
+        for result in results {
+            if let Ok(execution) = &mut result.outcome {
+                cumulative += execution.result_and_state.result.tx_gas_used();
+                (self.set_cumulative)(&mut execution.receipt, cumulative);
             }
         }
         cumulative
@@ -87,18 +99,18 @@ where
         make_db: &(impl Fn() -> DB + Sync),
         scheduler: &impl Scheduler<(TxEnv, R)>,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
-    ) -> Vec<IndexedResult<F::Receipt>>
+    ) -> Vec<ScheduledTransactionResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
     where
         DB: StateDB,
         F::Receipt: Clone + Send,
         TxEnv: Transaction,
-        (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, NoOpInspector>>,
+        (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
     {
         // Convert the incoming transactions into jobs with assigned IDs.
         let jobs = transactions
             .into_iter()
             .enumerate()
-            .map(|(index, tx)| Job::new(index as u64, tx));
+            .map(|(index, tx)| Job::new(ID::new(index as u64), tx));
 
         // Schedule the jobs using the provided scheduler and execute the resulting generations
         // in sequence with parallelism within each generation.
@@ -119,13 +131,13 @@ where
         &self,
         make_db: &(impl Fn() -> DB + Sync),
         generation: Generation<Tx>,
-    ) -> Vec<IndexedResult<F::Receipt>>
+    ) -> Vec<ScheduledTransactionResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
     where
         DB: StateDB,
         F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, NoOpInspector>>,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
     {
-        let all: Vec<(u64, Tx)> = generation
+        let all: Vec<(ID, Tx)> = generation
             .sequences
             .into_iter()
             .flat_map(|seq| seq.jobs)
@@ -133,9 +145,9 @@ where
             .collect();
         let chunk_len = all.len().div_ceil(self.config.workers.max(1)).max(1);
         let mut all = all.into_iter();
-        let mut chunks: Vec<Vec<(u64, Tx)>> = Vec::new();
+        let mut chunks: Vec<Vec<(ID, Tx)>> = Vec::new();
         loop {
-            let chunk: Vec<(u64, Tx)> = all.by_ref().take(chunk_len).collect();
+            let chunk: Vec<(ID, Tx)> = all.by_ref().take(chunk_len).collect();
             if chunk.is_empty() {
                 break;
             }
@@ -152,21 +164,39 @@ where
                     scope.spawn(move || {
                         chunk
                             .into_iter()
-                            .map(|(index, tx)| {
-                                let result = (|| {
-                                    let evm =
-                                        factory.evm_factory().create_evm(make_db(), env.clone());
+                            .map(|(id, tx)| {
+                                let outcome = (|| {
+                                    // Record state reads for later conflict detection.
+                                    let recorder = StateReadRecorder::new(id.global);
+                                    let evm = factory.evm_factory().create_evm_with_inspector(
+                                        make_db(),
+                                        env.clone(),
+                                        recorder,
+                                    );
                                     let mut executor = factory.create_executor(evm, ctx.clone());
-                                    let gas = executor.execute_transaction(tx)?;
+                                    let mut result_and_state = None;
+                                    executor.execute_transaction_with_result_closure(
+                                        tx,
+                                        |result| {
+                                            result_and_state = Some(result.result().clone());
+                                        },
+                                    )?;
                                     // The executor is new, so its only receipt belongs to this tx.
                                     let receipt = executor
                                         .receipts()
                                         .last()
                                         .cloned()
                                         .expect("a committed transaction has a receipt");
-                                    Ok((gas, receipt))
+                                    let (_, recorder, _) = executor.evm_mut().components_mut();
+                                    let reads = recorder.drain();
+                                    Ok(TransactionOutcome {
+                                        result_and_state: result_and_state
+                                            .expect("a successful execution has a result"),
+                                        receipt,
+                                        reads,
+                                    })
                                 })();
-                                (index, result)
+                                ScheduledTransactionResult { id, outcome }
                             })
                             .collect::<Vec<_>>()
                     })

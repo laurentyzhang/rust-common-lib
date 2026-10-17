@@ -65,24 +65,3 @@ pub struct TransactionConflictReport {
     pub tx_id: u64,
     pub access_conflicts: Vec<AccessConflict>,
 }
-
-impl AccessConflict {
-    pub(crate) fn with_key<K: std::fmt::Debug>(self, key: &K) -> Self {
-        match self {
-            Self::CreationConflict(message) => {
-                Self::CreationConflict(format!("{message}; key={key:?}"))
-            }
-            Self::ExistenceConflict(message) => {
-                Self::ExistenceConflict(format!("{message}; key={key:?}"))
-            }
-            Self::ReadConflict(message) => Self::ReadConflict(format!("{message}; key={key:?}")),
-            Self::DeltaConflict(message) => Self::DeltaConflict(format!("{message}; key={key:?}")),
-            Self::RemoveConflict(message) => {
-                Self::RemoveConflict(format!("{message}; key={key:?}"))
-            }
-            Self::ConcurrentDeltaOnNonCommutative(message) => {
-                Self::ConcurrentDeltaOnNonCommutative(format!("{message}; key={key:?}"))
-            }
-        }
-    }
-}

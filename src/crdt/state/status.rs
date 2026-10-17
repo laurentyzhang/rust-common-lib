@@ -1,9 +1,9 @@
 use super::value::{CrdtValue, ValueSnapshots};
 
+// Tags representing the status of a value in the CRDT.
+// It is used for state conflict detection
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
-    Read,
-    Load,
     Missing,
     Deleted,
     Default,

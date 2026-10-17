@@ -12,7 +12,7 @@ pub use greedy::GreedyScheduler;
 pub use pass_through::PassThroughScheduler;
 pub use scheduler::{Scheduler, SchedulerConfig};
 pub use store::CalleeProfile;
-pub use workload::{Generation, Job, JobSequence};
+pub use workload::{Generation, ID, Job, JobSequence};
 
 #[cfg(test)]
 mod tests;

@@ -17,17 +17,15 @@ impl<Tx> Scheduler<Tx> for PassThroughScheduler {
     fn schedule(&self, jobs: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>> {
         let sequences = jobs
             .into_iter()
-            .enumerate()
-            .map(|(index, mut job)| {
-                job.id = index as u64;
-                JobSequence::new(vec![job])
-            })
+            .map(|job| JobSequence::new(vec![job]))
             .collect::<Vec<_>>();
 
         if sequences.is_empty() {
             Vec::new()
         } else {
-            vec![Generation::new(sequences)]
+            let mut generation = Generation::new(sequences);
+            generation.assign_ids(0);
+            vec![generation]
         }
     }
 }

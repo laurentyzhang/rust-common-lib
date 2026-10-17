@@ -28,7 +28,8 @@ impl<'a, Tx> SenderBatcher<'a, Tx> {
         let queues = by_sender
             .into_iter()
             .map(|(sender, mut transactions)| {
-                transactions.sort_unstable_by_key(|resolved| (resolved.job.nonce, resolved.job.id));
+                transactions
+                    .sort_unstable_by_key(|resolved| (resolved.job.nonce, resolved.job.id.global));
                 SenderQueue {
                     sender,
                     pending: transactions.into(),
@@ -49,7 +50,7 @@ impl<'a, Tx> SenderBatcher<'a, Tx> {
 
         self.queues.sort_unstable_by_key(|queue| {
             let head = queue.pending.front().expect("sender queues are nonempty");
-            (head.conflict_peer_count(), head.job.id, queue.sender)
+            (head.conflict_peer_count(), head.job.id.global, queue.sender)
         });
 
         let mut batch = Vec::<ResolvedJob<'a, Tx>>::new();

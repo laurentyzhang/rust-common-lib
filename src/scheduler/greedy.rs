@@ -55,6 +55,10 @@ impl<Tx> Scheduler<Tx> for GreedyScheduler {
             plan.push_batch(batch, &self.config);
         }
         plan.compact(&self.config);
-        plan.finalize()
+        let mut plan = plan.finalize();
+        for (generation, scheduled) in plan.iter_mut().enumerate() {
+            scheduled.assign_ids(generation as u64);
+        }
+        plan
     }
 }

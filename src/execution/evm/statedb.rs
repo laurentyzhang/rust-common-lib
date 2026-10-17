@@ -1,12 +1,6 @@
 //! A revm `Database` over a `VmStateCache`, which falls back to its `FallbackStore` on a miss.
 
-use std::collections::HashMap;
-
-use alloy_evm::revm::bytecode::Bytecode;
-use alloy_evm::revm::state::{AccountInfo, EvmState};
-use alloy_evm::revm::{Database, DatabaseCommit};
-use alloy_primitives::{Address, B256, U256};
-use op_revm::revm::state::bal::Bal;
+use std::{collections::HashMap, fmt};
 
 use super::account_info::AccountDecodeError;
 use super::key::Key;
@@ -14,6 +8,10 @@ use crate::committer::traits::TransitionWriter;
 use crate::crdt::Scalar;
 use crate::crdt::state::{DeltaOp, value::CrdtValue};
 use crate::execution::{VmStateCache, VmStateCacheWriter, cache::Entry};
+use alloy_evm::revm::bytecode::Bytecode;
+use alloy_evm::revm::state::{AccountInfo, EvmState};
+use alloy_evm::revm::{Database, DatabaseCommit};
+use alloy_primitives::{Address, B256, U256};
 // use crate::store::StoreError;
 
 /// Reads and writes EVM state through a `VmStateCache`.
@@ -23,24 +21,22 @@ pub struct StateDB<'a> {
     codes: HashMap<B256, Bytecode>,
 }
 
+impl fmt::Debug for StateDB<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StateDB")
+            .field("execution_store_id", &self.execution_store.id())
+            .field("cached_code_count", &self.codes.len())
+            .finish()
+    }
+}
+
 impl<'a> StateDB<'a> {
     pub fn new(execution_store: VmStateCache<'a, Key, AccountInfo>) -> Self {
         Self {
             execution_store,
             codes: HashMap::new(),
         }
-    }
-
-    pub fn get_balance(&mut self, address: Address) -> Scalar<U256> {
-        self.execution_store
-            .get(&Key::Balance(address))
-            .and_then(|entry| match entry.as_crdt()? {
-                CrdtValue::Numeric(crate::crdt::state::Numeric::U256(balance)) => {
-                    Some(balance.as_ref().clone())
-                }
-                _ => None,
-            })
-            .unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -53,11 +49,6 @@ impl Database for StateDB<'_> {
     type Error = AccountDecodeError;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        // Here we assume that a code read has already occurred.
-        // Unlike the balance, code is only accessed when needed.
-        // It is only accessed when the account info indicates that code exists.
-        self.execution_store.get(&Key::Code(address));
-
         let Some(info) = self
             .execution_store
             .get(&Key::Account(address))

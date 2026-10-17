@@ -7,7 +7,7 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
     address[19] = sender;
     Job {
         tx: (),
-        id,
+        id: ID::new(id),
         sender: address,
         nonce,
         callee: Some(callee),
@@ -20,7 +20,12 @@ fn ids(generation: &Generation<()>) -> Vec<u64> {
     let mut ids = generation
         .sequences
         .iter()
-        .flat_map(|sequence| sequence.jobs.iter().map(|transaction| transaction.id))
+        .flat_map(|sequence| {
+            sequence
+                .jobs
+                .iter()
+                .map(|transaction| transaction.id.global)
+        })
         .collect::<Vec<_>>();
     ids.sort_unstable();
     ids
@@ -65,6 +70,24 @@ fn known_conflicting_callees_are_serialized_during_finalization() {
     assert_eq!(plan.len(), 1);
     assert_eq!(plan[0].sequences.len(), 1);
     assert_eq!(ids(&plan[0]), vec![1, 2]);
+    assert_eq!(
+        plan[0].sequences[0].jobs[0].id,
+        ID {
+            global: 1,
+            generation: 0,
+            sequence: 0,
+            job: 0,
+        }
+    );
+    assert_eq!(
+        plan[0].sequences[0].jobs[1].id,
+        ID {
+            global: 2,
+            generation: 0,
+            sequence: 0,
+            job: 1,
+        }
+    );
 }
 
 #[test]
@@ -103,6 +126,8 @@ fn repeated_deferrable_callee_places_one_call_in_next_generation() {
     assert_eq!(ids(&plan[0]), vec![1]);
     assert_eq!(ids(&plan[1]), vec![2]);
     assert!(plan[1].sequences[0].jobs[0].is_deferred);
+    assert_eq!(plan[0].sequences[0].jobs[0].id.generation, 0);
+    assert_eq!(plan[1].sequences[0].jobs[0].id.generation, 1);
 }
 
 #[test]
@@ -147,7 +172,7 @@ fn sender_nonce_offsets_survive_sequence_id_sorting() {
             let transaction = &sequence.jobs[0];
             assert_eq!(sequence.nonce_offsets.len(), 1);
             assert_eq!(sequence.nonce_offsets[0].sender, transaction.sender);
-            (transaction.id, sequence.nonce_offsets[0].offset)
+            (transaction.id.global, sequence.nonce_offsets[0].offset)
         })
         .collect::<Vec<_>>();
     assert_eq!(sequence_nonce_offsets, vec![(10, 1), (20, 0)]);
@@ -164,7 +189,7 @@ fn location(plan: &[Generation<()>], id: u64) -> (usize, usize, usize) {
     for (generation_index, generation) in plan.iter().enumerate() {
         for (sequence_index, sequence) in generation.sequences.iter().enumerate() {
             for (transaction_index, transaction) in sequence.jobs.iter().enumerate() {
-                if transaction.id == id {
+                if transaction.id.global == id {
                     return (generation_index, sequence_index, transaction_index);
                 }
             }
@@ -412,7 +437,7 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
         .flat_map(|generation| &generation.sequences)
         .flat_map(|sequence| &sequence.jobs)
         .filter(|transaction| transaction.is_deferred)
-        .map(|transaction| transaction.id)
+        .map(|transaction| transaction.id.global)
         .collect::<Vec<_>>();
     assert_eq!(marked_deferred, vec![20]);
 }
@@ -473,12 +498,15 @@ fn pass_through_scheduler_puts_each_job_in_its_own_parallel_sequence() {
             .iter()
             .all(|sequence| sequence.jobs.len() == 1)
     );
+    assert_eq!(plan[0].sequences[0].jobs[0].id.sequence, 0);
+    assert_eq!(plan[0].sequences[1].jobs[0].id.sequence, 1);
+    assert_eq!(plan[0].sequences[2].jobs[0].id.sequence, 2);
     let offsets = plan[0]
         .sequences
         .iter()
         .map(|sequence| {
             let job = &sequence.jobs[0];
-            (job.id, sequence.nonce_offsets[0].offset)
+            (job.id.global, sequence.nonce_offsets[0].offset)
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(offsets.get(&1), Some(&0));
@@ -499,7 +527,7 @@ fn schedulers_preserve_transaction_payloads() {
     let jobs = [
         Job {
             tx: "first",
-            id: 1,
+            id: ID::new(1),
             sender: [1; 20],
             nonce: 0,
             callee: None,
@@ -508,7 +536,7 @@ fn schedulers_preserve_transaction_payloads() {
         },
         Job {
             tx: "second",
-            id: 2,
+            id: ID::new(2),
             sender: [2; 20],
             nonce: 0,
             callee: None,
@@ -556,7 +584,7 @@ fn assert_plan_invariants(
 ) {
     let inputs_by_id = input
         .iter()
-        .map(|transaction| (transaction.id, transaction))
+        .map(|transaction| (transaction.id.global, transaction))
         .collect::<BTreeMap<_, _>>();
     let mut actual_ids = plan.iter().flat_map(ids).collect::<Vec<_>>();
     actual_ids.sort_unstable();
@@ -569,21 +597,21 @@ fn assert_plan_invariants(
         for sequence in &generation.sequences {
             assert!(!sequence.jobs.is_empty());
             for scheduled in &sequence.jobs {
-                let original = inputs_by_id[&scheduled.id];
+                let original = inputs_by_id[&scheduled.id.global];
                 assert_eq!(scheduled.sender, original.sender);
                 assert_eq!(scheduled.nonce, original.nonce);
                 assert_eq!(scheduled.callee, original.callee);
                 sender_order
                     .entry(scheduled.sender)
                     .or_default()
-                    .push((scheduled.nonce, scheduled.id));
+                    .push((scheduled.nonce, scheduled.id.global));
                 if !original.fully_parallelizable
                     && original
                         .callee
                         .and_then(|callee| profiles.get(&callee))
                         .is_some_and(|profile| profile.sequential_only)
                 {
-                    assert_eq!(ids(generation), vec![scheduled.id]);
+                    assert_eq!(ids(generation), vec![scheduled.id.global]);
                 }
             }
         }
@@ -605,7 +633,7 @@ fn assert_plan_invariants(
             for scheduled in &sequence.jobs {
                 let rank = sender_order[&scheduled.sender]
                     .iter()
-                    .position(|key| *key == (scheduled.nonce, scheduled.id))
+                    .position(|key| *key == (scheduled.nonce, scheduled.id.global))
                     .unwrap() as u64;
                 expected_offsets.entry(scheduled.sender).or_insert(rank);
                 if let Some(previous) = previous_ranks.insert(scheduled.sender, rank) {
@@ -627,8 +655,8 @@ fn assert_plan_invariants(
             for other_sequence in &generation.sequences[sequence_index + 1..] {
                 for left in &sequence.jobs {
                     for right in &other_sequence.jobs {
-                        let left = inputs_by_id[&left.id];
-                        let right = inputs_by_id[&right.id];
+                        let left = inputs_by_id[&left.id.global];
+                        let right = inputs_by_id[&right.id.global];
                         if left.fully_parallelizable || right.fully_parallelizable {
                             continue;
                         }
@@ -704,12 +732,12 @@ fn small_profile_combinations_preserve_public_plan_invariants() {
 
 mod model_tests {
     use crate::scheduler::sender::SenderNonceOffset;
-    use crate::scheduler::workload::{Generation, Job, JobSequence};
+    use crate::scheduler::workload::{Generation, ID, Job, JobSequence};
 
     fn transaction(sender: u8, nonce: u64, id: u64) -> Job<()> {
         Job {
             tx: (),
-            id,
+            id: ID::new(id),
             sender: [sender; 20],
             nonce,
             callee: None,
@@ -755,13 +783,13 @@ mod model_tests {
 
 mod policy_tests {
     use crate::scheduler::job_resolver::{ExecutionMode, JobResolver};
-    use crate::scheduler::{CalleeProfile, Job};
+    use crate::scheduler::{CalleeProfile, ID, Job};
     use std::collections::{BTreeMap, BTreeSet};
 
     fn transaction(callee: u64, fully_parallelizable: bool) -> Job<()> {
         Job {
             tx: (),
-            id: callee,
+            id: ID::new(callee),
             sender: [0; 20],
             nonce: 0,
             callee: Some(callee),
@@ -825,13 +853,13 @@ mod policy_tests {
 mod queue_tests {
     use crate::scheduler::job_resolver::JobResolver;
     use crate::scheduler::sender_batcher::SenderBatcher;
-    use crate::scheduler::{CalleeProfile, Job};
+    use crate::scheduler::{CalleeProfile, ID, Job};
     use std::collections::{BTreeMap, BTreeSet};
 
     fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         Job {
             tx: (),
-            id,
+            id: ID::new(id),
             sender: [sender; 20],
             nonce,
             callee: Some(callee),
@@ -857,7 +885,7 @@ mod queue_tests {
             .next_batch()
             .unwrap()
             .into_iter()
-            .map(|tx| tx.job.id)
+            .map(|tx| tx.job.id.global)
             .collect::<Vec<_>>();
 
         assert_eq!(ids, [5, 50, 30, 20, 10]);
@@ -885,9 +913,12 @@ mod queue_tests {
         let second = queues.next_batch().unwrap();
 
         assert_eq!(first.len(), 1);
-        assert_eq!(first[0].job.id, 1);
+        assert_eq!(first[0].job.id.global, 1);
         assert_eq!(
-            second.into_iter().map(|tx| tx.job.id).collect::<Vec<_>>(),
+            second
+                .into_iter()
+                .map(|tx| tx.job.id.global)
+                .collect::<Vec<_>>(),
             [2, 3]
         );
         assert!(queues.next_batch().is_none());

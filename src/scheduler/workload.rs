@@ -3,12 +3,37 @@ use alloy_evm::revm::context_interface::Transaction;
 use alloy_primitives::TxKind;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ID {
+    /// Stable transaction ID supplied before scheduling.
+    pub global: u64,
+    /// Zero-based generation position in the finalized plan.
+    pub generation: u64,
+    /// Zero-based sequence position within the generation.
+    pub sequence: u64,
+    /// Zero-based job position within the sequence.
+    pub job: u64,
+}
+
+impl ID {
+    /// Creates an unscheduled ID. The scheduler fills in its plan coordinates.
+    pub const fn new(global: u64) -> Self {
+        Self {
+            global,
+            generation: 0,
+            sequence: 0,
+            job: 0,
+        }
+    }
+}
+
 /// Transaction data supplied to the scheduler before planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Job<Tx> {
     /// Original executable transaction carried through scheduling.
     pub tx: Tx,
-    pub id: u64,
+    /// Stable global ID plus the location assigned by the scheduler.
+    pub id: ID,
     pub sender: Sender,
     pub nonce: u64,
     pub callee: Option<u64>,
@@ -22,7 +47,7 @@ pub struct Job<Tx> {
 impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
     /// Builds a job from an executable transaction. `callee` is the target's first
     /// 4 address bytes plus the 4-byte selector.
-    pub fn new(id: u64, (tx_env, recovered): (TxEnv, R)) -> Self {
+    pub fn new(id: ID, (tx_env, recovered): (TxEnv, R)) -> Self {
         let callee = match tx_env.kind() {
             TxKind::Call(to) => {
                 let mut key = [0u8; 8];
@@ -89,6 +114,16 @@ impl<Tx> Default for Generation<Tx> {
 }
 
 impl<Tx> Generation<Tx> {
+    pub(super) fn assign_ids(&mut self, generation: u64) {
+        for (sequence, jobs) in self.sequences.iter_mut().enumerate() {
+            for (job, scheduled) in jobs.jobs.iter_mut().enumerate() {
+                scheduled.id.generation = generation;
+                scheduled.id.sequence = sequence as u64;
+                scheduled.id.job = job as u64;
+            }
+        }
+    }
+
     /// Rebuilds nonce offsets for the supplied generation without reordering jobs.
     /// For each sender in a sequence, counts that sender's jobs before its first
     /// job in the generation's nonce and ID ordering. Stores one offset per
@@ -100,7 +135,7 @@ impl<Tx> Generation<Tx> {
             for job in &sequence.jobs {
                 transactions_by_sender.entry(job.sender).or_default().push((
                     job.nonce,
-                    job.id,
+                    job.id.global,
                     sequence_index,
                 ));
             }

@@ -262,7 +262,6 @@ mod tracked {
 }
 
 mod tracked_creation {
-    use super::*;
     use crate::crdt::state::{Status, Tracked, status::Tag, value::ValueSnapshots};
 
     fn status_record(original: Status, current: Status) -> Tracked<Status, Status> {

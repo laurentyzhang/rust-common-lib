@@ -49,7 +49,7 @@ impl<'a, Tx> DraftTransaction<'a, Tx> {
 
     /// Returns the nonce and transaction ID, using the ID to break equal-nonce ties.
     fn nonce_key(&self) -> NonceKey {
-        (self.job.job.nonce, self.job.job.id)
+        (self.job.job.nonce, self.job.job.id.global)
     }
 
     /// Copies the planned deferral flag into the job and drops its resolved policy.
@@ -244,7 +244,7 @@ impl<'a, Tx> DraftGeneration<'a, Tx> {
     /// sender nonce offsets using the completed generation layout.
     fn finalize(mut self) -> Generation<Tx> {
         self.sequences
-            .sort_unstable_by_key(|sequence| sequence.transactions[0].job.job.id);
+            .sort_unstable_by_key(|sequence| sequence.transactions[0].job.job.id.global);
         Generation::new(
             self.sequences
                 .into_iter()
@@ -289,7 +289,7 @@ impl<'a, Tx> DraftPlan<'a, Tx> {
 
                 let existing = &mut generations[generation_index].sequences[sequence_index]
                     .transactions[transaction_index];
-                if existing.job.job.id > job.job.id {
+                if existing.job.job.id.global > job.job.id.global {
                     existing.is_deferred = true;
                 } else {
                     is_deferred = true;

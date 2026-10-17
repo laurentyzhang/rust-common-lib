@@ -1,9 +1,11 @@
+use super::inspector::StateReadRecorder;
 use super::{
     AccountDecodeError, AccountInfoCodec, ArcologyApi, ArcologyEvmFactory, ArcologyTx,
     CallHookError, CallHookInput, CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme,
     ClosureCallHook, ExitStatus, RegisterHookError, StateDB, arcology_address,
 };
-use crate::execution::VmStateCache;
+use crate::committer::traits::TransitionWriter;
+use crate::execution::{Entry, VmStateCache, VmStateCacheWriter};
 use crate::{
     execution::evm::key::{Key, KeyCodec},
     store::StoreCodec,
@@ -410,6 +412,51 @@ fn factory_supports_standard_inspectors() {
     let factory = factory_with_runtime_hook(|_| Ok(CallHookOutput::returned(1, Bytes::new())));
     let _evm =
         factory.create_evm_with_inspector(EmptyDB::default(), EvmEnv::default(), NoOpInspector);
+}
+
+#[test]
+fn state_db_and_recorder_track_balance_reads() {
+    let caller = arcology_address(0x11);
+    let contract = arcology_address(0x22);
+    let external = Address::with_last_byte(0x33);
+    // Read the external balance twice, then read the contract's own balance.
+    let code = Bytecode::new_raw(Bytes::from_static(&[
+        0x60, 0x33, 0x31, 0x50, 0x60, 0x33, 0x31, 0x50, 0x47, 0x50, 0x00,
+    ]));
+    let account = AccountInfo {
+        code_hash: code.hash_slow(),
+        code: Some(code),
+        ..Default::default()
+    };
+
+    let mut writer = VmStateCacheWriter::new(VmStateCache::new(1));
+    writer
+        .flush(vec![(Key::Account(contract), Entry::Other(account))])
+        .unwrap();
+
+    let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
+    let recorder = StateReadRecorder::new(2);
+    let mut evm = factory.create_evm_with_inspector(
+        StateDB::new(writer.into_inner()),
+        EvmEnv::default(),
+        recorder,
+    );
+    let result = evm.transact(tx(caller, contract, Bytes::new())).unwrap();
+    assert!(result.result.is_success());
+
+    let (_, recorder, _) = evm.components_mut();
+    let reads = recorder.drain();
+    let keys: Vec<_> = reads.iter().map(|read| read.key.clone()).collect();
+
+    assert!(keys.contains(&Key::Code(contract)));
+    assert!(keys.contains(&Key::Balance(external)));
+    assert!(keys.contains(&Key::Balance(contract)));
+    assert!(!keys.contains(&Key::Account(external)));
+    let external_read = reads
+        .iter()
+        .find(|read| read.key == Key::Balance(external))
+        .unwrap();
+    assert_eq!(external_read.data.operations.reads.count(), 2);
 }
 
 #[test]
