@@ -18,6 +18,7 @@ const DELETED: u8 = 6;
 const DEFAULT: u8 = 7;
 const STRIPPED: u8 = 8;
 const MISSING: u8 = 9;
+const UNKNOWN: u8 = 10;
 
 const HEADER_SIZE: u64 = 34;
 
@@ -32,6 +33,7 @@ fn value_tag(value: &Status) -> u8 {
         Status::Tag(Tag::Deleted) => DELETED,
         Status::Tag(Tag::Default) => DEFAULT,
         Status::Tag(Tag::Stripped) => STRIPPED,
+        Status::Tag(Tag::Unknown) => UNKNOWN,
     }
 }
 
@@ -157,7 +159,8 @@ fn decode_value(tag: u8, payload: &[u8]) -> Result<Status> {
         DEFAULT if payload.is_empty() => Status::Tag(Tag::Default),
         STRIPPED if payload.is_empty() => Status::Tag(Tag::Stripped),
         MISSING if payload.is_empty() => Status::Tag(Tag::Missing),
-        DELETED | DEFAULT | STRIPPED | MISSING => return Err("trailing bytes"),
+        UNKNOWN if payload.is_empty() => Status::Tag(Tag::Unknown),
+        DELETED | DEFAULT | STRIPPED | MISSING | UNKNOWN => return Err("trailing bytes"),
         _ => return Err("invalid Tracked value tag"),
     };
     Ok(value)

@@ -12,7 +12,7 @@ use alloy_evm::{
 /// Dispatches a REVM call frame through the Arcology hook router.
 ///
 /// This function is installed as a stateful, non-cacheable precompile by
-/// [`ArcologyEvmFactory`](super::ArcologyEvmFactory). The `PrecompileInput`
+/// [`ArcologyEvmFactory`](super::super::ArcologyEvmFactory). The `PrecompileInput`
 /// also carries REVM's journal-backed `EvmInternals`, allowing the adapter to
 /// be extended with stateful Arcology APIs without replacing the factory.
 pub fn dispatch_precompile(

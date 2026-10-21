@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::crdt::state::{Status, Tracked, op::Operations, status::Tag, value::ValueSnapshots};
+use crate::crdt::state::{Tracked, op::Operations, status::Tag, value::ValueSnapshots};
 use crate::execution::evm::key::Key;
 use crate::execution::output::ExecutionOutput;
 use alloy_evm::revm::{
@@ -14,9 +14,9 @@ use alloy_evm::revm::{
 };
 use rayon::prelude::*;
 
-pub type StateReads = Vec<ExecutionOutput<Key, Tracked<Status, Status>>>;
+pub type StateReads = Vec<ExecutionOutput<Key, Tracked<Tag, Tag>>>;
 
-const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
+pub(in crate::execution::evm) const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
 
 pub struct StateReadRecorder {
     id: u64,
@@ -31,7 +31,7 @@ impl StateReadRecorder {
         }
     }
 
-    fn record(&mut self, key: Key) {
+    pub(in crate::execution::evm) fn record(&mut self, key: Key) {
         *self.reads.entry(key).or_default() += 1;
     }
 
@@ -71,8 +71,17 @@ impl StateReadRecorder {
     }
 
     pub fn drain(&mut self) -> StateReads {
-        self.reads
-            .drain()
+        let mut reads = HashMap::new();
+        for (key, count) in self.reads.drain() {
+            let key = match key {
+                Key::Balance(address) | Key::Code(address) => Key::Account(address),
+                key => key,
+            };
+            *reads.entry(key).or_insert(0_u32) += count;
+        }
+
+        reads
+            .into_iter()
             .map(|(key, count)| {
                 let mut operations = Operations::default();
                 operations.reads = count.into();
@@ -84,8 +93,8 @@ impl StateReadRecorder {
                     data: Tracked {
                         id: self.id,
                         value: ValueSnapshots {
-                            original: Status::Tag(Tag::Missing),
-                            current: Status::Tag(Tag::Missing),
+                            original: Tag::Unknown,
+                            current: Tag::Unknown,
                         },
                         operations,
                     },
@@ -94,7 +103,9 @@ impl StateReadRecorder {
             .collect()
     }
 
-    fn should_merge_parallel(recorders: &[StateReadRecorder]) -> bool {
+    pub(in crate::execution::evm) fn should_merge_parallel(
+        recorders: &[StateReadRecorder],
+    ) -> bool {
         let pairs = recorders.len() / 2;
         let workers = rayon::current_num_threads().min(pairs);
 
@@ -133,6 +144,12 @@ impl<CTX> Inspector<CTX> for StateReadRecorder {
                 self.record(Key::Balance(interp.input.target_address()));
             }
 
+            opcode::SLOAD => {
+                if let Ok(slot) = interp.stack.peek(0) {
+                    self.record(Key::Storage(interp.input.target_address(), slot));
+                }
+            }
+
             opcode::CODECOPY => {
                 if let Some(address) = interp.input.bytecode_address() {
                     self.record(Key::Code(*address));
@@ -146,61 +163,5 @@ impl<CTX> Inspector<CTX> for StateReadRecorder {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use alloy_primitives::{Address, U256};
-
-    use super::*;
-
-    #[test]
-    fn merge_sums_reads_for_the_same_key() {
-        let shared = Key::Balance(Address::with_last_byte(1));
-        let mut left = StateReadRecorder::new(7);
-        left.record(shared.clone());
-        left.record(shared.clone());
-        left.record(Key::Code(Address::with_last_byte(2)));
-
-        let mut right = StateReadRecorder::new(7);
-        right.record(shared.clone());
-        right.record(Key::Code(Address::with_last_byte(3)));
-
-        left.merge(right);
-
-        assert_eq!(left.reads.len(), 3);
-        assert_eq!(left.reads[&shared], 3);
-    }
-
-    #[test]
-    fn merge_all_uses_parallel_tree_for_large_recorders() {
-        let recorders: Vec<_> = (0..4)
-            .map(|recorder_index| {
-                let mut recorder = StateReadRecorder::new(9);
-                let first_slot = recorder_index * MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER;
-
-                for slot in first_slot..first_slot + MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER {
-                    recorder.record(Key::Storage(Address::ZERO, U256::from(slot)));
-                }
-
-                recorder
-            })
-            .collect();
-
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(2)
-            .build()
-            .unwrap();
-        let mut merged = StateReadRecorder::new(9);
-        pool.install(|| {
-            assert!(StateReadRecorder::should_merge_parallel(&recorders));
-            merged.merge_all(recorders);
-        });
-
-        assert_eq!(
-            merged.reads.len(),
-            4 * MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER
-        );
     }
 }

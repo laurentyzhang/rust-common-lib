@@ -1,5 +1,4 @@
 pub mod collections;
-pub mod committer;
 pub mod crdt;
 pub mod execution;
 pub mod resolver;

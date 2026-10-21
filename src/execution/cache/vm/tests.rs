@@ -1,4 +1,3 @@
-use crate::committer::{Committer, traits::TransitionWriter};
 use crate::crdt::{
     Crdt, NonComm, Scalar,
     state::{CrdtDelta, DeltaOp, Numeric, NumericError, StateError, value::CrdtValue},
@@ -14,19 +13,6 @@ use crate::store::{CachedStoreWriter, cache::CachedStore};
 
 const CACHE_ID: u64 = 17;
 
-fn commit<K, V, W>(writer: &mut W, updates: Vec<(K, V)>) -> Result<(), StoreError>
-where
-    K: Eq + std::hash::Hash + Clone + Send + Sync,
-    V: Clone + Send + Sync,
-    W: TransitionWriter<K, V> + Send,
-{
-    let mut committer = Committer::new();
-    committer.register(writer);
-    committer.buffer(CACHE_ID, updates)?;
-    committer.stage(vec![CACHE_ID])?;
-    committer.flush()
-}
-
 fn write_cached<'a, K, V>(
     store: CachedStore<'a, K, V>,
     updates: Vec<(K, V)>,
@@ -36,7 +22,7 @@ where
     V: Clone + Send + Sync,
 {
     let mut writer = CachedStoreWriter::new(store.into_cache());
-    commit(&mut writer, updates).unwrap();
+    writer.flush(updates).unwrap();
     CachedStore::from_cache(writer.into_inner(), None)
 }
 
@@ -48,7 +34,7 @@ where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
 {
     let mut writer = VmStateCacheWriter::new(cache);
-    commit(&mut writer, updates).unwrap();
+    writer.flush(updates).unwrap();
     writer.into_inner()
 }
 
@@ -60,7 +46,7 @@ where
     K: Eq + std::hash::Hash + Clone + Send + Sync,
 {
     let mut writer = BlockCacheWriter::new(cache);
-    commit(&mut writer, updates).unwrap();
+    writer.flush(updates).unwrap();
     writer.into_inner()
 }
 
@@ -479,7 +465,7 @@ fn staged_deletion_hides_fallback_and_cannot_be_recreated() {
 
     let mut writer = VmStateCacheWriter::new(cache);
     assert_eq!(
-        commit(&mut writer, vec![(1, replacement)]),
+        writer.flush(vec![(1, replacement)]),
         Err(StoreError::ValueCannotBeRecreated)
     );
 }
@@ -536,7 +522,7 @@ fn stage_returns_delta_errors_without_changing_the_value() {
     update.add_delta(&DeltaOp::Add(1)).unwrap();
 
     let mut writer = VmStateCacheWriter::new(cache);
-    let result = commit(&mut writer, vec![(1, update.into())]);
+    let result = writer.flush(vec![(1, update.into())]);
     cache = writer.into_inner();
 
     assert!(matches!(

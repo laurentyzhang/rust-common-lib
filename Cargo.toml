@@ -41,3 +41,7 @@ harness = false
 [[bench]]
 name = "conflict_detection"
 harness = false
+
+[[bench]]
+name = "evm_state_merge"
+harness = false

@@ -2,9 +2,8 @@
 
 use std::{collections::HashMap, fmt};
 
-use super::account_info::AccountDecodeError;
+use super::account_codec::AccountDecodeError;
 use super::key::Key;
-use crate::committer::traits::TransitionWriter;
 use crate::crdt::Scalar;
 use crate::crdt::state::{DeltaOp, value::CrdtValue};
 use crate::execution::{VmStateCache, VmStateCacheWriter, cache::Entry};
@@ -40,7 +39,9 @@ impl<'a> StateDB<'a> {
     }
 
     #[cfg(test)]
-    pub(super) fn execution_store(&mut self) -> &mut VmStateCache<'a, Key, AccountInfo> {
+    pub(in crate::execution::evm) fn execution_store(
+        &mut self,
+    ) -> &mut VmStateCache<'a, Key, AccountInfo> {
         &mut self.execution_store
     }
 }

@@ -1,14 +1,14 @@
 use rayon::prelude::*;
 use std::{
-    collections::HashMap,
-    hash::{BuildHasherDefault, Hash, Hasher},
+    collections::{HashMap, hash_map::RandomState},
+    hash::{BuildHasher, Hash, Hasher},
 };
 
-pub struct ShardMap<K, V> {
-    maps: Vec<HashMap<K, V, SumBuildHasher>>,
+pub struct ShardMap<K, V, S = RandomState> {
+    maps: Vec<HashMap<K, V, S>>,
 }
 
-impl<K: Hash + Eq, V> ShardMap<K, V> {
+impl<K: Hash + Eq, V, S: BuildHasher + Default> ShardMap<K, V, S> {
     pub fn new(num_shards: usize) -> Self {
         assert!(
             num_shards.is_power_of_two() && num_shards <= 256,
@@ -17,9 +17,13 @@ impl<K: Hash + Eq, V> ShardMap<K, V> {
 
         let mut maps = Vec::with_capacity(num_shards);
         for _ in 0..num_shards {
-            maps.push(HashMap::with_hasher(SumBuildHasher::default()));
+            maps.push(HashMap::with_hasher(S::default()));
         }
         ShardMap { maps }
+    }
+
+    pub fn num_shards(&self) -> usize {
+        self.maps.len()
     }
 
     pub fn contains_key(&self, key: &K) -> bool {
@@ -71,6 +75,17 @@ impl<K: Hash + Eq, V> ShardMap<K, V> {
     where
         K: Send,
         V: Send,
+        S: Send,
+    {
+        self.apply_batch_with(updates, |existing, value| *existing = value);
+    }
+
+    pub fn apply_batch_with<F>(&mut self, updates: Vec<(K, V)>, merge: F)
+    where
+        K: Send,
+        V: Send,
+        S: Send,
+        F: Fn(&mut V, V) + Send + Sync,
     {
         let num_shards = self.maps.len();
 
@@ -95,9 +110,20 @@ impl<K: Hash + Eq, V> ShardMap<K, V> {
             .zip(shard_updates.into_par_iter())
             .for_each(|(map, bucket)| {
                 for (key, value) in bucket {
-                    map.insert(key, value);
+                    match map.entry(key) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            merge(entry.get_mut(), value);
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(value);
+                        }
+                    }
                 }
             });
+    }
+
+    pub fn into_entries(self) -> impl Iterator<Item = (K, V)> {
+        self.maps.into_iter().flat_map(|map| map.into_iter())
     }
 
     fn shard_index(&self, key: &K) -> usize {
@@ -107,27 +133,20 @@ impl<K: Hash + Eq, V> ShardMap<K, V> {
     }
 }
 
-// Sum and modulo hasher for sharding.
 #[derive(Default)]
-struct SumHasher {
-    sum: u64,
-}
+struct SumHasher(u64);
 
 impl Hasher for SumHasher {
-    #[inline]
     fn write(&mut self, bytes: &[u8]) {
         for &byte in bytes {
-            self.sum = self.sum.wrapping_add(byte as u64);
+            self.0 = self.0.wrapping_add(byte as u64);
         }
     }
 
-    #[inline]
     fn finish(&self) -> u64 {
-        self.sum
+        self.0
     }
 }
-
-type SumBuildHasher = BuildHasherDefault<SumHasher>;
 
 // Tests for the ShardMap implementation.
 #[cfg(test)]

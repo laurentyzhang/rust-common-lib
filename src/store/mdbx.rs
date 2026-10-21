@@ -7,7 +7,6 @@ use reth_db::{
 };
 
 use super::{FallbackStore, StoreCodec, StoreError};
-use crate::committer::traits::TransitionWriter;
 
 mod tables {
     use reth_db::{TableSet, TableType, TableViewer, table::TableInfo, tables};
@@ -62,13 +61,13 @@ where
     }
 }
 
-impl<K, V, KC, VC> TransitionWriter<K, V> for MdbxStore<K, V, KC, VC>
+impl<K, V, KC, VC> MdbxStore<K, V, KC, VC>
 where
     K: std::hash::Hash + Eq,
     KC: StoreCodec<K>,
     VC: StoreCodec<V>,
 {
-    fn flush(&mut self, updates: Vec<(K, V)>) -> Result<(), StoreError> {
+    pub fn flush(&mut self, updates: Vec<(K, V)>) -> Result<(), StoreError> {
         let encoded = updates
             .iter()
             .map(|(key, value)| Ok((self.key_codec.encode(key)?, self.value_codec.encode(value)?)))
@@ -90,10 +89,7 @@ fn database_error(error: reth_db::DatabaseError) -> StoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        committer::traits::TransitionWriter,
-        store::{IdentityCodec, cache::CachedStore},
-    };
+    use crate::store::{IdentityCodec, cache::CachedStore};
 
     #[test]
     fn mdbx_writer_persists_updates_for_cached_store_reads() {
@@ -119,7 +115,7 @@ mod tests {
 
     #[test]
     fn consume_commit_to_mdbx_and_cache_then_rebuild() {
-        use crate::{committer::Committer, store::CachedStoreWriter};
+        use crate::store::CachedStoreWriter;
 
         let directory = tempfile::tempdir().unwrap();
         let mut mdbx = MdbxStore::open(directory.path(), IdentityCodec, IdentityCodec).unwrap();
@@ -129,16 +125,9 @@ mod tests {
         assert_eq!(store.get(&key).unwrap(), None);
         let mut cache_writer = CachedStoreWriter::new(store.into_cache());
 
-        {
-            let mut committer = Committer::new();
-            committer.register(&mut mdbx);
-            committer.register(&mut cache_writer);
-            committer
-                .buffer(1, vec![(key.clone(), b"value".to_vec())])
-                .unwrap();
-            committer.stage(vec![1]).unwrap();
-            committer.flush().unwrap();
-        }
+        let updates = vec![(key.clone(), b"value".to_vec())];
+        mdbx.flush(updates.clone()).unwrap();
+        cache_writer.flush(updates).unwrap();
 
         let store = CachedStore::from_cache(cache_writer.into_inner(), Some(&mdbx));
         assert_eq!(store.get(&key).unwrap(), Some(b"value".to_vec()));
@@ -152,7 +141,7 @@ mod tests {
                 Scalar,
                 state::{CrdtValue, Numeric},
             },
-            execution::evm::{Key, KeyCodec},
+            execution::evm::key::{Key, KeyCodec},
             store::CrdtValueCodec,
         };
 

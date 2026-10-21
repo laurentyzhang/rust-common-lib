@@ -1,4 +1,3 @@
-use crate::committer::traits::TransitionWriter;
 use crate::execution::{BlockCache, BlockCacheWriter, cache::Entry};
 
 use crate::crdt::{

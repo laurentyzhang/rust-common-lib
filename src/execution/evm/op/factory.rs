@@ -3,13 +3,12 @@
 //! The OP factory remains responsible for constructing the EVM and selecting its native
 //! precompiles. Arcology only validates its addresses and extends the completed OP map.
 
+use super::super::{CallHookRouter, dispatch_precompile};
 use super::{
-    CallHookRouter,
     backend::{
         BaseEvm, BaseFactory, PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx,
         PostExecTxContext,
     },
-    dispatch_precompile,
     transaction::ArcologyTx,
 };
 use alloy_evm::{

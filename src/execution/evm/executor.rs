@@ -1,14 +1,15 @@
 //! Arcology's parallel execution worker set.
 
-use alloy_evm::block::{
-    BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult,
-};
+use alloy_evm::block::{BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult};
 use alloy_evm::{Evm, EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
 
-use alloy_evm::revm::context_interface::{Transaction, result::HaltReason};
+use alloy_evm::revm::context_interface::Transaction;
 
-use super::{inspector::StateReadRecorder, outcome::TransactionOutcome};
+use super::{
+    inspector::StateReadRecorder,
+    outcome::{ScheduledTransactionResult, TransactionOutcome},
+};
 use crate::scheduler::{Generation, ID, Job, Scheduler};
 
 /// Settings shared by every worker of a block.
@@ -16,12 +17,6 @@ pub struct ParaBlockConfig<F: BlockExecutorFactory> {
     pub workers: usize,
     pub env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
     pub ctx: OpBlockExecutionCtx,
-}
-
-/// A transaction result tagged with its stable global ID and scheduled location.
-pub struct ScheduledTransactionResult<R, H = HaltReason> {
-    pub id: ID,
-    pub outcome: Result<TransactionOutcome<R, H>, BlockExecutionError>,
 }
 
 /// Runs the transactions of a generation on parallel workers.
@@ -188,12 +183,12 @@ where
                                         .cloned()
                                         .expect("a committed transaction has a receipt");
                                     let (_, recorder, _) = executor.evm_mut().components_mut();
-                                    let reads = recorder.drain();
+                                    let inspector_reads = recorder.drain();
                                     Ok(TransactionOutcome {
                                         result_and_state: result_and_state
                                             .expect("a successful execution has a result"),
                                         receipt,
-                                        reads,
+                                        inspector_reads,
                                     })
                                 })();
                                 ScheduledTransactionResult { id, outcome }

@@ -1,5 +1,13 @@
 use crate::crdt::state::StateError;
 
+pub trait Committer<V> {
+    fn buffer(&mut self, id: u64, state: V);
+    /// Drop rejected states; absent keys may still include their keys.
+    fn stage(&mut self, accepted: Vec<u64>);
+    /// Commit accepted states in ID order and clear the buffer.
+    fn flush(&mut self);
+}
+
 pub trait FallbackStore<K, V>: Send + Sync {
     fn contains_key(&self, key: &K) -> Result<bool, StoreError> {
         self.get_untracked(key).map(|value| value.is_some())

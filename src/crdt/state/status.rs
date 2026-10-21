@@ -4,10 +4,11 @@ use super::value::{CrdtValue, ValueSnapshots};
 // It is used for state conflict detection
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Tag {
-    Missing,
-    Deleted,
-    Default,
-    Stripped,
+    Missing,  // The value is not present in the CRDT.
+    Deleted,  // The value has been removed from the CRDT.
+    Default,  // The value is in its default state.
+    Stripped, // The value has been stripped for conflict detection.
+    Unknown,  // The value's status is unknown.
 }
 
 #[derive(Clone, PartialEq)]

@@ -1,4 +1,3 @@
-use crate::committer::traits::TransitionWriter;
 use crate::store::traits::StoreError;
 
 /// Applies committed updates to the entries of a `CachedStore`.
@@ -17,12 +16,12 @@ impl<K, V> CachedStoreWriter<K, V> {
     }
 }
 
-impl<K, V> TransitionWriter<K, V> for CachedStoreWriter<K, V>
+impl<K, V> CachedStoreWriter<K, V>
 where
     K: Eq + std::hash::Hash + Clone,
     V: Clone,
 {
-    fn flush(&mut self, updates: Vec<(K, V)>) -> Result<(), StoreError> {
+    pub fn flush(&mut self, updates: Vec<(K, V)>) -> Result<(), StoreError> {
         for (key, value) in updates {
             self.cache.insert(key, value);
         }
@@ -35,7 +34,6 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::committer::Committer;
     use crate::store::{FallbackStore, cache::CachedStore};
 
     struct MapStore(HashMap<u64, u64>);
@@ -46,7 +44,7 @@ mod tests {
         }
     }
 
-    impl TransitionWriter<u64, u64> for MapStore {
+    impl MapStore {
         fn flush(&mut self, updates: Vec<(u64, u64)>) -> Result<(), StoreError> {
             self.0.extend(updates);
             Ok(())
@@ -61,14 +59,9 @@ mod tests {
         assert_eq!(store.get(&1), Ok(Some(10)));
         let mut cache_writer = CachedStoreWriter::new(store.into_cache());
 
-        {
-            let mut committer = Committer::new();
-            committer.register(&mut backend);
-            committer.register(&mut cache_writer);
-            committer.buffer(1, vec![(1, 11), (2, 20)]).unwrap();
-            committer.stage(vec![1]).unwrap();
-            committer.flush().unwrap();
-        }
+        let updates = vec![(1, 11), (2, 20)];
+        backend.flush(updates.clone()).unwrap();
+        cache_writer.flush(updates).unwrap();
 
         let store = CachedStore::from_cache(cache_writer.into_inner(), Some(&backend));
         assert_eq!(store.get(&1), Ok(Some(11)));

@@ -1,5 +1,4 @@
 use super::cache::VmStateCache;
-use crate::committer::traits::TransitionWriter;
 use crate::execution::cache::Entry;
 use crate::store::traits::StoreError;
 
@@ -19,12 +18,12 @@ impl<'a, K, T> VmStateCacheWriter<'a, K, T> {
 
 /// A write-only store implementation for the execution cache.
 /// Useful for using the execution cache as the fallback store for another execution cache.
-impl<'a, K, T: Clone> TransitionWriter<K, Entry<'static, T>> for VmStateCacheWriter<'a, K, T>
+impl<'a, K, T: Clone> VmStateCacheWriter<'a, K, T>
 where
     K: std::hash::Hash + Eq + Clone,
 {
     /// Applies resolved updates to the VM cache while preserving access/write tracking.
-    fn flush(&mut self, updates: Vec<(K, Entry<'static, T>)>) -> Result<(), StoreError> {
+    pub fn flush(&mut self, updates: Vec<(K, Entry<'static, T>)>) -> Result<(), StoreError> {
         for (key, value) in updates {
             // `None` is a deletion. Loading the tracked entry first preserves whether
             // the key originally existed, which is needed by conflict detection.

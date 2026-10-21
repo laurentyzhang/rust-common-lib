@@ -1,5 +1,4 @@
 use super::cache::BlockCache;
-use crate::committer::traits::TransitionWriter;
 use crate::execution::cache::Entry;
 use crate::store::traits::{FallbackStore, StoreError};
 
@@ -19,12 +18,12 @@ impl<'a, K, T> BlockCacheWriter<'a, K, T> {
 
 /// A write-only store implementation for the execution cache.
 /// Useful for using the execution cache as the fallback store for another execution cache.
-impl<'a, K, T> TransitionWriter<K, Entry<'static, T>> for BlockCacheWriter<'a, K, T>
+impl<'a, K, T> BlockCacheWriter<'a, K, T>
 where
     K: std::hash::Hash + Eq + Clone + Send + Sync,
     T: Clone + Send + Sync,
 {
-    fn flush(&mut self, updates: Vec<(K, Entry<'static, T>)>) -> Result<(), StoreError> {
+    pub fn flush(&mut self, updates: Vec<(K, Entry<'static, T>)>) -> Result<(), StoreError> {
         let mut deleted = std::collections::HashSet::new();
         for (key, value) in &updates {
             if value.is_missing() {
