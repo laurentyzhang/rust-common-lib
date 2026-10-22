@@ -1,6 +1,17 @@
 use super::*;
-use alloy_evm::revm::state::{Account, EvmStorageSlot, TransactionId};
-use alloy_primitives::{Address, U256};
+use crate::execution::evm::{
+    ArcologyEvmFactory, ArcologyTx, CallHookRouter, arcology_address, inspector::StateReadRecorder,
+    key::Key,
+};
+use alloy_evm::{
+    Evm, EvmEnv, EvmFactory,
+    revm::{
+        Database,
+        context::TxEnv,
+        state::{Account, AccountInfo, Bytecode, EvmStorageSlot, TransactionId},
+    },
+};
+use alloy_primitives::{Address, Bytes, TxKind, U256};
 
 fn state(balance: u64, slots: &[(u64, u64)]) -> EvmState {
     let mut account = Account::default();
@@ -198,4 +209,88 @@ fn into_evm_state_returns_accumulated_state() {
     cache.commit();
     assert_eq!(cache.into_evm_state(), state(2, &[(1, 10), (2, 20)]));
     assert!(EvmStateCache::default().into_evm_state().is_empty());
+}
+
+#[test]
+fn commit_writes_account_and_storage_to_evm_state_cache() {
+    let address = Address::repeat_byte(0x11);
+    let slot = U256::from(7);
+    let storage_value = U256::from(42);
+    let info = AccountInfo {
+        balance: U256::from(100),
+        nonce: 3,
+        ..AccountInfo::default()
+    };
+    let account = Account::from(info.clone())
+        .with_storage(
+            [(
+                slot,
+                EvmStorageSlot::new_changed(U256::ZERO, storage_value, Default::default()),
+            )]
+            .into_iter(),
+        )
+        .with_touched_mark();
+    let mut changes = EvmState::default();
+    changes.insert(address, account);
+
+    let mut db = EvmStateCache::default();
+    db.buffer(9, changes);
+    db.commit();
+
+    assert_eq!(db.basic(address).unwrap(), Some(info));
+    assert_eq!(db.storage(address, slot).unwrap(), storage_value);
+    assert_eq!(db.into_evm_state().len(), 1);
+}
+
+#[test]
+fn evm_state_cache_and_recorder_track_balance_reads() {
+    let caller = arcology_address(0x11);
+    let contract = arcology_address(0x22);
+    let external = Address::with_last_byte(0x33);
+    // Read the external balance twice, then read the contract's own balance.
+    let code = Bytecode::new_raw(Bytes::from_static(&[
+        0x60, 0x33, 0x31, 0x50, 0x60, 0x33, 0x31, 0x50, 0x47, 0x50, 0x00,
+    ]));
+    let account = AccountInfo {
+        code_hash: code.hash_slow(),
+        code: Some(code),
+        ..Default::default()
+    };
+
+    let mut state = EvmState::default();
+    state.insert(contract, Account::from(account));
+
+    let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
+    let recorder = StateReadRecorder::new(2);
+    let mut evm =
+        factory.create_evm_with_inspector(EvmStateCache::new(state), EvmEnv::default(), recorder);
+    let result = evm
+        .transact(ArcologyTx::from(TxEnv {
+            caller,
+            gas_limit: 500_000,
+            gas_price: 0,
+            kind: TxKind::Call(contract),
+            ..Default::default()
+        }))
+        .unwrap();
+    assert!(result.result.is_success());
+
+    let (_, recorder, _) = evm.components_mut();
+    let reads = recorder.drain();
+    let keys: Vec<_> = reads.iter().map(|read| read.key.clone()).collect();
+
+    assert!(keys.contains(&Key::Account(contract)));
+    assert!(keys.contains(&Key::Account(external)));
+    assert!(!keys.contains(&Key::Balance(external)));
+    assert!(!keys.contains(&Key::Code(contract)));
+    let external_read = reads
+        .iter()
+        .find(|read| read.key == Key::Account(external))
+        .unwrap();
+    assert_eq!(external_read.data.operations.reads.count(), 2);
+    let contract_read = reads
+        .iter()
+        .find(|read| read.key == Key::Account(contract))
+        .unwrap();
+    assert_eq!(contract_read.data.operations.reads.count(), 2);
 }

@@ -8,14 +8,14 @@ use alloy_evm::revm::{
 };
 use alloy_primitives::{Address, B256, U256};
 
-use super::EvmStateCache;
+use crate::store::state_cache::EvmStateCache;
 
 impl Database for EvmStateCache {
     type Error = Infallible;
 
     /// Return account information unless the account is absent or deleted.
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        Ok(self.inner.inner.get(&address).and_then(|account| {
+        Ok(self.get(&address).and_then(|account| {
             if account.is_selfdestructed()
                 || (account.is_loaded_as_not_existing() && !account.is_created())
             {
@@ -28,9 +28,7 @@ impl Database for EvmStateCache {
     /// Find embedded bytecode by hash, returning empty code when unavailable.
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
         Ok(self
-            .inner
-            .inner
-            .values()
+            .accounts()
             .filter(|account| account.info.code_hash == code_hash)
             .find_map(|account| account.info.code.clone())
             .unwrap_or_default())
@@ -38,7 +36,7 @@ impl Database for EvmStateCache {
 
     /// Return a slot's present value, or zero for absent accounts and slots.
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        let Some(account) = self.inner.inner.get(&address) else {
+        let Some(account) = self.get(&address) else {
             return Ok(U256::ZERO);
         };
         if account.is_selfdestructed()

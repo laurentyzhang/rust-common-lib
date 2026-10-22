@@ -2,6 +2,7 @@ pub mod cache;
 pub mod codec;
 #[cfg(feature = "mdbx")]
 pub mod mdbx;
+pub mod state_cache;
 pub mod traits;
 pub mod writer;
 

@@ -3,7 +3,7 @@ use alloy_evm::revm::context_interface::result::ResultAndState;
 use crate::crdt::state::{
     Tracked,
     op::Operations,
-    status::Tag::{self, Stripped},
+    status::{Status, Tag},
     value::ValueSnapshots,
 };
 use crate::execution::evm::key::Key;
@@ -12,7 +12,7 @@ use crate::execution::evm::key::Key;
 pub fn delta_records<H>(
     result_and_state: &ResultAndState<H>,
     id: u64,
-) -> Vec<(Key, Tracked<Tag, Tag>)> {
+) -> Vec<(Key, Tracked<Status, Status>)> {
     let mut records = account_delta_records(result_and_state, id);
     records.extend(slot_delta_records(result_and_state, id));
     records
@@ -22,42 +22,44 @@ pub fn delta_records<H>(
 fn account_delta_records<H>(
     result_and_state: &ResultAndState<H>,
     id: u64,
-) -> Vec<(Key, Tracked<Tag, Tag>)> {
+) -> Vec<(Key, Tracked<Status, Status>)> {
     let mut records = Vec::with_capacity(result_and_state.state.len());
 
     for (address, account) in &result_and_state.state {
         let mut operations = Operations::default();
 
-        let original = if account.is_loaded_as_not_existing() {
+        let original = if account.is_loaded_as_not_existing() || account.is_created() {
             Tag::Missing
         } else {
             Tag::Stripped
         };
 
-        let mut current = Stripped;
-        if account.is_selfdestructed() {
+        let current = if account.is_selfdestructed() {
             operations.removes.increment();
-            current = Tag::Deleted;
-        }
-
-        // An account with empty storage is considered default.
-        // This is not strictly necessary, since an empty
-        // account will be removed anyway.
-        if account.storage.is_empty() {
+            Tag::Deleted
+        } else if account.is_changed() || account.is_created() {
             operations.deltas.increment();
-            current = Tag::Default
-        }
+            if account.is_empty() {
+                Tag::Default
+            } else {
+                Tag::Stripped
+            }
+        } else {
+            Tag::Missing
+        };
 
         records.push((
             Key::Account(*address),
             Tracked {
                 id,
-                value: ValueSnapshots { original, current },
+                value: ValueSnapshots {
+                    original: Status::Tag(original),
+                    current: Status::Tag(current),
+                },
                 operations,
             },
         ));
     }
-
     records
 }
 
@@ -65,7 +67,7 @@ fn account_delta_records<H>(
 fn slot_delta_records<H>(
     result_and_state: &ResultAndState<H>,
     id: u64,
-) -> Vec<(Key, Tracked<Tag, Tag>)> {
+) -> Vec<(Key, Tracked<Status, Status>)> {
     let mut records = Vec::new();
 
     for (address, account) in &result_and_state.state {
@@ -78,7 +80,9 @@ fn slot_delta_records<H>(
                 Tag::Stripped
             };
 
-            let current = if value.present_value().is_zero() {
+            let current = if !value.is_changed() {
+                Tag::Missing
+            } else if value.present_value().is_zero() {
                 operations.removes.increment();
                 Tag::Deleted
             } else {
@@ -90,7 +94,10 @@ fn slot_delta_records<H>(
                 Key::Storage(*address, *slot),
                 Tracked {
                     id,
-                    value: ValueSnapshots { original, current },
+                    value: ValueSnapshots {
+                        original: Status::Tag(original),
+                        current: Status::Tag(current),
+                    },
                     operations,
                 },
             ));

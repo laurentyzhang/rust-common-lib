@@ -1,6 +1,11 @@
 use std::collections::HashMap;
 
-use crate::crdt::state::{Tracked, op::Operations, status::Tag, value::ValueSnapshots};
+use crate::crdt::state::{
+    Tracked,
+    op::Operations,
+    status::{Status, Tag},
+    value::ValueSnapshots,
+};
 use crate::execution::evm::key::Key;
 use crate::execution::output::ExecutionOutput;
 use alloy_evm::revm::{
@@ -14,7 +19,7 @@ use alloy_evm::revm::{
 };
 use rayon::prelude::*;
 
-pub type StateReads = Vec<ExecutionOutput<Key, Tracked<Tag, Tag>>>;
+pub type StateReads = Vec<ExecutionOutput<Key, Tracked<Status, Status>>>;
 
 pub(in crate::execution::evm) const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
 
@@ -93,8 +98,8 @@ impl StateReadRecorder {
                     data: Tracked {
                         id: self.id,
                         value: ValueSnapshots {
-                            original: Tag::Unknown,
-                            current: Tag::Unknown,
+                            original: Status::Tag(Tag::Unknown),
+                            current: Status::Tag(Tag::Unknown),
                         },
                         operations,
                     },

@@ -1,18 +1,15 @@
 use std::collections::{BTreeMap, HashSet};
 
-use alloy_evm::revm::state::EvmState;
-use alloy_primitives::map::hash_map::Entry;
+use alloy_evm::revm::state::{Account, EvmState};
+use alloy_primitives::{Address, map::hash_map::Entry};
 use rayon::prelude::*;
 
 use crate::store::traits::Committer;
 
-#[path = "statedb.rs"]
-mod statedb;
-
 /// An owned EVM state with ordered parallel merging.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeableEvmState {
-    inner: EvmState,
+    pub inner: EvmState,
 }
 
 impl MergeableEvmState {
@@ -90,6 +87,16 @@ impl EvmStateCache {
             inner: MergeableEvmState::new(state),
             buffered: BTreeMap::new(),
         }
+    }
+
+    /// Return the cached account at the requested address.
+    pub fn get(&self, address: &Address) -> Option<&Account> {
+        self.inner.inner.get(address)
+    }
+
+    /// Iterate over the cached accounts.
+    pub(crate) fn accounts(&self) -> impl Iterator<Item = &Account> {
+        self.inner.inner.values()
     }
 
     /// Consume the cache and return its accumulated state for persistence.

@@ -3,20 +3,18 @@ use super::inspector::StateReadRecorder;
 use super::{
     AccountDecodeError, AccountInfoCodec, ArcologyApi, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHookError, CallHookInput,
-    CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, EvmStateCache,
-    ExitStatus, ParaBlockConfig, RegisterHookError, TransactionOutcome, arcology_address,
-    delta_records,
+    CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, ExitStatus,
+    ParaBlockConfig, RegisterHookError, TransactionOutcome, arcology_address, delta_records,
 };
-use crate::store::traits::Committer;
+
 use crate::{
-    crdt::state::status::Tag,
+    crdt::state::status::{Status, Tag},
     execution::evm::key::{Key, KeyCodec},
     store::StoreCodec,
 };
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, FromRecoveredTx, RecoveredTx,
     revm::{
-        Database,
         context::TxEnv,
         context_interface::result::{
             ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason,
@@ -257,37 +255,6 @@ fn duplicate_registration_is_rejected() {
 }
 
 #[test]
-fn commit_writes_account_and_storage_to_evm_state_cache() {
-    let address = Address::repeat_byte(0x11);
-    let slot = U256::from(7);
-    let storage_value = U256::from(42);
-    let info = AccountInfo {
-        balance: U256::from(100),
-        nonce: 3,
-        ..AccountInfo::default()
-    };
-    let account = Account::from(info.clone())
-        .with_storage(
-            [(
-                slot,
-                EvmStorageSlot::new_changed(U256::ZERO, storage_value, Default::default()),
-            )]
-            .into_iter(),
-        )
-        .with_touched_mark();
-    let mut changes = EvmState::default();
-    changes.insert(address, account);
-
-    let mut db = EvmStateCache::default();
-    db.buffer(9, changes);
-    db.commit();
-
-    assert_eq!(db.basic(address).unwrap(), Some(info));
-    assert_eq!(db.storage(address, slot).unwrap(), storage_value);
-    assert_eq!(db.into_evm_state().len(), 1);
-}
-
-#[test]
 fn factory_installs_only_registered_arcology_precompiles() {
     let factory = factory_with_runtime_hook(|_| Ok(CallHookOutput::returned(1, Bytes::new())));
     let evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
@@ -442,51 +409,6 @@ fn factory_supports_standard_inspectors() {
 }
 
 #[test]
-fn evm_state_cache_and_recorder_track_balance_reads() {
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
-    let external = Address::with_last_byte(0x33);
-    // Read the external balance twice, then read the contract's own balance.
-    let code = Bytecode::new_raw(Bytes::from_static(&[
-        0x60, 0x33, 0x31, 0x50, 0x60, 0x33, 0x31, 0x50, 0x47, 0x50, 0x00,
-    ]));
-    let account = AccountInfo {
-        code_hash: code.hash_slow(),
-        code: Some(code),
-        ..Default::default()
-    };
-
-    let mut state = EvmState::default();
-    state.insert(contract, Account::from(account));
-
-    let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
-    let recorder = StateReadRecorder::new(2);
-    let mut evm =
-        factory.create_evm_with_inspector(EvmStateCache::new(state), EvmEnv::default(), recorder);
-    let result = evm.transact(tx(caller, contract, Bytes::new())).unwrap();
-    assert!(result.result.is_success());
-
-    let (_, recorder, _) = evm.components_mut();
-    let reads = recorder.drain();
-    let keys: Vec<_> = reads.iter().map(|read| read.key.clone()).collect();
-
-    assert!(keys.contains(&Key::Account(contract)));
-    assert!(keys.contains(&Key::Account(external)));
-    assert!(!keys.contains(&Key::Balance(external)));
-    assert!(!keys.contains(&Key::Code(contract)));
-    let external_read = reads
-        .iter()
-        .find(|read| read.key == Key::Account(external))
-        .unwrap();
-    assert_eq!(external_read.data.operations.reads.count(), 2);
-    let contract_read = reads
-        .iter()
-        .find(|read| read.key == Key::Account(contract))
-        .unwrap();
-    assert_eq!(contract_read.data.operations.reads.count(), 2);
-}
-
-#[test]
 fn recorder_tracks_sload_slots() {
     let caller = arcology_address(0x11);
     let contract = arcology_address(0x22);
@@ -609,8 +531,14 @@ fn parallel_executor_returns_contract_outcome() {
         .find(|(key, _)| *key == Key::Storage(contract, U256::ZERO))
         .map(|(_, tracked)| tracked)
         .unwrap();
-    assert!(matches!(storage_write.original(), Tag::Missing));
-    assert!(matches!(storage_write.current(), Tag::Stripped));
+    assert!(matches!(
+        storage_write.original(),
+        Status::Tag(Tag::Missing)
+    ));
+    assert!(matches!(
+        storage_write.current(),
+        Status::Tag(Tag::Stripped)
+    ));
     assert_eq!(storage_write.operations.deltas.count(), 1);
     assert!(
         outcome
@@ -667,8 +595,8 @@ fn conflict_records_tag_zeroed_storage_as_deleted() {
         .map(|(_, tracked)| tracked)
         .unwrap();
 
-    assert!(matches!(storage.original(), Tag::Stripped));
-    assert!(matches!(storage.current(), Tag::Deleted));
+    assert!(matches!(storage.original(), Status::Tag(Tag::Stripped)));
+    assert!(matches!(storage.current(), Status::Tag(Tag::Deleted)));
     assert_eq!(storage.operations.removes.count(), 1);
     assert_eq!(
         outcome.result_and_state.state[&contract].storage[&U256::ZERO].present_value(),
@@ -701,8 +629,8 @@ fn conflict_records_include_untouched_account_and_slot_as_read_only() {
             .find(|(record_key, _)| *record_key == key)
             .map(|(_, tracked)| tracked)
             .unwrap();
-        assert!(matches!(record.original(), Tag::Stripped));
-        assert!(matches!(record.current(), Tag::Missing));
+        assert!(matches!(record.original(), Status::Tag(Tag::Stripped)));
+        assert!(matches!(record.current(), Status::Tag(Tag::Missing)));
         assert_eq!(record.operations.reads.count(), 0);
         assert_eq!(record.operations.deltas.count(), 0);
         assert_eq!(record.operations.removes.count(), 0);
@@ -730,8 +658,8 @@ fn conflict_records_tag_existing_account_update_as_stripped() {
         .map(|(_, tracked)| tracked)
         .unwrap();
 
-    assert!(matches!(record.original(), Tag::Stripped));
-    assert!(matches!(record.current(), Tag::Stripped));
+    assert!(matches!(record.original(), Status::Tag(Tag::Stripped)));
+    assert!(matches!(record.current(), Status::Tag(Tag::Stripped)));
     assert_eq!(record.operations.deltas.count(), 1);
 }
 
@@ -761,8 +689,8 @@ fn conflict_records_use_changes_instead_of_touch_status() {
         .find(|(key, _)| *key == Key::Account(empty_address))
         .unwrap()
         .1;
-    assert!(matches!(empty_record.original(), Tag::Missing));
-    assert!(matches!(empty_record.current(), Tag::Missing));
+    assert!(matches!(empty_record.original(), Status::Tag(Tag::Missing)));
+    assert!(matches!(empty_record.current(), Status::Tag(Tag::Missing)));
     assert_eq!(empty_record.operations.deltas.count(), 0);
 
     for key in [
@@ -774,8 +702,8 @@ fn conflict_records_use_changes_instead_of_touch_status() {
             .find(|(record_key, _)| *record_key == key)
             .unwrap()
             .1;
-        assert!(matches!(record.original(), Tag::Stripped));
-        assert!(matches!(record.current(), Tag::Stripped));
+        assert!(matches!(record.original(), Status::Tag(Tag::Stripped)));
+        assert!(matches!(record.current(), Status::Tag(Tag::Stripped)));
         assert_eq!(record.operations.deltas.count(), 1);
     }
 }

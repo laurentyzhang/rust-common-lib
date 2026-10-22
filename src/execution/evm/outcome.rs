@@ -5,7 +5,7 @@ use alloy_evm::revm::context_interface::result::{HaltReason, ResultAndState};
 
 use super::{delta_records, inspector::StateReads, key::Key};
 use crate::{
-    crdt::state::{Tracked, status::Tag},
+    crdt::state::{Tracked, status::Status},
     scheduler::ID,
 };
 
@@ -18,8 +18,8 @@ pub struct TransactionOutcome<R, H = HaltReason> {
 
 impl<R, H> TransactionOutcome<R, H> {
     /// Merges inspector reads with state changes, keeping the state record for shared keys.
-    pub fn merge_records(&mut self, transaction_id: u64) -> Vec<(Key, Tracked<Tag, Tag>)> {
-        let mut unique_records: HashMap<Key, Tracked<Tag, Tag>> = HashMap::new();
+    pub fn merge_records(&mut self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+        let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
         for read in self.inspector_reads.drain(..) {
             let mut tracked = read.data;
             tracked.id = transaction_id;
