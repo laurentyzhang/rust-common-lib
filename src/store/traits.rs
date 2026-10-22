@@ -1,9 +1,9 @@
 use crate::crdt::state::StateError;
 
-pub trait Committer<V> {
-    fn buffer(&mut self, id: u64, state: V);
+pub trait Committer<K, V> {
+    fn buffer(&mut self, id: K, state: V);
     /// Drop rejected states; absent keys may still include their keys.
-    fn stage(&mut self, accepted: Vec<u64>);
+    fn stage(&mut self, accepted: Vec<K>);
     /// Commit accepted states in ID order and clear the buffer.
     fn flush(&mut self);
 }

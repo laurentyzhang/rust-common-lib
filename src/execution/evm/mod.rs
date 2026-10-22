@@ -28,7 +28,7 @@ pub use op::{
 };
 pub use outcome::{ScheduledTransactionResult, TransactionOutcome};
 pub use state::key;
-pub use state::{AccountDecodeError, AccountInfoCodec, EvmStateCache, MergeableEvmState, StateDB};
+pub use state::{AccountDecodeError, AccountInfoCodec, EvmStateCache, MergeableEvmState};
 pub use tracking::inspector;
 pub use tracking::{StateReads, delta_records};
 // pub use key::Key;

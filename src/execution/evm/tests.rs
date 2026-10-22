@@ -3,11 +3,11 @@ use super::inspector::StateReadRecorder;
 use super::{
     AccountDecodeError, AccountInfoCodec, ArcologyApi, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHookError, CallHookInput,
-    CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, ExitStatus,
-    ParaBlockConfig, RegisterHookError, StateDB, TransactionOutcome, arcology_address,
+    CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, EvmStateCache,
+    ExitStatus, ParaBlockConfig, RegisterHookError, TransactionOutcome, arcology_address,
     delta_records,
 };
-use crate::execution::{Entry, VmStateCache, VmStateCacheWriter};
+use crate::store::traits::Committer;
 use crate::{
     crdt::state::status::Tag,
     execution::evm::key::{Key, KeyCodec},
@@ -16,7 +16,7 @@ use crate::{
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, FromRecoveredTx, RecoveredTx,
     revm::{
-        Database, DatabaseCommit,
+        Database,
         context::TxEnv,
         context_interface::result::{
             ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason,
@@ -257,7 +257,7 @@ fn duplicate_registration_is_rejected() {
 }
 
 #[test]
-fn commit_writes_account_and_storage_to_vm_cache() {
+fn commit_writes_account_and_storage_to_evm_state_cache() {
     let address = Address::repeat_byte(0x11);
     let slot = U256::from(7);
     let storage_value = U256::from(42);
@@ -278,13 +278,13 @@ fn commit_writes_account_and_storage_to_vm_cache() {
     let mut changes = EvmState::default();
     changes.insert(address, account);
 
-    let mut db = StateDB::new(VmStateCache::new(9));
-    db.commit(changes);
+    let mut db = EvmStateCache::default();
+    db.buffer(9, changes);
+    db.commit();
 
-    assert_eq!(db.execution_store().id(), 9);
     assert_eq!(db.basic(address).unwrap(), Some(info));
     assert_eq!(db.storage(address, slot).unwrap(), storage_value);
-    assert_eq!(db.execution_store().drain().1.len(), 2);
+    assert_eq!(db.into_evm_state().len(), 1);
 }
 
 #[test]
@@ -442,7 +442,7 @@ fn factory_supports_standard_inspectors() {
 }
 
 #[test]
-fn state_db_and_recorder_track_balance_reads() {
+fn evm_state_cache_and_recorder_track_balance_reads() {
     let caller = arcology_address(0x11);
     let contract = arcology_address(0x22);
     let external = Address::with_last_byte(0x33);
@@ -456,18 +456,13 @@ fn state_db_and_recorder_track_balance_reads() {
         ..Default::default()
     };
 
-    let mut writer = VmStateCacheWriter::new(VmStateCache::new(1));
-    writer
-        .flush(vec![(Key::Account(contract), Entry::Other(account))])
-        .unwrap();
+    let mut state = EvmState::default();
+    state.insert(contract, Account::from(account));
 
     let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
     let recorder = StateReadRecorder::new(2);
-    let mut evm = factory.create_evm_with_inspector(
-        StateDB::new(writer.into_inner()),
-        EvmEnv::default(),
-        recorder,
-    );
+    let mut evm =
+        factory.create_evm_with_inspector(EvmStateCache::new(state), EvmEnv::default(), recorder);
     let result = evm.transact(tx(caller, contract, Bytes::new())).unwrap();
     assert!(result.result.is_success());
 
