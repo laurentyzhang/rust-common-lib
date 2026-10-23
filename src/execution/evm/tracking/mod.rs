@@ -1,5 +1,5 @@
 pub mod inspector;
-mod state_records;
+mod records;
 
 pub use inspector::StateReads;
-pub use state_records::delta_records;
+pub use records::delta_records;

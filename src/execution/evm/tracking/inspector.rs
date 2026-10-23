@@ -36,6 +36,12 @@ impl StateReadRecorder {
         }
     }
 
+    /// Start another transaction while retaining the recorder's allocation.
+    pub(in crate::execution::evm) fn reset(&mut self, id: u64) {
+        self.id = id;
+        self.reads.clear();
+    }
+
     pub(in crate::execution::evm) fn record(&mut self, key: Key) {
         *self.reads.entry(key).or_default() += 1;
     }

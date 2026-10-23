@@ -1,7 +1,7 @@
 use super::inspector::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_ENTRIES;
 use super::inspector::StateReadRecorder;
 use super::{
-    AccountDecodeError, AccountInfoCodec, ArcologyApi, ArcologyBlockExecutorFactory,
+    AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHookError, CallHookInput,
     CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, ExitStatus,
     ParaBlockConfig, RegisterHookError, TransactionOutcome, arcology_address, delta_records,
@@ -29,9 +29,15 @@ use alloy_op_evm::{OpBlockExecutionCtx, block::OpAlloyReceiptBuilder};
 use alloy_op_hardforks::OpChainHardforks;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use op_alloy::consensus::{OpTxEnvelope, TxDeposit};
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
-use crate::scheduler::PassThroughScheduler;
+use crate::scheduler::{Generation, Job, JobSequence, PassThroughScheduler, Scheduler};
 
 // Contract bytecode that CALLs Arcology's runtime address and returns its 32-byte output.
 const INTERNAL_CALLER_CODE: &[u8] = &[
@@ -112,7 +118,7 @@ fn factory_with_runtime_hook(
 ) -> ArcologyEvmFactory {
     let mut router = CallHookRouter::new();
     router
-        .register(ArcologyApi::Runtime, ClosureCallHook::new(handler))
+        .register(ApiAddress::Runtime, ClosureCallHook::new(handler))
         .unwrap();
     ArcologyEvmFactory::try_new(router).unwrap()
 }
@@ -140,11 +146,11 @@ fn malformed_account_info_is_rejected() {
 
 #[test]
 fn recognizes_arcology_addresses() {
-    for api in ArcologyApi::ALL {
-        assert_eq!(ArcologyApi::from_address(api.address()), Some(api));
+    for api in ApiAddress::ALL {
+        assert_eq!(ApiAddress::from_address(api.address()), Some(api));
     }
 
-    assert_eq!(ArcologyApi::from_address(arcology_address(0x42)), None);
+    assert_eq!(ApiAddress::from_address(arcology_address(0x42)), None);
 }
 
 #[test]
@@ -162,7 +168,7 @@ fn registered_runtime_call_is_handled() {
     let mut router = CallHookRouter::new();
     router
         .register(
-            ArcologyApi::Runtime,
+            ApiAddress::Runtime,
             ClosureCallHook::new(|call: &CallHookInput<'_>| {
                 assert_eq!(call.input, &[0xde, 0xad, 0xbe, 0xef]);
                 Ok(CallHookOutput::returned(21, Bytes::from(vec![7_u8])))
@@ -171,7 +177,7 @@ fn registered_runtime_call_is_handled() {
         .unwrap();
 
     let outcome = router
-        .dispatch(&input(ArcologyApi::Runtime.address(), 100))
+        .dispatch(&input(ApiAddress::Runtime.address(), 100))
         .unwrap();
 
     assert_eq!(
@@ -185,7 +191,7 @@ fn revert_is_a_handled_result() {
     let mut router = CallHookRouter::new();
     router
         .register(
-            ArcologyApi::Runtime,
+            ApiAddress::Runtime,
             ClosureCallHook::new(|_: &CallHookInput<'_>| {
                 Ok(CallHookOutput::reverted(
                     30,
@@ -196,7 +202,7 @@ fn revert_is_a_handled_result() {
         .unwrap();
 
     let outcome = router
-        .dispatch(&input(ArcologyApi::Runtime.address(), 100))
+        .dispatch(&input(ApiAddress::Runtime.address(), 100))
         .unwrap();
 
     assert_eq!(
@@ -213,7 +219,7 @@ fn handler_cannot_use_more_than_supplied_gas() {
     let mut router = CallHookRouter::new();
     router
         .register(
-            ArcologyApi::Runtime,
+            ApiAddress::Runtime,
             ClosureCallHook::new(|_: &CallHookInput<'_>| {
                 Ok(CallHookOutput::returned(101, Bytes::new()))
             }),
@@ -221,7 +227,7 @@ fn handler_cannot_use_more_than_supplied_gas() {
         .unwrap();
 
     assert_eq!(
-        router.dispatch(&input(ArcologyApi::Runtime.address(), 100)),
+        router.dispatch(&input(ApiAddress::Runtime.address(), 100)),
         Err(CallHookError::OutOfGas {
             gas_limit: 100,
             gas_used: 101,
@@ -234,7 +240,7 @@ fn duplicate_registration_is_rejected() {
     let mut router = CallHookRouter::new();
     router
         .register(
-            ArcologyApi::Runtime,
+            ApiAddress::Runtime,
             ClosureCallHook::new(|_: &CallHookInput<'_>| {
                 Ok(CallHookOutput::returned(0, Bytes::new()))
             }),
@@ -242,14 +248,14 @@ fn duplicate_registration_is_rejected() {
         .unwrap();
 
     let result = router.register(
-        ArcologyApi::Runtime,
+        ApiAddress::Runtime,
         ClosureCallHook::new(|_: &CallHookInput<'_>| Ok(CallHookOutput::returned(0, Bytes::new()))),
     );
 
     assert_eq!(
         result,
         Err(RegisterHookError {
-            address: ArcologyApi::Runtime.address()
+            address: ApiAddress::Runtime.address()
         })
     );
 }
@@ -260,8 +266,8 @@ fn factory_installs_only_registered_arcology_precompiles() {
     let evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let (_, _, precompiles) = evm.components();
 
-    assert!(precompiles.get(&ArcologyApi::Runtime.address()).is_some());
-    assert!(precompiles.get(&ArcologyApi::Container.address()).is_none());
+    assert!(precompiles.get(&ApiAddress::Runtime.address()).is_some());
+    assert!(precompiles.get(&ApiAddress::Container.address()).is_none());
     assert!(precompiles.get(&arcology_address(0x01)).is_some());
 }
 
@@ -305,7 +311,7 @@ fn direct_transaction_is_dispatched_through_revm() {
     let calldata = Bytes::from_static(b"pid()");
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
-        .transact(tx(caller, ArcologyApi::Runtime.address(), calldata.clone()))
+        .transact(tx(caller, ApiAddress::Runtime.address(), calldata.clone()))
         .unwrap();
 
     assert!(result.result.is_success());
@@ -317,8 +323,8 @@ fn direct_transaction_is_dispatched_through_revm() {
         *observed.lock().unwrap(),
         Some((
             caller,
-            ArcologyApi::Runtime.address(),
-            ArcologyApi::Runtime.address(),
+            ApiAddress::Runtime.address(),
+            ApiAddress::Runtime.address(),
             calldata.to_vec(),
             CallScheme::Call,
         ))
@@ -368,7 +374,7 @@ fn revert_is_returned_as_an_evm_revert() {
     let result = evm
         .transact(tx(
             arcology_address(0x11),
-            ArcologyApi::Runtime.address(),
+            ApiAddress::Runtime.address(),
             Bytes::new(),
         ))
         .unwrap();
@@ -393,7 +399,7 @@ fn excessive_hook_gas_becomes_an_evm_halt() {
     let result = evm
         .transact(tx(
             arcology_address(0x11),
-            ArcologyApi::Runtime.address(),
+            ApiAddress::Runtime.address(),
             Bytes::new(),
         ))
         .unwrap();
@@ -447,6 +453,211 @@ fn recorder_tracks_sload_slots() {
         .find(|read| read.key == Key::Storage(contract, slot))
         .unwrap();
     assert_eq!(storage.data.operations.reads.count(), 2);
+}
+
+#[test]
+fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
+    // Two independent sequences per generation, with three ordered jobs each.
+    struct SequenceScheduler;
+    impl<Tx> Scheduler<Tx> for SequenceScheduler {
+        fn schedule(&self, jobs: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>> {
+            let mut jobs = jobs.into_iter().peekable();
+            let mut generations = Vec::<Generation<Tx>>::new();
+            while jobs.peek().is_some() {
+                let mut generation = Generation::default();
+                for sequence in 0..2 {
+                    let jobs: Vec<_> = jobs
+                        .by_ref()
+                        .take(3)
+                        .enumerate()
+                        .map(|(index, mut job)| {
+                            job.id.generation = generations.len() as u64;
+                            job.id.sequence = sequence;
+                            job.id.job = index as u64;
+                            job
+                        })
+                        .collect();
+                    if !jobs.is_empty() {
+                        generation.sequences.push(JobSequence {
+                            jobs,
+                            nonce_offsets: Vec::new(),
+                        });
+                    }
+                }
+                generations.push(generation);
+            }
+            generations
+        }
+    }
+
+    let contract = arcology_address(0x22);
+    let callers = [0x31, 0x32, 0x33, 0x34].map(arcology_address);
+    // Increment slot zero and return it; nonempty calldata reverts the write.
+    let code = Bytecode::new_raw(Bytes::from_static(&[
+        0x60, 0x00, 0x54, // SLOAD(0)
+        0x60, 0x01, 0x01, 0x80, // increment and DUP1
+        0x60, 0x00, 0x55, // SSTORE(0, value)
+        0x60, 0x00, 0x52, // MSTORE(0, value)
+        0x36, 0x15, 0x60, 0x17, 0x57, // jump to success for empty calldata
+        0x60, 0x00, 0x60, 0x00, 0xfd, // REVERT(0, 0)
+        0x5b, 0x60, 0x20, 0x60, 0x00, 0xf3, // return the value
+    ]));
+    let transaction = |caller, input| {
+        let envelope: OpTxEnvelope = TxDeposit {
+            from: caller,
+            to: TxKind::Call(contract),
+            gas_limit: 100_000,
+            input,
+            ..Default::default()
+        }
+        .into();
+        (
+            ArcologyTx::from_recovered_tx(&envelope, caller),
+            RecoveredOpTx {
+                tx: envelope,
+                signer: caller,
+            },
+        )
+    };
+
+    for workers in [0, 1, 2, 4] {
+        let databases = AtomicUsize::new(0);
+        let threads = Mutex::new(HashSet::new());
+        let make_db = || {
+            databases.fetch_add(1, Ordering::Relaxed);
+            threads.lock().unwrap().insert(std::thread::current().id());
+            let mut db = CacheDB::new(EmptyDB::default());
+            db.insert_account_info(
+                contract,
+                AccountInfo {
+                    code_hash: code.hash_slow(),
+                    code: Some(code.clone()),
+                    ..Default::default()
+                },
+            );
+            for caller in callers {
+                db.insert_account_info(
+                    caller,
+                    AccountInfo {
+                        nonce: 7,
+                        ..Default::default()
+                    },
+                );
+            }
+            db
+        };
+        let factory = ArcologyBlockExecutorFactory::new(
+            OpAlloyReceiptBuilder::default(),
+            OpChainHardforks::op_mainnet(),
+            ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap(),
+        );
+        let executor = ArcologyParaBlockExecutor::new(
+            factory,
+            ParaBlockConfig {
+                workers,
+                env: EvmEnv::default(),
+                ctx: OpBlockExecutionCtx::default(),
+            },
+            |_, _| {},
+        );
+
+        // Reusing the executor across blocks must reuse the same bounded worker set.
+        for block in 0..2 {
+            let results = executor.execute_block(
+                &make_db,
+                &SequenceScheduler,
+                (0..12).map(|index| transaction(callers[index / 3], Bytes::new())),
+            );
+            assert_eq!(results.len(), 12);
+            assert_eq!(databases.load(Ordering::Relaxed), (block + 1) * 4);
+            for (index, scheduled) in results.into_iter().enumerate() {
+                let position = index % 3;
+                assert_eq!(scheduled.id.global, index as u64);
+                assert_eq!(scheduled.id.generation, (index / 6) as u64);
+                assert_eq!(scheduled.id.sequence, ((index % 6) / 3) as u64);
+                assert_eq!(scheduled.id.job, position as u64);
+                let outcome = scheduled.outcome.unwrap();
+                let result = &outcome.result_and_state;
+                assert!(result.result.is_success());
+                assert_eq!(
+                    U256::from_be_slice(result.result.output().unwrap()),
+                    U256::from(position + 1)
+                );
+                let slot = &result.state[&contract].storage[&U256::ZERO];
+                assert_eq!(slot.original_value(), U256::from(position));
+                assert_eq!(slot.present_value(), U256::from(position + 1));
+                assert_eq!(
+                    result.state[&callers[index / 3]].info.nonce,
+                    8 + position as u64
+                );
+                assert!(
+                    outcome
+                        .inspector_reads
+                        .iter()
+                        .all(|read| read.id == index as u64 && read.data.id == index as u64)
+                );
+                let storage_read = outcome
+                    .inspector_reads
+                    .iter()
+                    .find(|read| read.key == Key::Storage(contract, U256::ZERO))
+                    .unwrap();
+                assert_eq!(storage_read.data.operations.reads.count(), 1);
+            }
+        }
+        assert!(threads.lock().unwrap().len() <= workers.max(1));
+
+        // Separate snapshots start at the sender nonce plus their scheduler offset.
+        let results = executor.execute_block(
+            &make_db,
+            &PassThroughScheduler::new(),
+            (0..3).map(|_| transaction(callers[0], Bytes::new())),
+        );
+        for (index, scheduled) in results.into_iter().enumerate() {
+            let outcome = scheduled.outcome.unwrap();
+            assert_eq!(
+                outcome.result_and_state.state[&callers[0]].info.nonce,
+                8 + index as u64
+            );
+        }
+
+        // A revert advances the sender nonce but its storage write is rolled back.
+        let results = executor.execute_block(
+            &make_db,
+            &SequenceScheduler,
+            [
+                transaction(callers[0], Bytes::from_static(&[1])),
+                transaction(callers[0], Bytes::new()),
+            ],
+        );
+        assert!(matches!(
+            results[0].outcome.as_ref().unwrap().result_and_state.result,
+            ExecutionResult::Revert { .. }
+        ));
+        let outcome = results[1].outcome.as_ref().unwrap();
+        assert_eq!(
+            U256::from_be_slice(outcome.result_and_state.result.output().unwrap()),
+            U256::from(1)
+        );
+        assert_eq!(outcome.result_and_state.state[&callers[0]].info.nonce, 9);
+        assert!(
+            outcome
+                .inspector_reads
+                .iter()
+                .all(|read| read.id == 1 && read.data.id == 1)
+        );
+
+        let before = databases.load(Ordering::Relaxed);
+        assert!(
+            executor
+                .execute_block(
+                    &make_db,
+                    &SequenceScheduler,
+                    std::iter::empty::<(ArcologyTx, RecoveredOpTx)>()
+                )
+                .is_empty()
+        );
+        assert_eq!(databases.load(Ordering::Relaxed), before);
+    }
 }
 
 #[test]

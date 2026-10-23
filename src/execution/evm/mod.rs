@@ -16,9 +16,9 @@ mod tests;
 
 pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use hooks::{
-    ArcologyApi, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
-    CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, arcology_address,
-    dispatch_precompile,
+    ApiAddress, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
+    CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, SlotPrefixer, Type,
+    arcology_address, dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;
@@ -28,7 +28,9 @@ pub use op::{
 };
 pub use outcome::{ScheduledTransactionResult, TransactionOutcome};
 pub use state::key;
-pub use state::{AccountDecodeError, AccountInfoCodec};
+pub use state::{
+    AccountDecodeError, AccountInfoCodec, EvmStateCache, EvmStateCommitter, MergeableEvmState,
+};
 pub use tracking::inspector;
 pub use tracking::{StateReads, delta_records};
 // pub use key::Key;

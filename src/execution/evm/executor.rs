@@ -1,16 +1,23 @@
 //! Arcology's parallel execution worker set.
 
-use alloy_evm::block::{BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult};
+use alloy_evm::block::{
+    BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult,
+};
 use alloy_evm::{Evm, EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
+use alloy_primitives::Address;
+use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
 
-use alloy_evm::revm::context_interface::Transaction;
+use alloy_evm::revm::{
+    context_interface::Transaction,
+    state::{Account, EvmState},
+};
 
 use super::{
     inspector::StateReadRecorder,
     outcome::{ScheduledTransactionResult, TransactionOutcome},
 };
-use crate::scheduler::{Generation, ID, Job, Scheduler};
+use crate::scheduler::{Generation, ID, Job, JobSequence, Scheduler};
 
 /// Settings shared by every worker of a block.
 pub struct ParaBlockConfig<F: BlockExecutorFactory> {
@@ -21,11 +28,12 @@ pub struct ParaBlockConfig<F: BlockExecutorFactory> {
 
 /// Runs the transactions of a generation on parallel workers.
 ///
-/// Every transaction gets a new executor whose EVM has its own database from the
-/// `make_db` passed to each call and a copy of the shared `config.env`.
+/// Each sequence owns an executor and database. Its transactions run in order and
+/// see preceding changes; independent sequences share a persistent worker pool.
 pub struct ArcologyParaBlockExecutor<F: BlockExecutorFactory> {
     factory: F,
     config: ParaBlockConfig<F>,
+    pool: ThreadPool,
     set_cumulative: Box<dyn Fn(&mut F::Receipt, u64) + Send + Sync>,
 }
 
@@ -36,9 +44,15 @@ impl<F: BlockExecutorFactory> ArcologyParaBlockExecutor<F> {
         config: ParaBlockConfig<F>,
         set_cumulative: impl Fn(&mut F::Receipt, u64) + Send + Sync + 'static,
     ) -> Self {
+        // Keep the workers alive across generations and block executions.
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(config.workers.max(1))
+            .build()
+            .expect("failed to create EVM worker pool");
         Self {
             factory,
             config,
+            pool,
             set_cumulative: Box::new(set_cumulative),
         }
     }
@@ -82,7 +96,7 @@ impl<F: BlockExecutorFactory> ArcologyParaBlockExecutor<F> {
 
 impl<F> ArcologyParaBlockExecutor<F>
 where
-    F: BlockExecutorFactory + Clone + Send + Sync,
+    F: BlockExecutorFactory + Send + Sync,
     for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
     <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
     <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
@@ -119,9 +133,8 @@ where
         self.finish_block(results)
     }
 
-    /// Executes the transactions in one generation parallelly. The jobs are split evenly
-    /// across the workers and each worker runs its share in order. Pass the results of all
-    /// generations to `finish_block` to restore block order and cumulative gas.
+    /// Executes independent sequences in parallel, keeping each sequence intact.
+    /// Returns after all sequences finish; block ordering and gas are finalized separately.
     fn para_execute_generation<DB, Tx>(
         &self,
         make_db: &(impl Fn() -> DB + Sync),
@@ -132,75 +145,108 @@ where
         F::Receipt: Clone + Send,
         Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
     {
-        let all: Vec<(ID, Tx)> = generation
-            .sequences
-            .into_iter()
-            .flat_map(|seq| seq.jobs)
-            .map(|job| (job.id, job.tx))
-            .collect();
-        let chunk_len = all.len().div_ceil(self.config.workers.max(1)).max(1);
-        let mut all = all.into_iter();
-        let mut chunks: Vec<Vec<(ID, Tx)>> = Vec::new();
-        loop {
-            let chunk: Vec<(ID, Tx)> = all.by_ref().take(chunk_len).collect();
-            if chunk.is_empty() {
-                break;
-            }
-            chunks.push(chunk);
+        // Avoid dispatch overhead when there is no parallel work.
+        if generation.sequences.len() <= 1 || self.pool.current_num_threads() == 1 {
+            return generation
+                .sequences
+                .into_iter()
+                .flat_map(|sequence| self.execute_sequence(make_db, sequence))
+                .collect();
         }
-        let factories: Vec<F> = chunks.iter().map(|_| self.factory.clone()).collect();
 
-        let (env, ctx) = (&self.config.env, &self.config.ctx);
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = factories
-                .iter()
-                .zip(chunks)
-                .map(|(factory, chunk)| {
-                    scope.spawn(move || {
-                        chunk
-                            .into_iter()
-                            .map(|(id, tx)| {
-                                let outcome = (|| {
-                                    // Record state reads for later conflict detection.
-                                    let recorder = StateReadRecorder::new(id.global);
-                                    let evm = factory.evm_factory().create_evm_with_inspector(
-                                        make_db(),
-                                        env.clone(),
-                                        recorder,
-                                    );
-                                    let mut executor = factory.create_executor(evm, ctx.clone());
-                                    let mut result_and_state = None;
-                                    executor.execute_transaction_with_result_closure(
-                                        tx,
-                                        |result| {
-                                            result_and_state = Some(result.result().clone());
-                                        },
-                                    )?;
-                                    // The executor is new, so its only receipt belongs to this tx.
-                                    let receipt = executor
-                                        .receipts()
-                                        .last()
-                                        .cloned()
-                                        .expect("a committed transaction has a receipt");
-                                    let (_, recorder, _) = executor.evm_mut().components_mut();
-                                    let inspector_reads = recorder.drain();
-                                    Ok(TransactionOutcome {
-                                        result_and_state: result_and_state
-                                            .expect("a successful execution has a result"),
-                                        receipt,
-                                        inspector_reads,
-                                    })
-                                })();
-                                ScheduledTransactionResult { id, outcome }
-                            })
-                            .collect::<Vec<_>>()
-                    })
+        // Workers take whole sequences as they become available. Indexed collection
+        // preserves plan order without coupling execution to fixed transaction chunks.
+        let results: Vec<_> = self.pool.install(|| {
+            generation
+                .sequences
+                .into_par_iter()
+                .map(|sequence| self.execute_sequence(make_db, sequence))
+                .collect()
+        });
+        results.into_iter().flatten().collect()
+    }
+
+    /// Reuses one executor so committed transaction changes reach the next job.
+    fn execute_sequence<DB, Tx>(
+        &self,
+        make_db: &(impl Fn() -> DB + Sync),
+        sequence: JobSequence<Tx>,
+    ) -> Vec<ScheduledTransactionResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
+    where
+        DB: StateDB,
+        F::Receipt: Clone + Send,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
+    {
+        let Some(first) = sequence.jobs.first() else {
+            return Vec::new();
+        };
+        let mut db = make_db();
+
+        // Account for each sender's earlier jobs in other sequences, once at startup.
+        let setup = sequence.nonce_offsets.into_iter().try_for_each(|entry| {
+            if entry.offset == 0 {
+                return Ok(());
+            }
+            let address = Address::from(entry.sender);
+            let mut info = db
+                .basic(address)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            info.nonce = info
+                .nonce
+                .checked_add(entry.offset)
+                .ok_or_else(|| BlockExecutionError::msg("sequence sender nonce overflow"))?;
+            db.commit(EvmState::from_iter([(
+                address,
+                Account::from(info).with_touched_mark(),
+            )]));
+            Ok::<_, BlockExecutionError>(())
+        });
+        if let Err(error) = setup {
+            return sequence
+                .jobs
+                .into_iter()
+                .map(|job| ScheduledTransactionResult {
+                    id: job.id,
+                    outcome: Err(BlockExecutionError::msg(format!(
+                        "sequence initialization failed: {error}"
+                    ))),
                 })
                 .collect();
-            handles
-                .into_iter()
-                .flat_map(|handle| handle.join().expect("worker panicked"))
-                .collect()
-        })
+        }
+
+        let evm = self.factory.evm_factory().create_evm_with_inspector(
+            db,
+            self.config.env.clone(),
+            StateReadRecorder::new(first.id.global),
+        );
+        let mut executor = self.factory.create_executor(evm, self.config.ctx.clone());
+        let mut results = Vec::with_capacity(sequence.jobs.len());
+        for job in sequence.jobs {
+            let id = job.id;
+            // Reads and their IDs belong to this transaction, even after a failed job.
+            executor.evm_mut().components_mut().1.reset(id.global);
+            let outcome = (|| {
+                let mut result_and_state = None;
+                // This commits into the sequence's private DB before the next job starts.
+                executor.execute_transaction_with_result_closure(job.tx, |result| {
+                    result_and_state = Some(result.result().clone());
+                })?;
+                let receipt = executor
+                    .receipts()
+                    .last()
+                    .cloned()
+                    .expect("a committed transaction has a receipt");
+                let inspector_reads = executor.evm_mut().components_mut().1.drain();
+                Ok(TransactionOutcome {
+                    result_and_state: result_and_state
+                        .expect("a successful execution has a result"),
+                    receipt,
+                    inspector_reads,
+                })
+            })();
+            results.push(ScheduledTransactionResult { id, outcome });
+        }
+        results
     }
 }

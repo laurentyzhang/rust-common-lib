@@ -4,7 +4,7 @@ use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 /// Arcology's reserved EVM call targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub enum ArcologyApi {
+pub enum ApiAddress {
     Io = 0x60,
     Container = 0x84,
     CumulativeU256 = 0x85,
@@ -13,7 +13,7 @@ pub enum ArcologyApi {
     Multiprocess = 0xb0,
 }
 
-impl ArcologyApi {
+impl ApiAddress {
     pub const ALL: [Self; 6] = [
         Self::Io,
         Self::Container,
@@ -194,7 +194,7 @@ impl CallHookRouter {
         Self::default()
     }
 
-    pub fn register<H>(&mut self, api: ArcologyApi, handler: H) -> Result<(), RegisterHookError>
+    pub fn register<H>(&mut self, api: ApiAddress, handler: H) -> Result<(), RegisterHookError>
     where
         H: CallHook + 'static,
     {
