@@ -3,7 +3,7 @@
 //! The OP factory remains responsible for constructing the EVM and selecting its native
 //! precompiles. Arcology only validates its addresses and extends the completed OP map.
 
-use super::super::{CallHookRouter, dispatch_precompile};
+use super::super::{CallRouter, PrecompileCollisionError, dispatch_precompile};
 use super::{
     backend::{
         BaseEvm, BaseFactory, PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx,
@@ -24,28 +24,6 @@ use alloy_evm::{
 };
 
 use alloy_primitives::{Address, Bytes};
-use std::{error::Error, fmt};
-
-/// Returned when an Arcology handler targets an address already occupied by
-/// the active Ethereum precompile set.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrecompileCollisionError {
-    pub address: Address,
-    pub existing: PrecompileId,
-}
-
-impl fmt::Display for PrecompileCollisionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Arcology precompile address {:?} collides with existing precompile {}",
-            self.address,
-            self.existing.name()
-        )
-    }
-}
-
-impl Error for PrecompileCollisionError {}
 
 /// Arcology EVM wrapper.
 ///
@@ -147,13 +125,13 @@ where
 #[derive(Clone, Debug, Default)]
 pub struct ArcologyEvmFactory {
     base_evm_factory: BaseFactory,
-    router: CallHookRouter,
+    router: CallRouter,
 }
 
 impl ArcologyEvmFactory {
     /// Creates a factory after checking every registered Arcology address
     /// against the complete OP precompile set.
-    pub fn try_new(router: CallHookRouter) -> Result<Self, PrecompileCollisionError> {
+    pub fn try_new(router: CallRouter) -> Result<Self, PrecompileCollisionError> {
         let op_precompiles = PrecompilesMap::from_static(Precompiles::latest());
         Self::ensure_no_collisions(&router, &op_precompiles)?;
         Ok(Self {
@@ -162,16 +140,16 @@ impl ArcologyEvmFactory {
         })
     }
 
-    pub fn router(&self) -> &CallHookRouter {
+    pub fn router(&self) -> &CallRouter {
         &self.router
     }
 
     fn ensure_no_collisions(
-        router: &CallHookRouter,
+        router: &CallRouter,
         precompiles: &PrecompilesMap,
     ) -> Result<(), PrecompileCollisionError> {
         // Never let Arcology replace an already registered OP/Ethereum precompile.
-        for address in router.registered_addresses() {
+        for &address in router.handlers.keys() {
             if let Some(existing) = precompiles.get(&address) {
                 return Err(PrecompileCollisionError {
                     address,
@@ -189,19 +167,14 @@ impl ArcologyEvmFactory {
         // This receives the map after the backend factory has populated it.
         Self::ensure_no_collisions(&self.router, &precompiles)?;
 
-        // Each Arcology address becomes a stateful REVM precompile that routes into CallHookRouter.
-        let hooks = self
-            .router
-            .registered_addresses()
-            .into_iter()
-            .map(|address| {
-                let router = self.router.clone();
-                let id = PrecompileId::custom(format!("arcology-{address:?}"));
-                let hook = DynPrecompile::new_stateful(id, move |input| {
-                    dispatch_precompile(&router, input)
-                });
-                (address, hook)
-            });
+        // Each Arcology address becomes a stateful REVM precompile that routes into CallRouter.
+        let hooks = self.router.handlers.keys().copied().map(|address| {
+            let router = self.router.clone();
+            let id = PrecompileId::custom(format!("arcology-{address:?}"));
+            let hook =
+                DynPrecompile::new_stateful(id, move |input| dispatch_precompile(&router, input));
+            (address, hook)
+        });
 
         // Extension is safe because every target address was checked immediately above.
         precompiles.extend_precompiles(hooks);

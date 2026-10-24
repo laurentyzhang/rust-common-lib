@@ -1,19 +1,7 @@
-use std::fmt;
-
-use alloy_evm::revm::{bytecode::Bytecode, database_interface::DBErrorMarker, state::AccountInfo};
+use alloy_evm::revm::{bytecode::Bytecode, state::AccountInfo};
 use alloy_primitives::{B256, U256};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AccountDecodeError;
-
-impl fmt::Display for AccountDecodeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("invalid encoded AccountInfo")
-    }
-}
-
-impl std::error::Error for AccountDecodeError {}
-impl DBErrorMarker for AccountDecodeError {}
+use super::super::AccountDecodeError;
 
 const ACCOUNT_HEADER_LEN: usize = 32 + 8 + 32 + 1;
 

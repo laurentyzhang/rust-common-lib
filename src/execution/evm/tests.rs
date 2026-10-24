@@ -2,9 +2,9 @@ use super::inspector::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_EN
 use super::inspector::StateReadRecorder;
 use super::{
     AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
-    ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHookError, CallHookInput,
-    CallHookOutcome, CallHookOutput, CallHookRouter, CallScheme, ClosureCallHook, ExitStatus,
-    ParaBlockConfig, RegisterHookError, TransactionOutcome, arcology_address, delta_records,
+    ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHandler, CallHookError,
+    CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, ParaBlockConfig, RegisterHookError,
+    TransactionOutcome, arcology_address, delta_records,
 };
 
 use crate::{
@@ -13,9 +13,10 @@ use crate::{
     store::StoreCodec,
 };
 use alloy_evm::{
-    Evm, EvmEnv, EvmFactory, FromRecoveredTx, RecoveredTx,
+    Evm, EvmEnv, EvmFactory, EvmInternals, FromRecoveredTx, RecoveredTx,
     revm::{
-        context::TxEnv,
+        Journal,
+        context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         context_interface::result::{
             ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason,
         },
@@ -55,8 +56,8 @@ const INTERNAL_CALLER_CODE: &[u8] = &[
     0xf3, // RETURN
 ];
 
-fn input(target: Address, gas_limit: u64) -> CallHookInput<'static> {
-    CallHookInput {
+fn input(target: Address, gas_limit: u64) -> CallInput<'static> {
+    CallInput {
         caller: arcology_address(0x01),
         target,
         code_address: target,
@@ -65,6 +66,19 @@ fn input(target: Address, gas_limit: u64) -> CallHookInput<'static> {
         gas_limit,
         scheme: CallScheme::Call,
     }
+}
+
+// Supply an isolated journal for router-only tests.
+fn dispatch(
+    router: &CallRouter,
+    input: &CallInput<'_>,
+) -> Result<Option<CallOutput>, CallHookError> {
+    let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
+    let block = BlockEnv::default();
+    let cfg: CfgEnv = CfgEnv::default();
+    let tx = TxEnv::default();
+    let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
+    router.dispatch(input, &mut internals)
 }
 
 #[test]
@@ -111,14 +125,11 @@ impl RecoveredTx<OpTxEnvelope> for RecoveredOpTx {
 }
 
 fn factory_with_runtime_hook(
-    handler: impl Fn(&CallHookInput<'_>) -> Result<CallHookOutput, CallHookError>
-    + Send
-    + Sync
-    + 'static,
+    handler: impl Fn(&CallInput<'_>) -> Result<CallOutput, CallHookError> + Send + Sync + 'static,
 ) -> ArcologyEvmFactory {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Runtime, ClosureCallHook::new(handler))
+        .register(ApiAddress::Runtime.address(), handler)
         .unwrap();
     ArcologyEvmFactory::try_new(router).unwrap()
 }
@@ -145,69 +156,73 @@ fn malformed_account_info_is_rejected() {
 }
 
 #[test]
-fn recognizes_arcology_addresses() {
-    for api in ApiAddress::ALL {
-        assert_eq!(ApiAddress::from_address(api.address()), Some(api));
-    }
-
-    assert_eq!(ApiAddress::from_address(arcology_address(0x42)), None);
-}
-
-#[test]
 fn normal_calls_continue() {
-    let router = CallHookRouter::new();
-    let outcome = router
-        .dispatch(&input(arcology_address(0x42), 100))
-        .unwrap();
+    let router = CallRouter::new();
+    let outcome = dispatch(&router, &input(arcology_address(0x42), 100)).unwrap();
 
-    assert_eq!(outcome, CallHookOutcome::Continue);
+    assert_eq!(outcome, None);
 }
 
 #[test]
 fn registered_runtime_call_is_handled() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(
-            ApiAddress::Runtime,
-            ClosureCallHook::new(|call: &CallHookInput<'_>| {
-                assert_eq!(call.input, &[0xde, 0xad, 0xbe, 0xef]);
-                Ok(CallHookOutput::returned(21, Bytes::from(vec![7_u8])))
-            }),
-        )
+        .register(ApiAddress::Runtime.address(), |call: &CallInput<'_>| {
+            assert_eq!(call.input, &[0xde, 0xad, 0xbe, 0xef]);
+            Ok(CallOutput::returned(21, Bytes::from(vec![7_u8])))
+        })
         .unwrap();
 
-    let outcome = router
-        .dispatch(&input(ApiAddress::Runtime.address(), 100))
-        .unwrap();
+    let outcome = dispatch(&router, &input(ApiAddress::Runtime.address(), 100)).unwrap();
 
     assert_eq!(
         outcome,
-        CallHookOutcome::Handled(CallHookOutput::returned(21, Bytes::from(vec![7_u8])))
+        Some(CallOutput::returned(21, Bytes::from(vec![7_u8])))
+    );
+}
+
+#[test]
+fn router_accepts_handler_structs() {
+    struct Runtime;
+
+    impl CallHandler for Runtime {
+        fn call(
+            &self,
+            input: &CallInput<'_>,
+            _internals: &mut EvmInternals<'_>,
+        ) -> Result<CallOutput, CallHookError> {
+            Ok(CallOutput::returned(1, Bytes::copy_from_slice(input.input)))
+        }
+    }
+
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::Runtime.address(), Runtime)
+        .unwrap();
+    let call = input(ApiAddress::Runtime.address(), 100);
+    assert_eq!(
+        dispatch(&router, &call).unwrap(),
+        Some(CallOutput::returned(1, Bytes::copy_from_slice(call.input)))
     );
 }
 
 #[test]
 fn revert_is_a_handled_result() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(
-            ApiAddress::Runtime,
-            ClosureCallHook::new(|_: &CallHookInput<'_>| {
-                Ok(CallHookOutput::reverted(
-                    30,
-                    Bytes::from_static(b"runtime revert"),
-                ))
-            }),
-        )
+        .register(ApiAddress::Runtime.address(), |_: &CallInput<'_>| {
+            Ok(CallOutput::reverted(
+                30,
+                Bytes::from_static(b"runtime revert"),
+            ))
+        })
         .unwrap();
 
-    let outcome = router
-        .dispatch(&input(ApiAddress::Runtime.address(), 100))
-        .unwrap();
+    let outcome = dispatch(&router, &input(ApiAddress::Runtime.address(), 100)).unwrap();
 
     assert_eq!(
         outcome,
-        CallHookOutcome::Handled(CallHookOutput::reverted(
+        Some(CallOutput::reverted(
             30,
             Bytes::from_static(b"runtime revert")
         ))
@@ -216,18 +231,15 @@ fn revert_is_a_handled_result() {
 
 #[test]
 fn handler_cannot_use_more_than_supplied_gas() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(
-            ApiAddress::Runtime,
-            ClosureCallHook::new(|_: &CallHookInput<'_>| {
-                Ok(CallHookOutput::returned(101, Bytes::new()))
-            }),
-        )
+        .register(ApiAddress::Runtime.address(), |_: &CallInput<'_>| {
+            Ok(CallOutput::returned(101, Bytes::new()))
+        })
         .unwrap();
 
     assert_eq!(
-        router.dispatch(&input(ApiAddress::Runtime.address(), 100)),
+        dispatch(&router, &input(ApiAddress::Runtime.address(), 100)),
         Err(CallHookError::OutOfGas {
             gas_limit: 100,
             gas_used: 101,
@@ -237,20 +249,16 @@ fn handler_cannot_use_more_than_supplied_gas() {
 
 #[test]
 fn duplicate_registration_is_rejected() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(
-            ApiAddress::Runtime,
-            ClosureCallHook::new(|_: &CallHookInput<'_>| {
-                Ok(CallHookOutput::returned(0, Bytes::new()))
-            }),
-        )
+        .register(ApiAddress::Runtime.address(), |_: &CallInput<'_>| {
+            Ok(CallOutput::returned(11, Bytes::new()))
+        })
         .unwrap();
 
-    let result = router.register(
-        ApiAddress::Runtime,
-        ClosureCallHook::new(|_: &CallHookInput<'_>| Ok(CallHookOutput::returned(0, Bytes::new()))),
-    );
+    let result = router.register(ApiAddress::Runtime.address(), |_: &CallInput<'_>| {
+        Ok(CallOutput::returned(0, Bytes::new()))
+    });
 
     assert_eq!(
         result,
@@ -258,11 +266,15 @@ fn duplicate_registration_is_rejected() {
             address: ApiAddress::Runtime.address()
         })
     );
+    assert_eq!(
+        dispatch(&router, &input(ApiAddress::Runtime.address(), 100)).unwrap(),
+        Some(CallOutput::returned(11, Bytes::new()))
+    );
 }
 
 #[test]
 fn factory_installs_only_registered_arcology_precompiles() {
-    let factory = factory_with_runtime_hook(|_| Ok(CallHookOutput::returned(1, Bytes::new())));
+    let factory = factory_with_runtime_hook(|_| Ok(CallOutput::returned(1, Bytes::new())));
     let evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let (_, _, precompiles) = evm.components();
 
@@ -273,20 +285,32 @@ fn factory_installs_only_registered_arcology_precompiles() {
 
 #[test]
 fn factory_rejects_standard_precompile_collisions() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     let ethereum_ecrecover = arcology_address(0x01);
     router
-        .register_address(
-            ethereum_ecrecover,
-            ClosureCallHook::new(|_: &CallHookInput<'_>| {
-                Ok(CallHookOutput::returned(1, Bytes::new()))
-            }),
-        )
+        .register(ethereum_ecrecover, |_: &CallInput<'_>| {
+            Ok(CallOutput::returned(1, Bytes::new()))
+        })
         .unwrap();
 
     let error = ArcologyEvmFactory::try_new(router).unwrap_err();
     assert_eq!(error.address, ethereum_ecrecover);
     assert_eq!(error.existing, PrecompileId::EcRec);
+}
+
+#[test]
+fn factory_reports_collisions_in_address_order() {
+    let mut router = CallRouter::new();
+    for suffix in [0x02, 0x01] {
+        router
+            .register(arcology_address(suffix), |_: &CallInput<'_>| {
+                Ok(CallOutput::returned(1, Bytes::new()))
+            })
+            .unwrap();
+    }
+
+    let error = ArcologyEvmFactory::try_new(router).unwrap_err();
+    assert_eq!(error.address, arcology_address(0x01));
 }
 
 #[test]
@@ -301,7 +325,7 @@ fn direct_transaction_is_dispatched_through_revm() {
             input.input.to_vec(),
             input.scheme,
         ));
-        Ok(CallHookOutput::returned(
+        Ok(CallOutput::returned(
             37,
             Bytes::from_static(b"arcology-runtime"),
         ))
@@ -335,10 +359,7 @@ fn direct_transaction_is_dispatched_through_revm() {
 fn internal_call_opcode_is_dispatched_through_revm() {
     let expected = [0x7b_u8; 32];
     let factory = factory_with_runtime_hook(move |_| {
-        Ok(CallHookOutput::returned(
-            50,
-            Bytes::copy_from_slice(&expected),
-        ))
+        Ok(CallOutput::returned(50, Bytes::copy_from_slice(&expected)))
     });
 
     let caller = arcology_address(0x11);
@@ -365,10 +386,7 @@ fn internal_call_opcode_is_dispatched_through_revm() {
 #[test]
 fn revert_is_returned_as_an_evm_revert() {
     let factory = factory_with_runtime_hook(|_| {
-        Ok(CallHookOutput::reverted(
-            23,
-            Bytes::from_static(b"rejected"),
-        ))
+        Ok(CallOutput::reverted(23, Bytes::from_static(b"rejected")))
     });
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
@@ -390,7 +408,7 @@ fn revert_is_returned_as_an_evm_revert() {
 #[test]
 fn excessive_hook_gas_becomes_an_evm_halt() {
     let factory = factory_with_runtime_hook(|input| {
-        Ok(CallHookOutput::returned(
+        Ok(CallOutput::returned(
             input.gas_limit.saturating_add(1),
             Bytes::new(),
         ))
@@ -409,7 +427,7 @@ fn excessive_hook_gas_becomes_an_evm_halt() {
 
 #[test]
 fn factory_supports_standard_inspectors() {
-    let factory = factory_with_runtime_hook(|_| Ok(CallHookOutput::returned(1, Bytes::new())));
+    let factory = factory_with_runtime_hook(|_| Ok(CallOutput::returned(1, Bytes::new())));
     let _evm =
         factory.create_evm_with_inspector(EmptyDB::default(), EvmEnv::default(), NoOpInspector);
 }
@@ -436,7 +454,7 @@ fn recorder_tracks_sload_slots() {
     db.insert_account_storage(contract, slot, U256::from(42))
         .unwrap();
 
-    let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
+    let factory = ArcologyEvmFactory::try_new(CallRouter::new()).unwrap();
     let mut evm =
         factory.create_evm_with_inspector(db, EvmEnv::default(), StateReadRecorder::new(3));
     assert!(
@@ -549,7 +567,7 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         let factory = ArcologyBlockExecutorFactory::new(
             OpAlloyReceiptBuilder::default(),
             OpChainHardforks::op_mainnet(),
-            ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap(),
+            ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
         );
         let executor = ArcologyParaBlockExecutor::new(
             factory,
@@ -689,7 +707,7 @@ fn parallel_executor_returns_contract_outcome() {
         db
     };
 
-    let evm_factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
+    let evm_factory = ArcologyEvmFactory::try_new(CallRouter::new()).unwrap();
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
         OpChainHardforks::op_mainnet(),
@@ -791,7 +809,7 @@ fn conflict_records_tag_zeroed_storage_as_deleted() {
     db.insert_account_storage(contract, U256::ZERO, U256::from(9))
         .unwrap();
 
-    let factory = ArcologyEvmFactory::try_new(CallHookRouter::new()).unwrap();
+    let factory = ArcologyEvmFactory::try_new(CallRouter::new()).unwrap();
     let mut evm = factory.create_evm(db, EvmEnv::default());
     let result_and_state = evm.transact(tx(caller, contract, Bytes::new())).unwrap();
     let mut outcome = TransactionOutcome {
@@ -922,11 +940,11 @@ fn conflict_records_use_changes_instead_of_touch_status() {
 #[test]
 fn hook_output_status_is_preserved() {
     assert_eq!(
-        CallHookOutput::returned(1, Bytes::new()).status,
+        CallOutput::returned(1, Bytes::new()).status,
         ExitStatus::Return
     );
     assert_eq!(
-        CallHookOutput::reverted(1, Bytes::new()).status,
+        CallOutput::reverted(1, Bytes::new()).status,
         ExitStatus::Revert
     );
 }

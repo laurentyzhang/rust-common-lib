@@ -4,27 +4,23 @@ use alloy_evm::{
 };
 use alloy_primitives::{Bytes, TxKind};
 use rust_common_lib::execution::evm::{
-    ApiAddress, ArcologyEvmFactory, ArcologyTx, CallHookInput, CallHookOutput, CallHookRouter,
-    ClosureCallHook, arcology_address,
+    ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, arcology_address,
 };
 
 fn main() {
-    let mut router = CallHookRouter::new();
+    let mut router = CallRouter::new();
     router
-        .register(
-            ApiAddress::Runtime,
-            ClosureCallHook::new(|input: &CallHookInput<'_>| {
-                println!(
-                    "Arcology runtime call: caller={:?}, calldata=0x{}",
-                    input.caller,
-                    alloy_primitives::hex::encode(input.input)
-                );
-                Ok(CallHookOutput::returned(
-                    100,
-                    Bytes::from_static(b"handled by Arcology"),
-                ))
-            }),
-        )
+        .register(ApiAddress::Runtime.address(), |input: &CallInput<'_>| {
+            println!(
+                "Arcology runtime call: caller={:?}, calldata=0x{}",
+                input.caller,
+                alloy_primitives::hex::encode(input.input)
+            );
+            Ok(CallOutput::returned(
+                100,
+                Bytes::from_static(b"handled by Arcology"),
+            ))
+        })
         .unwrap();
 
     let factory = ArcologyEvmFactory::try_new(router).unwrap();

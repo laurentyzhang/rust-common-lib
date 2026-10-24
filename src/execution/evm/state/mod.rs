@@ -7,7 +7,7 @@ pub mod statedb;
 #[cfg(test)]
 mod tests;
 
-pub use account_codec::{AccountDecodeError, AccountInfoCodec};
+pub use account_codec::AccountInfoCodec;
 pub use mergeable::MergeableEvmState;
 pub use state_committer::EvmStateCommitter;
 pub use statedb::EvmStateCache;

@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(SlotPrefixer::decode(U256::ZERO), None);
         assert_eq!(SlotPrefixer::decode(U256::MAX), None);
 
-        let slot = SlotPrefixer::encode(ApiAddress::CumulativeU256, Type::CumulativeU256, [0; 24]);
+        let slot = SlotPrefixer::encode(ApiAddress::Scalar, Type::CumulativeU256, [0; 24]);
         for (index, value) in [
             (0, 0),
             (1, 0),

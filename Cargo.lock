@@ -4934,6 +4934,7 @@ dependencies = [
  "alloy-op-hardforks",
  "alloy-primitives",
  "alloy-rlp",
+ "alloy-sol-types",
  "foyer-memory",
  "im",
  "moka",

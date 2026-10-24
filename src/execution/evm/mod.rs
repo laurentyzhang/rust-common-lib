@@ -1,9 +1,9 @@
 //! Arcology-specific hooks used by an EVM adapter.
 //!
-//! This module deliberately keeps the hook contract independent from a specific
-//! REVM release. The Reth/REVM integration only needs to translate its call
-//! frame into [`CallHookInput`] and translate [`CallHookOutcome`] back.
+//! Call metadata is exposed through [`CallInput`]; stateful hooks also receive
+//! Alloy's journal-backed `EvmInternals` for transactional state access.
 
+mod error;
 mod executor;
 mod hooks;
 mod op;
@@ -14,23 +14,17 @@ mod tracking;
 #[cfg(test)]
 mod tests;
 
+pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
 pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use hooks::{
-    ApiAddress, CallHook, CallHookError, CallHookInput, CallHookOutcome, CallHookOutput,
-    CallHookRouter, CallScheme, ClosureCallHook, ExitStatus, RegisterHookError, SlotPrefixer, Type,
-    arcology_address, dispatch_precompile,
+    ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, Scalar,
+    SlotPrefixer, Type, arcology_address, dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;
-pub use op::{
-    ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx,
-    PrecompileCollisionError,
-};
+pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use outcome::{ScheduledTransactionResult, TransactionOutcome};
 pub use state::key;
-pub use state::{
-    AccountDecodeError, AccountInfoCodec, EvmStateCache, EvmStateCommitter, MergeableEvmState,
-};
+pub use state::{AccountInfoCodec, EvmStateCache, EvmStateCommitter, MergeableEvmState};
 pub use tracking::inspector;
 pub use tracking::{StateReads, delta_records};
-// pub use key::Key;

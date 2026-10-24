@@ -1,9 +1,8 @@
 //! Translation between Alloy/REVM's context-aware precompile boundary and
 //! Arcology's call hook contract.
 
-use super::{
-    CallHookError, CallHookInput, CallHookOutcome, CallHookRouter, CallScheme, ExitStatus,
-};
+use super::super::CallHookError;
+use super::{CallInput, CallRouter, CallScheme, ExitStatus};
 use alloy_evm::{
     precompiles::PrecompileInput,
     revm::precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
@@ -13,11 +12,10 @@ use alloy_evm::{
 ///
 /// This function is installed as a stateful, non-cacheable precompile by
 /// [`ArcologyEvmFactory`](super::super::ArcologyEvmFactory). The `PrecompileInput`
-/// also carries REVM's journal-backed `EvmInternals`, allowing the adapter to
-/// be extended with stateful Arcology APIs without replacing the factory.
+/// carries the journal-backed `EvmInternals` passed to stateful call hooks.
 pub fn dispatch_precompile(
-    router: &CallHookRouter,
-    input: PrecompileInput<'_>,
+    router: &CallRouter,
+    mut input: PrecompileInput<'_>,
 ) -> PrecompileResult {
     let scheme = if input.is_static_call() {
         CallScheme::StaticCall
@@ -27,7 +25,7 @@ pub fn dispatch_precompile(
         CallScheme::CallCodeOrDelegateCall
     };
 
-    let hook_input = CallHookInput {
+    let hook_input = CallInput {
         caller: input.caller,
         target: input.target_address,
         code_address: input.bytecode_address,
@@ -37,8 +35,8 @@ pub fn dispatch_precompile(
         scheme,
     };
 
-    match router.dispatch(&hook_input) {
-        Ok(CallHookOutcome::Handled(output)) => match output.status {
+    match router.dispatch(&hook_input, &mut input.internals) {
+        Ok(Some(output)) => match output.status {
             ExitStatus::Return => Ok(PrecompileOutput::new(
                 output.gas_used,
                 output.output,
@@ -50,7 +48,7 @@ pub fn dispatch_precompile(
                 input.reservoir,
             )),
         },
-        Ok(CallHookOutcome::Continue) => Err(PrecompileError::Fatal(format!(
+        Ok(None) => Err(PrecompileError::Fatal(format!(
             "Arcology precompile at {:?} has no registered call hook",
             input.bytecode_address
         ))),
