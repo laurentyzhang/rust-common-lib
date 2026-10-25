@@ -1,5 +1,4 @@
-pub mod inspector;
-mod records;
+mod inspector;
+pub mod recorder;
 
-pub use inspector::StateReads;
-pub use records::delta_records;
+pub use recorder::{ReadRecorder, StateReads};

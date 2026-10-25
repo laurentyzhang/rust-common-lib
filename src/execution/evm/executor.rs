@@ -14,7 +14,7 @@ use alloy_evm::revm::{
 };
 
 use super::{
-    inspector::StateReadRecorder,
+    ReadRecorder,
     outcome::{ScheduledTransactionResult, TransactionOutcome},
 };
 use crate::scheduler::{Generation, ID, Job, JobSequence, Scheduler};
@@ -113,7 +113,7 @@ where
         DB: StateDB,
         F::Receipt: Clone + Send,
         TxEnv: Transaction,
-        (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
+        (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
     {
         // Convert the incoming transactions into jobs with assigned IDs.
         let jobs = transactions
@@ -143,7 +143,7 @@ where
     where
         DB: StateDB,
         F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
     {
         // Avoid dispatch overhead when there is no parallel work.
         if generation.sequences.len() <= 1 || self.pool.current_num_threads() == 1 {
@@ -175,7 +175,7 @@ where
     where
         DB: StateDB,
         F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, StateReadRecorder>>,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
     {
         let Some(first) = sequence.jobs.first() else {
             return Vec::new();
@@ -218,7 +218,7 @@ where
         let evm = self.factory.evm_factory().create_evm_with_inspector(
             db,
             self.config.env.clone(),
-            StateReadRecorder::new(first.id.global),
+            ReadRecorder::new(first.id.global),
         );
         let mut executor = self.factory.create_executor(evm, self.config.ctx.clone());
         let mut results = Vec::with_capacity(sequence.jobs.len());

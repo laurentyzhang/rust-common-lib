@@ -1,10 +1,10 @@
-use super::inspector::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_ENTRIES;
-use super::inspector::StateReadRecorder;
+use super::ReadRecorder;
+use super::recorder::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_ENTRIES;
 use super::{
     AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHandler, CallHookError,
     CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, ParaBlockConfig, RegisterHookError,
-    TransactionOutcome, arcology_address, delta_records,
+    TransactionOutcome, arcology_address,
 };
 
 use crate::{
@@ -455,8 +455,7 @@ fn recorder_tracks_sload_slots() {
         .unwrap();
 
     let factory = ArcologyEvmFactory::try_new(CallRouter::new()).unwrap();
-    let mut evm =
-        factory.create_evm_with_inspector(db, EvmEnv::default(), StateReadRecorder::new(3));
+    let mut evm = factory.create_evm_with_inspector(db, EvmEnv::default(), ReadRecorder::new(3));
     assert!(
         evm.transact(tx(caller, contract, Bytes::new()))
             .unwrap()
@@ -880,7 +879,12 @@ fn conflict_records_tag_existing_account_update_as_stripped() {
     account.info.balance = U256::from(6);
     account.mark_touch();
     let state = EvmState::from_iter([(address, account)]);
-    let records = delta_records(&result_and_state(state), 8);
+    let mut outcome = TransactionOutcome {
+        result_and_state: result_and_state(state),
+        receipt: (),
+        inspector_reads: Vec::new(),
+    };
+    let records = outcome.merge_records(8);
     let record = records
         .iter()
         .find(|(key, _)| *key == Key::Account(address))
@@ -912,7 +916,12 @@ fn conflict_records_use_changes_instead_of_touch_status() {
     );
 
     let state = EvmState::from_iter([(empty_address, empty), (changed_address, changed)]);
-    let records = delta_records(&result_and_state(state), 9);
+    let mut outcome = TransactionOutcome {
+        result_and_state: result_and_state(state),
+        receipt: (),
+        inspector_reads: Vec::new(),
+    };
+    let records = outcome.merge_records(9);
     let empty_record = &records
         .iter()
         .find(|(key, _)| *key == Key::Account(empty_address))
@@ -952,12 +961,12 @@ fn hook_output_status_is_preserved() {
 #[test]
 fn recorder_merge_sums_reads_for_the_same_key() {
     let shared = Key::Balance(Address::with_last_byte(1));
-    let mut left = StateReadRecorder::new(7);
+    let mut left = ReadRecorder::new(7);
     left.record(shared.clone());
     left.record(shared.clone());
     left.record(Key::Code(Address::with_last_byte(2)));
 
-    let mut right = StateReadRecorder::new(7);
+    let mut right = ReadRecorder::new(7);
     right.record(shared);
     right.record(Key::Code(Address::with_last_byte(3)));
 
@@ -981,7 +990,7 @@ fn recorder_merge_sums_reads_for_the_same_key() {
 #[test]
 fn recorder_drain_groups_balance_and_code_by_account() {
     let address = Address::with_last_byte(1);
-    let mut recorder = StateReadRecorder::new(7);
+    let mut recorder = ReadRecorder::new(7);
     recorder.record(Key::Balance(address));
     recorder.record(Key::Code(address));
 
@@ -996,7 +1005,7 @@ fn recorder_drain_groups_balance_and_code_by_account() {
 fn recorder_merge_all_uses_parallel_tree_for_large_recorders() {
     let recorders: Vec<_> = (0..4)
         .map(|recorder_index| {
-            let mut recorder = StateReadRecorder::new(9);
+            let mut recorder = ReadRecorder::new(9);
             let first_slot = recorder_index * RECORDER_MERGE_ENTRIES;
 
             for slot in first_slot..first_slot + RECORDER_MERGE_ENTRIES {
@@ -1011,9 +1020,9 @@ fn recorder_merge_all_uses_parallel_tree_for_large_recorders() {
         .num_threads(2)
         .build()
         .unwrap();
-    let mut merged = StateReadRecorder::new(9);
+    let mut merged = ReadRecorder::new(9);
     pool.install(|| {
-        assert!(StateReadRecorder::should_merge_parallel(&recorders));
+        assert!(ReadRecorder::should_merge_parallel(&recorders));
         merged.merge_all(recorders);
     });
 

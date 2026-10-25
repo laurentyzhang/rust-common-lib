@@ -1,7 +1,6 @@
 use super::{EvmStateCache, EvmStateCommitter};
 use crate::execution::evm::{
-    ArcologyEvmFactory, ArcologyTx, CallRouter, arcology_address, inspector::StateReadRecorder,
-    key::Key,
+    ArcologyEvmFactory, ArcologyTx, CallRouter, ReadRecorder, arcology_address, key::Key,
 };
 use crate::store::traits::Committer;
 use alloy_evm::{
@@ -292,7 +291,7 @@ fn evm_state_cache_and_recorder_track_balance_reads() {
     state.insert(contract, Account::from(account));
 
     let factory = ArcologyEvmFactory::try_new(CallRouter::new()).unwrap();
-    let recorder = StateReadRecorder::new(2);
+    let recorder = ReadRecorder::new(2);
     let mut evm =
         factory.create_evm_with_inspector(EvmStateCache::new(state), EvmEnv::default(), recorder);
     let result = evm
