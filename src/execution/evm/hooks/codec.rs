@@ -46,15 +46,15 @@ impl SlotCodec {
     }
 
     /// Selects a field while preserving the prefix and instance key.
-    pub(super) fn with_field(slot: U256, field: u8) -> U256 {
-        let mut bytes = slot.to_be_bytes::<32>();
+    pub(in crate::execution::evm) fn with_field(key: U256, field: u8) -> U256 {
+        let mut bytes = key.to_be_bytes::<32>();
         bytes[FIELD_OFFSET] = field;
         U256::from_be_bytes(bytes)
     }
 
     /// Checks whether a slot has a recognized API prefix and supported format version.
-    pub fn is_api_slot(slot: U256) -> bool {
-        let bytes = slot.to_be_bytes::<32>();
+    pub fn is_api_slot(key: U256) -> bool {
+        let bytes = key.to_be_bytes::<32>();
         return &bytes[..VERSION_OFFSET] == b"ARCO"
             && bytes[VERSION_OFFSET] == VERSION
             && ApiAddress::contains(bytes[API_OFFSET])
@@ -64,13 +64,13 @@ impl SlotCodec {
     /// Decode a recognized concurrent slot; unrelated or unknown prefixes return `None`.
     ///
     /// Returns `(api, field, key)`. Field IDs are interpreted by each API.
-    pub fn decode(slot: U256) -> Option<(ApiAddress, u8, [u8; 24])> {
-        if !Self::is_api_slot(slot) {
+    pub fn decode(key: U256) -> Option<(ApiAddress, u8, [u8; 24])> {
+        if !Self::is_api_slot(key) {
             return None;
         }
 
         // Require the full namespace and version before classifying.
-        let bytes = slot.to_be_bytes::<32>();
+        let bytes = key.to_be_bytes::<32>();
         let api = ApiAddress::iter().find(|v| *v as u8 == bytes[API_OFFSET])?;
         let mut key = [0_u8; 24];
         key.copy_from_slice(&bytes[KEY_OFFSET..]);

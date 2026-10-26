@@ -1,12 +1,9 @@
 use super::super::version::VERSION;
-use super::{
-    CallHandler, ScalarHandler,
-    scalar::{IScalar, SlotKeys},
-};
+use super::{CallHandler, ScalarHandler, scalar::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::execution::evm::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, ReadRecorder, SlotCodec, key::Key,
+    EvmInternalsStorage, ExitStatus, ReadRecorder, ScalarStorage, SlotCodec, key::Key,
 };
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
@@ -55,8 +52,8 @@ fn scalar_key(handle: Address) -> B256 {
     SlotCodec::encode(ApiAddress::Scalar, 2, handle).into()
 }
 
-fn slots(handle: Address) -> SlotKeys {
-    SlotKeys {
+fn slots(handle: Address) -> ScalarStorage {
+    ScalarStorage {
         min: SlotCodec::encode(ApiAddress::Scalar, 0, handle),
         max: SlotCodec::encode(ApiAddress::Scalar, 1, handle),
         value: SlotCodec::encode(ApiAddress::Scalar, 2, handle),
@@ -96,7 +93,7 @@ fn invoke_delta(
     }
 }
 
-fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: SlotKeys) -> [U256; 4] {
+fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarStorage) -> [U256; 4] {
     [keys.min, keys.max, keys.value, keys.delta].map(|key| journal.sload(owner, key).unwrap().data)
 }
 
@@ -504,10 +501,14 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = SlotKeys::new(SlotCodec::encode(ApiAddress::Scalar, 2, handle));
+        let keys = ScalarStorage::new(SlotCodec::encode(ApiAddress::Scalar, 2, handle));
         assert_eq!(keys, slots(handle));
         // assert_eq!(keys.store(&mut internals, owner, &state).unwrap(), keys);
-        assert_eq!(keys.load(&mut internals, owner).unwrap(), (state, keys));
+        assert_eq!(
+            keys.load(&mut EvmInternalsStorage::new(&mut internals), owner)
+                .unwrap(),
+            (state, keys)
+        );
     }
 }
 
@@ -535,7 +536,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
             )
             .unwrap();
         let (state, loaded_slots) = slots(Address::from_word(call.key))
-            .load(&mut internals, owner)
+            .load(&mut EvmInternalsStorage::new(&mut internals), owner)
             .unwrap();
         assert_eq!(loaded_slots, slots(Address::from_word(call.key)));
         assert_eq!(state.value, U256::from(50));
@@ -545,7 +546,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
     journal.checkpoint_revert(checkpoint);
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let (state, _) = slots(Address::from_word(call.key))
-        .load(&mut internals, owner)
+        .load(&mut EvmInternalsStorage::new(&mut internals), owner)
         .unwrap();
     assert_eq!(state.value, U256::ZERO);
     assert_eq!(state.limits, (call.min, call.max));
@@ -576,7 +577,11 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
         };
         let keys = slots(handle);
         // assert_eq!(keys.store(&mut internals, owner, &state).unwrap(), keys);
-        assert_eq!(keys.load(&mut internals, owner).unwrap(), (state, keys));
+        assert_eq!(
+            keys.load(&mut EvmInternalsStorage::new(&mut internals), owner)
+                .unwrap(),
+            (state, keys)
+        );
         let encoded_delta = match delta {
             DeltaOp::Add(magnitude) => magnitude,
             DeltaOp::Sub(magnitude) => U256::ZERO.wrapping_sub(magnitude),
@@ -607,7 +612,11 @@ fn scalar_store_rejects_invalid_pending_arithmetic_before_writing() {
             let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
             assert!(
                 slots(Address::ZERO)
-                    .store(&mut internals, Address::ZERO, &state)
+                    .store(
+                        &mut EvmInternalsStorage::new(&mut internals),
+                        Address::ZERO,
+                        &state,
+                    )
                     .is_err()
             );
         }
@@ -1287,7 +1296,9 @@ fn get_returns_caller_scoped_journal_values_for_call_and_staticcall() {
                 value,
                 ..Default::default()
             };
-            slots(handle).store(&mut internals, owner, &state).unwrap();
+            slots(handle)
+                .store(&mut EvmInternalsStorage::new(&mut internals), owner, &state)
+                .unwrap();
         }
     }
     for (owner, handle, expected) in values {

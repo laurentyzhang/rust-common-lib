@@ -2,6 +2,8 @@ use alloy_evm::revm::state::EvmState;
 use alloy_primitives::map::hash_map::Entry;
 use rayon::prelude::*;
 
+use crate::execution::evm::SlotCodec;
+
 /// An owned EVM state with ordered parallel merging.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MergeableEvmState {
@@ -24,25 +26,25 @@ impl MergeableEvmState {
         }
 
         // Insert new accounts directly and send overlapping accounts to parallel workers.
-        let mut overlapping = Vec::with_capacity(self.inner.len().min(other.inner.len()));
-        for (address, incoming) in other.inner {
+        let mut accts_to_merge = Vec::with_capacity(self.inner.len().min(other.inner.len()));
+        for (address, incoming_account) in other.inner {
             match self.inner.entry(address) {
                 Entry::Occupied(entry)
-                    if !incoming.is_created()
-                        && !incoming.is_selfdestructed()
+                    if !incoming_account.is_created()
+                        && !incoming_account.is_selfdestructed()
                         && !entry.get().is_selfdestructed() =>
                 {
-                    // Move both account versions to a worker instead of sharing the map.
-                    overlapping.push((address, entry.remove(), incoming));
+                    // Add the both existing and incoming accounts to the list.
+                    accts_to_merge.push((address, entry.remove(), incoming_account));
                 }
                 entry => {
-                    // New accounts and lifecycle replacements use the incoming record directly.
-                    entry.insert_entry(incoming);
+                    // Add new accounts directly to the map.
+                    entry.insert_entry(incoming_account);
                 }
             }
         }
 
-        let merged: Vec<_> = overlapping
+        let merged_accts: Vec<_> = accts_to_merge
             .into_par_iter()
             .map(|(address, mut existing, mut incoming)| {
                 // Preserve creation status when later updates replace account metadata.
@@ -51,13 +53,23 @@ impl MergeableEvmState {
                 }
                 // Incoming slots overwrite matching keys, including zero-valued deletions.
                 existing.storage.extend(incoming.storage);
+
+                existing.storage.iter_mut().for_each(|(key, slot)| {
+                    if SlotCodec::is_api_slot(*key) {
+                        // Perform any additional processing for API slots here.
+                    }
+                }); 
+                });
+
+
+
                 // Keep the combined storage alongside the incoming account metadata.
                 incoming.storage = existing.storage;
                 (address, incoming)
             })
             .collect();
         // Update the destination map sequentially after the parallel merges finish.
-        self.inner.extend(merged);
+        self.inner.extend(merged_accts);
     }
 }
 

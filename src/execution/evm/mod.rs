@@ -8,6 +8,7 @@ mod executor;
 mod hooks;
 mod op;
 mod outcome;
+mod slot_storage;
 mod state;
 mod tracking;
 
@@ -24,6 +25,7 @@ pub use hooks::{
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use outcome::{ScheduledTransactionResult, TransactionOutcome};
+pub(in crate::execution::evm) use slot_storage::{EvmInternalsStorage, Field, ScalarStorage};
 pub use state::key;
 pub use state::{AccountInfoCodec, EvmStateCache, EvmStateCommitter, MergeableEvmState};
 pub use tracking::{ReadRecorder, StateReads, recorder};
