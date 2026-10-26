@@ -1,5 +1,4 @@
 mod address;
-mod codec;
 mod handlers;
 mod output;
 mod router;

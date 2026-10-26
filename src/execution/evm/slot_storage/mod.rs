@@ -1,3 +1,4 @@
+mod codec;
 mod evm_internals;
 pub(in crate::execution::evm) mod evm_state;
 mod scalar;

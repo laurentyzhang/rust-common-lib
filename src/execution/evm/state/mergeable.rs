@@ -61,8 +61,6 @@ impl MergeableEvmState {
                 }); 
                 });
 
-
-
                 // Keep the combined storage alongside the incoming account metadata.
                 incoming.storage = existing.storage;
                 (address, incoming)
