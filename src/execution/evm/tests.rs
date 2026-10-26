@@ -251,7 +251,7 @@ fn router_accepts_handler_structs() {
             _key: U256,
             input: &CallInput<'_>,
             _internals: &mut EvmInternals<'_>,
-            _read_recorder: &mut ReadRecorder,
+            _api_reads: &mut ReadRecorder,
         ) -> Result<CallOutput, CallHookError> {
             Ok(CallOutput::returned(1, Bytes::copy_from_slice(input.input)))
         }
@@ -680,22 +680,18 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
                     outcome.result_and_state.result,
                     ExecutionResult::Revert { .. }
                 ));
-                assert!(outcome.inspector_reads.is_empty());
+                assert!(outcome.reads.is_empty());
                 continue;
             }
             assert!(outcome.result_and_state.result.is_success());
-            assert_eq!(outcome.inspector_reads.len(), 2);
+            assert_eq!(outcome.reads.len(), 2);
             let handle = Address::with_last_byte(if index % 3 == 0 { 1 } else { 2 });
             for field in [2, 3] {
                 let key = Key::Storage(
                     callers[index / 3],
                     SlotCodec::encode(ApiAddress::Scalar, field, handle),
                 );
-                let read = outcome
-                    .inspector_reads
-                    .iter()
-                    .find(|read| read.key == key)
-                    .unwrap();
+                let read = outcome.reads.iter().find(|read| read.key == key).unwrap();
                 assert_eq!(read.id, index as u64);
                 assert_eq!(read.data.id, index as u64);
                 assert_eq!(read.data.operations.reads.count(), 1);
@@ -841,12 +837,12 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
                 );
                 assert!(
                     outcome
-                        .inspector_reads
+                        .reads
                         .iter()
                         .all(|read| read.id == index as u64 && read.data.id == index as u64)
                 );
                 let storage_read = outcome
-                    .inspector_reads
+                    .reads
                     .iter()
                     .find(|read| read.key == Key::Storage(contract, U256::ZERO))
                     .unwrap();
@@ -890,7 +886,7 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         assert_eq!(outcome.result_and_state.state[&callers[0]].info.nonce, 9);
         assert!(
             outcome
-                .inspector_reads
+                .reads
                 .iter()
                 .all(|read| read.id == 1 && read.data.id == 1)
         );
@@ -1046,7 +1042,7 @@ fn conflict_records_tag_zeroed_storage_as_deleted() {
     let mut outcome = TransactionOutcome {
         result_and_state,
         receipt: (),
-        inspector_reads: Vec::new(),
+        reads: Vec::new(),
     };
     let records = outcome.merge_records(3);
     let storage = records
@@ -1079,7 +1075,7 @@ fn conflict_records_include_untouched_account_and_slot_as_read_only() {
     let mut outcome = TransactionOutcome {
         result_and_state: result_and_state(state),
         receipt: (),
-        inspector_reads: Vec::new(),
+        reads: Vec::new(),
     };
 
     let records = outcome.merge_records(7);
@@ -1114,7 +1110,7 @@ fn conflict_records_tag_existing_account_update_as_stripped() {
     let mut outcome = TransactionOutcome {
         result_and_state: result_and_state(state),
         receipt: (),
-        inspector_reads: Vec::new(),
+        reads: Vec::new(),
     };
     let records = outcome.merge_records(8);
     let record = records
@@ -1151,7 +1147,7 @@ fn conflict_records_use_changes_instead_of_touch_status() {
     let mut outcome = TransactionOutcome {
         result_and_state: result_and_state(state),
         receipt: (),
-        inspector_reads: Vec::new(),
+        reads: Vec::new(),
     };
     let records = outcome.merge_records(9);
     let empty_record = &records

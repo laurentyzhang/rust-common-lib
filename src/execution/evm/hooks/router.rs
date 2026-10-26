@@ -81,7 +81,7 @@ impl CallRouter {
         &self,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        read_recorder: &mut ReadRecorder,
+        api_reads: &mut ReadRecorder,
     ) -> Result<Option<CallOutput>, CallHookError> {
         let Some(handler) = self.handlers.get(&input.code_address) else {
             return Ok(None);
@@ -102,7 +102,7 @@ impl CallRouter {
             .get(key_offset..key_offset + U256::BYTES)
             .map(U256::from_be_slice)
             .unwrap_or(U256::ZERO);
-        let output = handler.call(key, input, internals, read_recorder)?;
+        let output = handler.call(key, input, internals, api_reads)?;
         if output.gas_used > input.gas_limit {
             return Err(CallHookError::OutOfGas {
                 gas_limit: input.gas_limit,
@@ -122,7 +122,7 @@ impl CallRouter {
 pub fn dispatch_precompile(
     router: &CallRouter,
     mut input: PrecompileInput<'_>,
-    read_recorder: &mut ReadRecorder,
+    api_reads: &mut ReadRecorder,
 ) -> PrecompileResult {
     let scheme = if input.is_static_call() {
         CallScheme::StaticCall
@@ -142,7 +142,7 @@ pub fn dispatch_precompile(
         scheme,
     };
 
-    match router.dispatch(&hook_input, &mut input.internals, read_recorder) {
+    match router.dispatch(&hook_input, &mut input.internals, api_reads) {
         Ok(Some(output)) => match output.status {
             ExitStatus::Return => Ok(PrecompileOutput::new(
                 output.gas_used,

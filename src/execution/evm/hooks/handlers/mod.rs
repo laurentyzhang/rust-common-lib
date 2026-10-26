@@ -19,7 +19,7 @@ pub trait CallHandler: Send + Sync {
         key: U256,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        read_recorder: &mut ReadRecorder,
+        api_reads: &mut ReadRecorder,
     ) -> Result<CallOutput, CallHookError>;
 
     /// Recognizes storage slots owned by this API, for any handle.
@@ -36,7 +36,7 @@ where
         _key: U256,
         input: &CallInput<'_>,
         _internals: &mut EvmInternals<'_>,
-        _read_recorder: &mut ReadRecorder,
+        _api_reads: &mut ReadRecorder,
     ) -> Result<CallOutput, CallHookError> {
         self(input)
     }

@@ -240,12 +240,12 @@ where
                     .last()
                     .cloned()
                     .expect("a committed transaction has a receipt");
-                let inspector_reads = executor.evm_mut().drain_reads();
+                let merged_reads = executor.evm_mut().drain_reads();
                 Ok(TransactionOutcome {
                     result_and_state: result_and_state
                         .expect("a successful execution has a result"),
                     receipt,
-                    inspector_reads,
+                    reads: merged_reads,
                 })
             })();
             results.push(ScheduledTransactionResult { id, outcome });

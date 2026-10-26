@@ -18,15 +18,14 @@ use crate::{
 pub struct TransactionOutcome<R, H = HaltReason> {
     pub result_and_state: ResultAndState<H>,
     pub receipt: R,
-    /// Combined reads from opcode inspection and native API handlers.
-    pub inspector_reads: StateReads,
+    pub reads: StateReads, // Combined from opcode inspection and API handlers.
 }
 
 impl<R, H> TransactionOutcome<R, H> {
     /// Merges inspector reads with state changes, keeping the state record for shared keys.
     pub fn merge_records(&mut self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
-        for read in self.inspector_reads.drain(..) {
+        for read in self.reads.drain(..) {
             let mut tracked = read.data;
             tracked.id = transaction_id;
             unique_records.insert(read.key, tracked);

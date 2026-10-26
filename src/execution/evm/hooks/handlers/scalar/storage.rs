@@ -15,14 +15,14 @@ pub(super) enum Field {
 
 /// Storage keys for scalar fields, not the values stored at those keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in super::super) struct Slot {
+pub(in super::super) struct SlotKeys {
     pub min: U256,
     pub max: U256,
     pub value: U256,
     pub delta: U256,
 }
 
-impl Slot {
+impl SlotKeys {
     /// Builds the field keys from a validated scalar key.
     pub(in super::super) fn new(key: U256) -> Self {
         Self {
@@ -67,7 +67,7 @@ impl Slot {
         internals: &mut EvmInternals<'_>,
         owner: Address,
         state: &crdt::Scalar<U256>,
-    ) -> Result<Self, CallHookError> {
+    ) -> Result<(), CallHookError> {
         // Store projected - base modulo 2^256, retaining all four full-width fields.
         let delta = match state.delta {
             Some(delta) => <U256 as crdt::Type>::checked_apply(state.value, &delta)
@@ -90,6 +90,6 @@ impl Slot {
                 .sstore(owner, slot, value)
                 .map_err(|error| CallHookError::Handler(error.to_string()))?;
         }
-        Ok(*self)
+        Ok(())
     }
 }

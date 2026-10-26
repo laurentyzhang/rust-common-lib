@@ -1,4 +1,10 @@
-use super::Type;
+mod i64;
+mod traits;
+mod u256;
+mod u64;
+
+pub use traits::Type;
+
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
 use crate::crdt::state::{DeltaOp, NumericError, StateError};
 use std::cmp::Ordering;
