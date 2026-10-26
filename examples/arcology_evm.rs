@@ -2,9 +2,9 @@ use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
     revm::{context::TxEnv, database::EmptyDB},
 };
-use alloy_primitives::{Bytes, TxKind};
+use alloy_primitives::{Address, Bytes, TxKind};
 use rust_common_lib::execution::evm::{
-    ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, arcology_address,
+    ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter,
 };
 
 fn main() {
@@ -27,7 +27,7 @@ fn main() {
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
         .transact(ArcologyTx::from(TxEnv {
-            caller: arcology_address(0x11),
+            caller: Address::with_last_byte(0x11),
             gas_limit: 100_000,
             gas_price: 0,
             kind: TxKind::Call(ApiAddress::Runtime.address()),

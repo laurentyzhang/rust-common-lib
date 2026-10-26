@@ -1,7 +1,5 @@
 use super::{EvmStateCache, EvmStateCommitter};
-use crate::execution::evm::{
-    ArcologyEvmFactory, ArcologyTx, CallRouter, ReadRecorder, arcology_address, key::Key,
-};
+use crate::execution::evm::{ArcologyEvmFactory, ArcologyTx, CallRouter, ReadRecorder, key::Key};
 use crate::store::traits::Committer;
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
@@ -274,8 +272,8 @@ fn commit_writes_account_and_storage_to_evm_state_cache() {
 
 #[test]
 fn evm_state_cache_and_recorder_track_balance_reads() {
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
+    let caller = Address::with_last_byte(0x11);
+    let contract = Address::with_last_byte(0x22);
     let external = Address::with_last_byte(0x33);
     // Read the external balance twice, then read the contract's own balance.
     let code = Bytecode::new_raw(Bytes::from_static(&[

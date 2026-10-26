@@ -4,7 +4,7 @@ use super::{
     AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHandler, CallHookError,
     CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, ParaBlockConfig, RegisterHookError,
-    TransactionOutcome, arcology_address,
+    ScalarHandler, SlotCodec, TransactionOutcome,
 };
 
 use crate::{
@@ -58,7 +58,7 @@ const INTERNAL_CALLER_CODE: &[u8] = &[
 
 fn input(target: Address, gas_limit: u64) -> CallInput<'static> {
     CallInput {
-        caller: arcology_address(0x01),
+        caller: Address::with_last_byte(0x01),
         target,
         code_address: target,
         value: U256::ZERO,
@@ -78,7 +78,7 @@ fn dispatch(
     let cfg: CfgEnv = CfgEnv::default();
     let tx = TxEnv::default();
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
-    router.dispatch(input, &mut internals)
+    router.dispatch(input, &mut internals, &mut ReadRecorder::new(0))
 }
 
 #[test]
@@ -158,9 +158,65 @@ fn malformed_account_info_is_rejected() {
 #[test]
 fn normal_calls_continue() {
     let router = CallRouter::new();
-    let outcome = dispatch(&router, &input(arcology_address(0x42), 100)).unwrap();
+    for scheme in [
+        CallScheme::Call,
+        CallScheme::StaticCall,
+        CallScheme::CallCodeOrDelegateCall,
+    ] {
+        let mut call = input(Address::with_last_byte(0x42), 100);
+        call.scheme = scheme;
+        call.target = Address::with_last_byte(0x43);
+        call.value = U256::from(1);
+        assert_eq!(dispatch(&router, &call).unwrap(), None);
+    }
+}
 
-    assert_eq!(outcome, None);
+#[test]
+fn router_rejects_invalid_contexts_before_invoking_handlers() {
+    let api = ApiAddress::Runtime.address();
+    let other = Address::with_last_byte(0x22);
+    let mut router = CallRouter::new();
+    router
+        .register(api, |_: &CallInput<'_>| {
+            panic!("invalid call context reached the handler")
+        })
+        .unwrap();
+    for (scheme, target, value) in [
+        (CallScheme::CallCodeOrDelegateCall, api, U256::ZERO),
+        (CallScheme::CallCodeOrDelegateCall, other, U256::ZERO),
+        (CallScheme::Call, other, U256::ZERO),
+        (CallScheme::StaticCall, other, U256::ZERO),
+        (CallScheme::Call, api, U256::from(1)),
+        (CallScheme::StaticCall, api, U256::from(1)),
+    ] {
+        let mut call = input(api, 100);
+        call.scheme = scheme;
+        call.target = target;
+        call.value = value;
+        assert_eq!(
+            dispatch(&router, &call).unwrap(),
+            Some(CallOutput::reverted(0, Vec::new()))
+        );
+    }
+}
+
+#[test]
+fn router_allows_direct_call_and_staticcall() {
+    let api = ApiAddress::Runtime.address();
+    let mut router = CallRouter::new();
+    router
+        .register(api, |_: &CallInput<'_>| {
+            Ok(CallOutput::returned(1, Bytes::from_static(b"accepted")))
+        })
+        .unwrap();
+    for scheme in [CallScheme::Call, CallScheme::StaticCall] {
+        let mut call = input(api, 100);
+        call.scheme = scheme;
+        assert_eq!(
+            dispatch(&router, &call).unwrap(),
+            Some(CallOutput::returned(1, Bytes::from_static(b"accepted")))
+        );
+    }
 }
 
 #[test]
@@ -186,10 +242,16 @@ fn router_accepts_handler_structs() {
     struct Runtime;
 
     impl CallHandler for Runtime {
+        fn is_valid_slot(&self, _slot: U256) -> bool {
+            false
+        }
+
         fn call(
             &self,
+            _key: U256,
             input: &CallInput<'_>,
             _internals: &mut EvmInternals<'_>,
+            _read_recorder: &mut ReadRecorder,
         ) -> Result<CallOutput, CallHookError> {
             Ok(CallOutput::returned(1, Bytes::copy_from_slice(input.input)))
         }
@@ -280,13 +342,13 @@ fn factory_installs_only_registered_arcology_precompiles() {
 
     assert!(precompiles.get(&ApiAddress::Runtime.address()).is_some());
     assert!(precompiles.get(&ApiAddress::Container.address()).is_none());
-    assert!(precompiles.get(&arcology_address(0x01)).is_some());
+    assert!(precompiles.get(&Address::with_last_byte(0x01)).is_some());
 }
 
 #[test]
 fn factory_rejects_standard_precompile_collisions() {
     let mut router = CallRouter::new();
-    let ethereum_ecrecover = arcology_address(0x01);
+    let ethereum_ecrecover = Address::with_last_byte(0x01);
     router
         .register(ethereum_ecrecover, |_: &CallInput<'_>| {
             Ok(CallOutput::returned(1, Bytes::new()))
@@ -303,14 +365,14 @@ fn factory_reports_collisions_in_address_order() {
     let mut router = CallRouter::new();
     for suffix in [0x02, 0x01] {
         router
-            .register(arcology_address(suffix), |_: &CallInput<'_>| {
+            .register(Address::with_last_byte(suffix), |_: &CallInput<'_>| {
                 Ok(CallOutput::returned(1, Bytes::new()))
             })
             .unwrap();
     }
 
     let error = ArcologyEvmFactory::try_new(router).unwrap_err();
-    assert_eq!(error.address, arcology_address(0x01));
+    assert_eq!(error.address, Address::with_last_byte(0x01));
 }
 
 #[test]
@@ -331,7 +393,7 @@ fn direct_transaction_is_dispatched_through_revm() {
         ))
     });
 
-    let caller = arcology_address(0x11);
+    let caller = Address::with_last_byte(0x11);
     let calldata = Bytes::from_static(b"pid()");
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
@@ -356,14 +418,76 @@ fn direct_transaction_is_dispatched_through_revm() {
 }
 
 #[test]
+fn indirect_call_opcodes_are_rejected_before_reaching_handlers() {
+    for opcode in [0xf2, 0xf4] {
+        let factory = factory_with_runtime_hook(|_| panic!("indirect call reached the handler"));
+        // Empty input/output buffers, followed by the optional CALLCODE value.
+        let mut code = vec![0x60, 0, 0x60, 0, 0x60, 0, 0x60, 0];
+        if opcode == 0xf2 {
+            code.extend_from_slice(&[0x60, 0]);
+        }
+        // Invoke 0xa0, then return the call's success flag as a 32-byte word.
+        code.extend_from_slice(&[
+            0x60, 0xa0, 0x61, 0xff, 0xff, opcode, 0x60, 0, 0x52, 0x60, 0x20, 0x60, 0, 0xf3,
+        ]);
+        let caller = Address::with_last_byte(0x11);
+        let contract = Address::with_last_byte(0x22);
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(Bytecode::new_raw(code.into())),
+                ..Default::default()
+            },
+        );
+        let mut evm = factory.create_evm(db, EvmEnv::default());
+        let result = evm.transact(tx(caller, contract, Bytes::new())).unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(
+            result.result.output(),
+            Some(&Bytes::copy_from_slice(&[0; 32]))
+        );
+    }
+}
+
+#[test]
+fn value_transfer_to_arcology_api_is_an_evm_revert() {
+    let factory = factory_with_runtime_hook(|_| panic!("value-bearing call reached the handler"));
+    let caller = Address::with_last_byte(0x11);
+    let mut db = CacheDB::new(EmptyDB::default());
+    db.insert_account_info(
+        caller,
+        AccountInfo {
+            balance: U256::from(10),
+            ..Default::default()
+        },
+    );
+    let mut evm = factory.create_evm(db, EvmEnv::default());
+    let result = evm
+        .transact(ArcologyTx::from(TxEnv {
+            caller,
+            kind: TxKind::Call(ApiAddress::Runtime.address()),
+            value: U256::from(1),
+            gas_limit: 500_000,
+            gas_price: 0,
+            ..Default::default()
+        }))
+        .unwrap();
+    assert!(!result.result.is_success());
+    assert!(!result.result.is_halt());
+    assert_eq!(result.result.output(), Some(&Bytes::new()));
+    assert_eq!(result.state[&caller].info.balance, U256::from(10));
+}
+
+#[test]
 fn internal_call_opcode_is_dispatched_through_revm() {
     let expected = [0x7b_u8; 32];
     let factory = factory_with_runtime_hook(move |_| {
         Ok(CallOutput::returned(50, Bytes::copy_from_slice(&expected)))
     });
 
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
+    let caller = Address::with_last_byte(0x11);
+    let contract = Address::with_last_byte(0x22);
     let mut db = CacheDB::new(EmptyDB::default());
     db.insert_account_info(
         contract,
@@ -391,7 +515,7 @@ fn revert_is_returned_as_an_evm_revert() {
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
         .transact(tx(
-            arcology_address(0x11),
+            Address::with_last_byte(0x11),
             ApiAddress::Runtime.address(),
             Bytes::new(),
         ))
@@ -416,7 +540,7 @@ fn excessive_hook_gas_becomes_an_evm_halt() {
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let result = evm
         .transact(tx(
-            arcology_address(0x11),
+            Address::with_last_byte(0x11),
             ApiAddress::Runtime.address(),
             Bytes::new(),
         ))
@@ -434,8 +558,8 @@ fn factory_supports_standard_inspectors() {
 
 #[test]
 fn recorder_tracks_sload_slots() {
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
+    let caller = Address::with_last_byte(0x11);
+    let contract = Address::with_last_byte(0x22);
     let slot = U256::from(7);
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0x07, 0x54, 0x50, // SLOAD slot 7, POP
@@ -473,6 +597,114 @@ fn recorder_tracks_sload_slots() {
 }
 
 #[test]
+fn parallel_executor_keeps_native_reads_transaction_local() {
+    struct SequenceScheduler;
+    impl<Tx> Scheduler<Tx> for SequenceScheduler {
+        fn schedule(&self, jobs: impl IntoIterator<Item = Job<Tx>>) -> Vec<Generation<Tx>> {
+            let mut generation = Generation::default();
+            for (index, mut job) in jobs.into_iter().enumerate() {
+                let sequence = index / 3;
+                job.id.sequence = sequence as u64;
+                job.id.job = (index % 3) as u64;
+                if generation.sequences.len() <= sequence {
+                    generation.sequences.push(JobSequence {
+                        jobs: Vec::new(),
+                        nonce_offsets: Vec::new(),
+                    });
+                }
+                generation.sequences[sequence].jobs.push(job);
+            }
+            vec![generation]
+        }
+    }
+
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .unwrap();
+    let evm_factory = ArcologyEvmFactory::try_new(router).unwrap();
+    let callers = [0x31, 0x32, 0x33, 0x34].map(Address::with_last_byte);
+    for workers in [1, 4] {
+        let factory = ArcologyBlockExecutorFactory::new(
+            OpAlloyReceiptBuilder::default(),
+            OpChainHardforks::op_mainnet(),
+            evm_factory.clone(),
+        );
+        let executor = ArcologyParaBlockExecutor::new(
+            factory,
+            ParaBlockConfig {
+                workers,
+                env: EvmEnv::default(),
+                ctx: OpBlockExecutionCtx::default(),
+            },
+            |_, _| {},
+        );
+        let transactions = (0..12).map(|index| {
+            let caller = callers[index / 3];
+            let input = if index % 3 == 1 {
+                // The middle job reverts; no read may leak from the previous job.
+                Bytes::from_static(&[0xff; 4])
+            } else {
+                let mut data = alloy_primitives::keccak256("get(bytes32)")[..4].to_vec();
+                let handle = Address::with_last_byte(if index % 3 == 0 { 1 } else { 2 });
+                let key = SlotCodec::encode(ApiAddress::Scalar, 2, handle);
+                data.extend_from_slice(&key.to_be_bytes::<32>());
+                data.into()
+            };
+            let envelope: OpTxEnvelope = TxDeposit {
+                from: caller,
+                to: TxKind::Call(ApiAddress::Scalar.address()),
+                gas_limit: 100_000,
+                input,
+                ..Default::default()
+            }
+            .into();
+            (
+                ArcologyTx::from_recovered_tx(&envelope, caller),
+                RecoveredOpTx {
+                    tx: envelope,
+                    signer: caller,
+                },
+            )
+        });
+        let results = executor.execute_block(
+            &|| CacheDB::new(EmptyDB::default()),
+            &SequenceScheduler,
+            transactions,
+        );
+        assert_eq!(results.len(), 12);
+        for (index, scheduled) in results.into_iter().enumerate() {
+            let outcome = scheduled.outcome.unwrap();
+            if index % 3 == 1 {
+                assert!(matches!(
+                    outcome.result_and_state.result,
+                    ExecutionResult::Revert { .. }
+                ));
+                assert!(outcome.inspector_reads.is_empty());
+                continue;
+            }
+            assert!(outcome.result_and_state.result.is_success());
+            assert_eq!(outcome.inspector_reads.len(), 2);
+            let handle = Address::with_last_byte(if index % 3 == 0 { 1 } else { 2 });
+            for field in [2, 3] {
+                let key = Key::Storage(
+                    callers[index / 3],
+                    SlotCodec::encode(ApiAddress::Scalar, field, handle),
+                );
+                let read = outcome
+                    .inspector_reads
+                    .iter()
+                    .find(|read| read.key == key)
+                    .unwrap();
+                assert_eq!(read.id, index as u64);
+                assert_eq!(read.data.id, index as u64);
+                assert_eq!(read.data.operations.reads.count(), 1);
+            }
+        }
+    }
+}
+
+#[test]
 fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
     // Two independent sequences per generation, with three ordered jobs each.
     struct SequenceScheduler;
@@ -507,8 +739,8 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         }
     }
 
-    let contract = arcology_address(0x22);
-    let callers = [0x31, 0x32, 0x33, 0x34].map(arcology_address);
+    let contract = Address::with_last_byte(0x22);
+    let callers = [0x31, 0x32, 0x33, 0x34].map(Address::with_last_byte);
     // Increment slot zero and return it; nonempty calldata reverts the write.
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0x00, 0x54, // SLOAD(0)
@@ -679,8 +911,8 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
 
 #[test]
 fn parallel_executor_returns_contract_outcome() {
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
+    let caller = Address::with_last_byte(0x11);
+    let contract = Address::with_last_byte(0x22);
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0x2a, // PUSH1 42
         0x60, 0x00, // PUSH1 0
@@ -788,8 +1020,8 @@ fn parallel_executor_returns_contract_outcome() {
 
 #[test]
 fn conflict_records_tag_zeroed_storage_as_deleted() {
-    let caller = arcology_address(0x11);
-    let contract = arcology_address(0x22);
+    let caller = Address::with_last_byte(0x11);
+    let contract = Address::with_last_byte(0x22);
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0x00, // PUSH1 0: value
         0x60, 0x00, // PUSH1 0: slot
@@ -834,7 +1066,7 @@ fn conflict_records_tag_zeroed_storage_as_deleted() {
 
 #[test]
 fn conflict_records_include_untouched_account_and_slot_as_read_only() {
-    let address = arcology_address(0x33);
+    let address = Address::with_last_byte(0x33);
     let slot = U256::from(4);
     let mut account = Account::from(AccountInfo {
         balance: U256::from(5),
@@ -871,7 +1103,7 @@ fn conflict_records_include_untouched_account_and_slot_as_read_only() {
 
 #[test]
 fn conflict_records_tag_existing_account_update_as_stripped() {
-    let address = arcology_address(0x44);
+    let address = Address::with_last_byte(0x44);
     let mut account = Account::from(AccountInfo {
         balance: U256::from(5),
         ..Default::default()
@@ -898,8 +1130,8 @@ fn conflict_records_tag_existing_account_update_as_stripped() {
 
 #[test]
 fn conflict_records_use_changes_instead_of_touch_status() {
-    let empty_address = arcology_address(0x45);
-    let changed_address = arcology_address(0x46);
+    let empty_address = Address::with_last_byte(0x45);
+    let changed_address = Address::with_last_byte(0x46);
     let slot = U256::from(2);
 
     let mut empty = Account::new_not_existing(Default::default());

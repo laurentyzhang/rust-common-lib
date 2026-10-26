@@ -12,10 +12,10 @@ use alloy_evm::{
         inspector::NoOpInspector,
     },
 };
-use alloy_op_evm::{
-    OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory, post_exec::PostExecEvmFactoryAdapter,
-};
+use alloy_op_evm::{OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory};
 use alloy_primitives::{Address, Bytes};
+
+pub(in crate::execution::evm) use alloy_op_evm::post_exec::PostExecEvmFactoryAdapter;
 
 pub(super) use alloy_op_evm::post_exec::{
     PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext,

@@ -1,11 +1,12 @@
 mod address;
+mod codec;
 mod handlers;
 mod output;
-mod prefixer;
 mod router;
+mod version;
 
-pub use address::{ApiAddress, arcology_address};
-pub use handlers::{CallHandler, Scalar};
+pub use address::ApiAddress;
+pub use codec::SlotCodec;
+pub use handlers::{CallHandler, ScalarHandler};
 pub use output::{CallOutput, ExitStatus};
-pub use prefixer::{SlotPrefixer, Type};
 pub use router::{CallInput, CallRouter, CallScheme, dispatch_precompile};

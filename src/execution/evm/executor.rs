@@ -3,7 +3,7 @@
 use alloy_evm::block::{
     BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult,
 };
-use alloy_evm::{Evm, EvmEnv, EvmFactory};
+use alloy_evm::{EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
 use alloy_primitives::Address;
 use rayon::{ThreadPool, ThreadPoolBuilder, prelude::*};
@@ -14,7 +14,8 @@ use alloy_evm::revm::{
 };
 
 use super::{
-    ReadRecorder,
+    ArcologyEvmFactory, ReadRecorder,
+    op::backend::PostExecEvmFactoryAdapter,
     outcome::{ScheduledTransactionResult, TransactionOutcome},
 };
 use crate::scheduler::{Generation, ID, Job, JobSequence, Scheduler};
@@ -96,7 +97,9 @@ impl<F: BlockExecutorFactory> ArcologyParaBlockExecutor<F> {
 
 impl<F> ArcologyParaBlockExecutor<F>
 where
-    F: BlockExecutorFactory + Send + Sync,
+    F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>
+        + Send
+        + Sync,
     for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
     <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
     <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
@@ -225,7 +228,7 @@ where
         for job in sequence.jobs {
             let id = job.id;
             // Reads and their IDs belong to this transaction, even after a failed job.
-            executor.evm_mut().components_mut().1.reset(id.global);
+            executor.evm_mut().reset_reads(id.global);
             let outcome = (|| {
                 let mut result_and_state = None;
                 // This commits into the sequence's private DB before the next job starts.
@@ -237,7 +240,7 @@ where
                     .last()
                     .cloned()
                     .expect("a committed transaction has a receipt");
-                let inspector_reads = executor.evm_mut().components_mut().1.drain();
+                let inspector_reads = executor.evm_mut().drain_reads();
                 Ok(TransactionOutcome {
                     result_and_state: result_and_state
                         .expect("a successful execution has a result"),

@@ -17,8 +17,8 @@ mod tests;
 pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
 pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use hooks::{
-    ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, Scalar,
-    SlotPrefixer, Type, arcology_address, dispatch_precompile,
+    ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus,
+    ScalarHandler, SlotCodec, dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;

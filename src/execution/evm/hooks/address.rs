@@ -1,7 +1,10 @@
+use strum::IntoEnumIterator;
+use strum_macros::EnumIter;
+
 use alloy_primitives::Address;
 
 /// Arcology's reserved EVM call targets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumIter)]
 #[repr(u8)]
 pub enum ApiAddress {
     Io = 0x60,
@@ -12,22 +15,18 @@ pub enum ApiAddress {
 }
 
 impl ApiAddress {
-    pub const ALL: [Self; 5] = [
-        Self::Io,
-        Self::Container,
-        Self::Scalar,
-        Self::Runtime,
-        Self::Multiprocess,
-    ];
-
     pub fn address(self) -> Address {
-        arcology_address(self as u8)
+        Self::arcology_address(self as u8)
     }
-}
 
-/// Builds the canonical low Arcology address for a one-byte suffix.
-pub fn arcology_address(suffix: u8) -> Address {
-    let mut bytes = [0_u8; 20];
-    bytes[19] = suffix;
-    Address::from(bytes)
+    pub fn contains(address: u8) -> bool {
+        Self::iter().any(|variant| variant as u8 == address)
+    }
+
+    /// Builds the canonical low Arcology address for a one-byte suffix.
+    fn arcology_address(suffix: u8) -> Address {
+        let mut bytes = [0_u8; 20];
+        bytes[19] = suffix;
+        Address::from(bytes)
+    }
 }

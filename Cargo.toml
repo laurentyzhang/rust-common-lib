@@ -20,6 +20,8 @@ op-revm = { git = "https://github.com/ethereum-optimism/optimism", branch = "dev
 rayon = "1.11.0"
 quick_cache = { path = "../../quick-cache" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "8e3b5e6a99439561b73c5dd31bd3eced2e994d60", optional = true }
+strum_macros = "0.28.0"
+strum = "0.28.0"
 
 [dev-dependencies]
 foyer-memory = "0.22.4"

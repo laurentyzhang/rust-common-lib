@@ -18,6 +18,7 @@ use crate::{
 pub struct TransactionOutcome<R, H = HaltReason> {
     pub result_and_state: ResultAndState<H>,
     pub receipt: R,
+    /// Combined reads from opcode inspection and native API handlers.
     pub inspector_reads: StateReads,
 }
 

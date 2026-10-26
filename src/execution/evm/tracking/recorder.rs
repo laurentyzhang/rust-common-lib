@@ -34,6 +34,11 @@ impl ReadRecorder {
     /// Start another transaction while retaining the recorder's allocation.
     pub fn reset(&mut self, id: u64) {
         self.id = id;
+        self.clear();
+    }
+
+    /// Clears counts without changing the current transaction ID.
+    pub(in crate::execution::evm) fn clear(&mut self) {
         self.reads.clear();
     }
 
@@ -49,11 +54,16 @@ impl ReadRecorder {
             "cannot merge recorders with different ids"
         );
 
+        self.merge_reads(&mut other);
+    }
+
+    /// Takes EVM-local counts under this recorder's transaction ID.
+    pub(in crate::execution::evm) fn merge_reads(&mut self, other: &mut Self) {
         if self.reads.len() < other.reads.len() {
             std::mem::swap(&mut self.reads, &mut other.reads);
         }
 
-        for (key, count) in other.reads {
+        for (key, count) in other.reads.drain() {
             *self.reads.entry(key).or_default() += count;
         }
     }
@@ -134,6 +144,24 @@ impl ReadRecorder {
 mod tests {
     use super::*;
     use alloy_primitives::{Address, U256};
+
+    #[test]
+    fn evm_local_counts_merge_under_the_transaction_id() {
+        let key = Key::Storage(Address::ZERO, U256::from(7));
+        let mut transaction = ReadRecorder::new(17);
+        transaction.record(key.clone());
+        let mut native = ReadRecorder::new(0);
+        native.record(key.clone());
+        native.record(key.clone());
+        transaction.merge_reads(&mut native);
+        assert!(native.drain().is_empty());
+        let reads = transaction.drain();
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].id, 17);
+        assert_eq!(reads[0].data.id, 17);
+        assert_eq!(reads[0].key, key);
+        assert_eq!(reads[0].data.operations.reads.count(), 3);
+    }
 
     #[test]
     fn reset_and_drain_keep_reads_scoped_to_the_current_transaction() {

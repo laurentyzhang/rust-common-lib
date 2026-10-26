@@ -3,7 +3,9 @@
 //! The OP factory remains responsible for constructing the EVM and selecting its native
 //! precompiles. Arcology only validates its addresses and extends the completed OP map.
 
-use super::super::{CallRouter, PrecompileCollisionError, dispatch_precompile};
+use super::super::{
+    CallRouter, PrecompileCollisionError, ReadRecorder, StateReads, dispatch_precompile,
+};
 use super::{
     backend::{
         BaseEvm, BaseFactory, PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx,
@@ -22,6 +24,7 @@ use alloy_evm::{
         precompile::{PrecompileId, Precompiles},
     },
 };
+use std::{cell::RefCell, rc::Rc};
 
 use alloy_primitives::{Address, Bytes};
 
@@ -33,6 +36,22 @@ use alloy_primitives::{Address, Bytes};
 pub struct ArcologyEvm<DB: Database, I> {
     // Keep the backend implementation private while exposing Alloy's standard Evm interface.
     base_evm: BaseEvm<DB, I>,
+    call_reads: Rc<RefCell<ReadRecorder>>,
+}
+
+impl<DB: Database> ArcologyEvm<DB, ReadRecorder> {
+    /// Starts read collection for a transaction, clearing both capture locations.
+    pub fn reset_reads(&mut self, id: u64) {
+        self.base_evm.components_mut().1.reset(id);
+        self.call_reads.borrow_mut().reset(id);
+    }
+
+    /// Combines native API and opcode reads under the current transaction ID.
+    pub fn drain_reads(&mut self) -> StateReads {
+        let recorder = self.base_evm.components_mut().1;
+        recorder.merge_reads(&mut self.call_reads.borrow_mut());
+        recorder.drain()
+    }
 }
 
 /// Delegates the Alloy EVM interface to the fully configured OP EVM.
@@ -66,6 +85,7 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        self.call_reads.borrow_mut().clear();
         self.base_evm.transact_raw(tx)
     }
 
@@ -75,6 +95,7 @@ where
         contract: Address,
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
+        self.call_reads.borrow_mut().clear();
         self.base_evm.transact_system_call(caller, contract, data)
     }
 
@@ -163,6 +184,7 @@ impl ArcologyEvmFactory {
     fn try_inject_precompiles(
         &self,
         precompiles: &mut PrecompilesMap,
+        call_reads: &Rc<RefCell<ReadRecorder>>,
     ) -> Result<(), PrecompileCollisionError> {
         // This receives the map after the backend factory has populated it.
         Self::ensure_no_collisions(&self.router, &precompiles)?;
@@ -170,9 +192,11 @@ impl ArcologyEvmFactory {
         // Each Arcology address becomes a stateful REVM precompile that routes into CallRouter.
         let hooks = self.router.handlers.keys().copied().map(|address| {
             let router = self.router.clone();
+            let call_reads = Rc::clone(call_reads);
             let id = PrecompileId::custom(format!("arcology-{address:?}"));
-            let hook =
-                DynPrecompile::new_stateful(id, move |input| dispatch_precompile(&router, input));
+            let hook = DynPrecompile::new_stateful(id, move |input| {
+                dispatch_precompile(&router, input, &mut call_reads.borrow_mut())
+            });
             (address, hook)
         });
 
@@ -181,13 +205,16 @@ impl ArcologyEvmFactory {
         Ok(())
     }
 
-    fn inject_into<DB, I>(&self, base_evm: &mut BaseEvm<DB, I>)
-    where
+    fn inject_into<DB, I>(
+        &self,
+        base_evm: &mut BaseEvm<DB, I>,
+        call_reads: &Rc<RefCell<ReadRecorder>>,
+    ) where
         DB: Database,
         I: Inspector<<BaseFactory as EvmFactory>::Context<DB>>,
     {
         // try_new establishes this invariant; checking again protects the actual per-EVM map.
-        self.try_inject_precompiles(base_evm.precompiles_mut())
+        self.try_inject_precompiles(base_evm.precompiles_mut(), call_reads)
             .expect("Arcology precompile address collides with an OP precompile");
     }
 }
@@ -211,10 +238,14 @@ impl EvmFactory for ArcologyEvmFactory {
         let mut base_evm = self.base_evm_factory.create_evm(db, input);
 
         // 2. Add Arcology handlers without replacing anything OP registered.
-        self.inject_into(&mut base_evm);
+        let call_reads = Rc::new(RefCell::new(ReadRecorder::new(0)));
+        self.inject_into(&mut base_evm, &call_reads);
 
         // 3. Hide the OP EVM behind Arcology's wrapper.
-        ArcologyEvm { base_evm }
+        ArcologyEvm {
+            base_evm,
+            call_reads,
+        }
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -227,8 +258,12 @@ impl EvmFactory for ArcologyEvmFactory {
         let mut base_evm = self
             .base_evm_factory
             .create_evm_with_inspector(db, input, inspector);
-        self.inject_into(&mut base_evm);
-        ArcologyEvm { base_evm }
+        let call_reads = Rc::new(RefCell::new(ReadRecorder::new(0)));
+        self.inject_into(&mut base_evm, &call_reads);
+        ArcologyEvm {
+            base_evm,
+            call_reads,
+        }
     }
 }
 

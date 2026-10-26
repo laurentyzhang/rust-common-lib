@@ -3,14 +3,14 @@ use alloy_evm::{
     precompiles::PrecompileInput,
     revm::precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Selector, U256};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     fmt,
     sync::Arc,
 };
 
-use super::super::{CallHookError, RegisterHookError};
+use super::super::{CallHookError, ReadRecorder, RegisterHookError};
 use super::{CallHandler, CallOutput, ExitStatus};
 
 /// The EVM call operation that reached the hook.
@@ -75,18 +75,34 @@ impl CallRouter {
         }
     }
 
-    /// Routes by code address and checks the handler's reported gas usage.
+    /// Routes direct, zero-value calls and checks the handler's reported gas usage.
     /// Returns `None` for unregistered targets, or `Some(output)` for handled calls.
     pub fn dispatch(
         &self,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
+        read_recorder: &mut ReadRecorder,
     ) -> Result<Option<CallOutput>, CallHookError> {
         let Some(handler) = self.handlers.get(&input.code_address) else {
             return Ok(None);
         };
 
-        let output = handler.call(input, internals)?;
+        // All Arcology APIs use the direct caller as owner and reject ETH.
+        if input.scheme == CallScheme::CallCodeOrDelegateCall
+            || input.target != input.code_address
+            || !input.value.is_zero()
+        {
+            return Ok(Some(CallOutput::reverted(0, Vec::new())));
+        }
+
+        // Storage APIs carry their key in the first ABI argument.
+        let key_offset = Selector::len_bytes();
+        let key = input
+            .input
+            .get(key_offset..key_offset + U256::BYTES)
+            .map(U256::from_be_slice)
+            .unwrap_or(U256::ZERO);
+        let output = handler.call(key, input, internals, read_recorder)?;
         if output.gas_used > input.gas_limit {
             return Err(CallHookError::OutOfGas {
                 gas_limit: input.gas_limit,
@@ -106,6 +122,7 @@ impl CallRouter {
 pub fn dispatch_precompile(
     router: &CallRouter,
     mut input: PrecompileInput<'_>,
+    read_recorder: &mut ReadRecorder,
 ) -> PrecompileResult {
     let scheme = if input.is_static_call() {
         CallScheme::StaticCall
@@ -125,7 +142,7 @@ pub fn dispatch_precompile(
         scheme,
     };
 
-    match router.dispatch(&hook_input, &mut input.internals) {
+    match router.dispatch(&hook_input, &mut input.internals, read_recorder) {
         Ok(Some(output)) => match output.status {
             ExitStatus::Return => Ok(PrecompileOutput::new(
                 output.gas_used,
