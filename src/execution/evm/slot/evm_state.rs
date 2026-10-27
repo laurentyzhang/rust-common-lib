@@ -5,23 +5,12 @@ use alloy_primitives::{Address, U256};
 
 use super::SlotStorage;
 
-/// Adapts a mutable [`EvmState`] map to [`SlotStorage`].
-pub(in crate::execution::evm) struct EvmStateStorage<'a> {
-    state: &'a mut EvmState,
-}
-
-impl<'a> EvmStateStorage<'a> {
-    pub(in crate::execution::evm) fn new(state: &'a mut EvmState) -> Self {
-        Self { state }
-    }
-}
-
-impl SlotStorage for EvmStateStorage<'_> {
+/// Reads and writes slots under their owning account in an EVM state map.
+impl SlotStorage for EvmState {
     type Error = Infallible;
 
     fn read(&mut self, owner: Address, slot: U256) -> Result<U256, Self::Error> {
         Ok(self
-            .state
             .get(&owner)
             .filter(|account| {
                 !account.is_selfdestructed()
@@ -33,7 +22,7 @@ impl SlotStorage for EvmStateStorage<'_> {
     }
 
     fn write(&mut self, owner: Address, slot: U256, value: U256) -> Result<(), Self::Error> {
-        let account = self.state.entry(owner).or_insert_with(Account::default);
+        let account = self.entry(owner).or_insert_with(Account::default);
         account.mark_touch();
         match account.storage.get_mut(&slot) {
             Some(current) => current.present_value = value,
@@ -57,12 +46,11 @@ mod tests {
         let owner = Address::repeat_byte(0x11);
         let slot = U256::from(7);
         let mut state = EvmState::default();
-        let mut storage = EvmStateStorage::new(&mut state);
 
-        assert_eq!(storage.read(owner, slot).unwrap(), U256::ZERO);
-        storage.write(owner, slot, U256::from(10)).unwrap();
-        storage.write(owner, slot, U256::from(20)).unwrap();
-        assert_eq!(storage.read(owner, slot).unwrap(), U256::from(20));
+        assert_eq!(state.read(owner, slot).unwrap(), U256::ZERO);
+        state.write(owner, slot, U256::from(10)).unwrap();
+        state.write(owner, slot, U256::from(20)).unwrap();
+        assert_eq!(state.read(owner, slot).unwrap(), U256::from(20));
 
         let account = state.get(&owner).unwrap();
         assert!(account.is_touched());

@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::super::{CallHookError, ReadRecorder, RegisterHookError};
-use super::{CallHandler, CallOutput, ExitStatus};
+use super::{CallOutput, ExitStatus, handlers::CallHandler};
 
 /// The EVM call operation that reached the hook.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

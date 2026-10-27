@@ -53,7 +53,7 @@ impl SlotCodec {
     }
 
     /// Checks whether a slot has a recognized API prefix and supported format version.
-    pub fn is_api_slot(key: U256) -> bool {
+    pub fn is_api_key(key: U256) -> bool {
         let bytes = key.to_be_bytes::<32>();
         return &bytes[..VERSION_OFFSET] == b"ARCO"
             && bytes[VERSION_OFFSET] == VERSION
@@ -65,7 +65,7 @@ impl SlotCodec {
     ///
     /// Returns `(api, field, key)`. Field IDs are interpreted by each API.
     pub fn decode(key: U256) -> Option<(ApiAddress, u8, [u8; 24])> {
-        if !Self::is_api_slot(key) {
+        if !Self::is_api_key(key) {
             return None;
         }
 
@@ -84,12 +84,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn is_api_slot_every_api_and_field() {
+    fn is_api_key_every_api_and_field() {
         for api in ApiAddress::iter() {
             for handle in [Address::ZERO, Address::repeat_byte(0xff)] {
                 for field in u8::MIN..=u8::MAX {
                     let slot = SlotCodec::encode(api, field, handle);
-                    assert!(SlotCodec::is_api_slot(slot));
+                    assert!(SlotCodec::is_api_key(slot));
                     assert_eq!(SlotCodec::decode(slot).unwrap().0, api);
                 }
             }
@@ -100,7 +100,7 @@ mod tests {
     fn api_address_suffixes_are_not_api_slot_keys() {
         for api in ApiAddress::iter() {
             for slot in [U256::ZERO, U256::from(api as u8), U256::MAX] {
-                assert!(!SlotCodec::is_api_slot(slot));
+                assert!(!SlotCodec::is_api_key(slot));
             }
         }
     }
@@ -110,7 +110,7 @@ mod tests {
         for api in ApiAddress::iter() {
             let mut bytes = SlotCodec::encode(api, 0, Address::ZERO).to_be_bytes::<32>();
             bytes[0] ^= 0xff;
-            assert!(!SlotCodec::is_api_slot(U256::from_be_bytes(bytes)));
+            assert!(!SlotCodec::is_api_key(U256::from_be_bytes(bytes)));
         }
     }
 
@@ -182,7 +182,7 @@ mod tests {
             let mut bytes = slot.to_be_bytes::<32>();
             bytes[index] = value;
             assert_eq!(SlotCodec::decode(U256::from_be_bytes(bytes)), None);
-            assert!(!SlotCodec::is_api_slot(U256::from_be_bytes(bytes)));
+            assert!(!SlotCodec::is_api_key(U256::from_be_bytes(bytes)));
         }
     }
 
@@ -197,7 +197,7 @@ mod tests {
                 version == VERSION
             );
             assert_eq!(
-                SlotCodec::is_api_slot(U256::from_be_bytes(bytes)),
+                SlotCodec::is_api_key(U256::from_be_bytes(bytes)),
                 version == VERSION
             );
         }

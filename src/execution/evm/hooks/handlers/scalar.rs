@@ -5,8 +5,7 @@ use super::super::{
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
 use crate::execution::evm::{
-    ApiAddress, CallHookError, EvmInternalsStorage, Field, ReadRecorder, ScalarStorage, SlotCodec,
-    key::Key,
+    ApiAddress, CallHookError, Field, ReadRecorder, ScalarSlot, SlotCodec, key::Key,
 };
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
@@ -41,12 +40,8 @@ impl ScalarHandler {
             limits: (call.min, call.max),
             ..Default::default()
         };
-        let scalar_storage = ScalarStorage::new(key);
-        scalar_storage.store(
-            &mut EvmInternalsStorage::new(internals),
-            input.caller,
-            &state,
-        )?;
+        let scalar_storage = ScalarSlot::new(key);
+        scalar_storage.store(internals, input.caller, &state)?;
         Ok(CallOutput::returned(0, call.key.abi_encode()))
     }
 
@@ -62,14 +57,12 @@ impl ScalarHandler {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
 
-        let mut slot_storage = EvmInternalsStorage::new(internals);
-        let (mut state, scalar_storage) =
-            ScalarStorage::new(key).load(&mut slot_storage, input.caller)?;
+        let (mut state, scalar_storage) = ScalarSlot::new(key).load(internals, input.caller)?;
         if state.add_delta(&DeltaOp::Add(call.delta)).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
 
-        scalar_storage.store(&mut slot_storage, input.caller, &state)?;
+        scalar_storage.store(internals, input.caller, &state)?;
         Ok(CallOutput::returned(0, true.abi_encode()))
     }
 
@@ -85,14 +78,13 @@ impl ScalarHandler {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
 
-        let mut slot_storage = EvmInternalsStorage::new(internals);
-        let (mut state, scalar_storage) =
-            ScalarStorage::new(key).load(&mut slot_storage, input.caller)?;
+        let (mut state, scalar_storage) = ScalarSlot::new(key).load(internals, input.caller)?;
+
         if state.add_delta(&DeltaOp::Sub(call.delta)).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
 
-        scalar_storage.store(&mut slot_storage, input.caller, &state)?;
+        scalar_storage.store(internals, input.caller, &state)?;
         Ok(CallOutput::returned(0, true.abi_encode()))
     }
 
@@ -104,11 +96,14 @@ impl ScalarHandler {
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
         api_reads: &mut ReadRecorder,
-    ) -> Result<(U256, ScalarStorage), CallHookError> {
-        let mut slot_storage = EvmInternalsStorage::new(internals);
-        let (mut state, scalar_storage) =
-            ScalarStorage::new(key).load(&mut slot_storage, input.caller)?;
-        scalar_storage.store(&mut slot_storage, input.caller, state.apply_delta())?;
+    ) -> Result<(U256, ScalarSlot), CallHookError> {
+        let (mut state, scalar_storage) = ScalarSlot::new(key).load(internals, input.caller)?;
+
+        // This will NOT modify the original state directly;
+        // it only applies pending deltas before returning the value.
+        scalar_storage.store(internals, input.caller, state.apply_delta())?;
+
+        // Record the API read for the scalar slot.
         api_reads.record(Key::Storage(input.caller, scalar_storage.value));
         Ok((state.value, scalar_storage))
     }
@@ -118,7 +113,7 @@ impl CallHandler for ScalarHandler {
     /// Recognizes scalar API slots with a defined field ID.
     fn is_valid_slot(&self, slot: U256) -> bool {
         let bytes = slot.to_be_bytes::<32>();
-        SlotCodec::is_api_slot(slot)
+        SlotCodec::is_api_key(slot)
             && bytes[API_OFFSET] == ApiAddress::Scalar as u8
             && Field::from_repr(bytes[FIELD_OFFSET]).is_some()
     }
