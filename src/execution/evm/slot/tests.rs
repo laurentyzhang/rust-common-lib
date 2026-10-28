@@ -1,132 +1,131 @@
-use super::{Field, SlotKeys, SlotStorage};
+use super::{Field, ScalarSlots, SlotStorage};
 use crate::crdt::{self, state::DeltaOp};
 use crate::execution::evm::{ApiAddress, KeyCodec};
 use alloy_evm::revm::state::EvmStorage;
 use alloy_primitives::{Address, I256, U256};
 
 #[test]
-fn u64_values_and_full_width_deltas_round_trip() {
+fn u256_values_and_full_width_deltas_round_trip() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = SlotKeys::new(key);
+    let slots = ScalarSlots::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta) in [
-        (0, Some(DeltaOp::Add(u64::MAX))),
-        (u64::MAX, Some(DeltaOp::Sub(u64::MAX))),
-        (42, None),
+        (U256::ZERO, Some(DeltaOp::Add(U256::MAX))),
+        (U256::MAX, Some(DeltaOp::Sub(U256::MAX))),
+        (U256::from(42), None),
     ] {
-        let state = crdt::Scalar::<u64> {
+        let state = crdt::Scalar::<U256> {
             value,
             delta,
             ..Default::default()
         };
         slots.store(&mut storage, owner, &state).unwrap();
         assert_eq!(
-            slots.load::<u64, _>(&mut storage, owner).unwrap(),
+            slots.load::<U256, _>(&mut storage, owner).unwrap(),
             (state, slots)
         );
         assert_eq!(
-            SlotKeys::read_min::<u64, _>(&mut storage, owner, key),
-            Some(0)
+            ScalarSlots::read_min::<U256, _>(&mut storage, owner, key),
+            Some(U256::ZERO)
         );
         assert_eq!(
-            SlotKeys::read_max::<u64, _>(&mut storage, owner, key),
-            Some(u64::MAX)
+            ScalarSlots::read_max::<U256, _>(&mut storage, owner, key),
+            Some(U256::MAX)
         );
         assert_eq!(
-            SlotKeys::read_value::<u64, _>(&mut storage, owner, key),
+            ScalarSlots::read_value::<U256, _>(&mut storage, owner, key),
             Some(value)
         );
     }
 }
 
 #[test]
-fn i64_values_use_sign_extension_and_unsigned_delta_magnitudes() {
+fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = SlotKeys::new(key);
+    let slots = ScalarSlots::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta) in [
-        (i64::MIN, Some(DeltaOp::Add(u64::MAX))),
-        (i64::MAX, Some(DeltaOp::Sub(u64::MAX))),
-        (-50, Some(DeltaOp::Add(7))),
-        (0, Some(DeltaOp::Sub(1))),
-        (-1, None),
+        (I256::MIN, Some(DeltaOp::Add(U256::MAX))),
+        (I256::MAX, Some(DeltaOp::Sub(U256::MAX))),
+        (I256::unchecked_from(-50), Some(DeltaOp::Add(U256::from(7)))),
+        (I256::ZERO, Some(DeltaOp::Sub(U256::from(1)))),
+        (I256::unchecked_from(-1), None),
     ] {
-        let state = crdt::Scalar::<i64> {
+        let state = crdt::Scalar::<I256> {
             value,
             delta,
             ..Default::default()
         };
         slots.store(&mut storage, owner, &state).unwrap();
+        assert_eq!(storage.read(owner, slots.value).unwrap(), value.into_raw());
         assert_eq!(
-            storage.read(owner, slots.value).unwrap(),
-            I256::unchecked_from(value).into_raw()
-        );
-        assert_eq!(
-            slots.load::<i64, _>(&mut storage, owner).unwrap(),
+            slots.load::<I256, _>(&mut storage, owner).unwrap(),
             (state, slots)
         );
         assert_eq!(
-            SlotKeys::read_min::<i64, _>(&mut storage, owner, key),
-            Some(i64::MIN)
+            ScalarSlots::read_min::<I256, _>(&mut storage, owner, key),
+            Some(I256::MIN)
         );
         assert_eq!(
-            SlotKeys::read_max::<i64, _>(&mut storage, owner, key),
-            Some(i64::MAX)
+            ScalarSlots::read_max::<I256, _>(&mut storage, owner, key),
+            Some(I256::MAX)
         );
         assert_eq!(
-            SlotKeys::read_value::<i64, _>(&mut storage, owner, key),
+            ScalarSlots::read_value::<I256, _>(&mut storage, owner, key),
             Some(value)
         );
     }
 }
 
 #[test]
-fn typed_loads_reject_out_of_range_values_and_magnitudes() {
+fn typed_loads_accept_full_width_values_and_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = SlotKeys::new(key);
+    let slots = ScalarSlots::new(key);
     let mut storage = EvmStorage::default();
     slots
-        .store(&mut storage, owner, &crdt::Scalar::<u64>::default())
+        .store(&mut storage, owner, &crdt::Scalar::<U256>::default())
         .unwrap();
-    storage
-        .write(owner, slots.value, U256::from(u64::MAX) + U256::from(1))
-        .unwrap();
-    assert!(slots.load::<u64, _>(&mut storage, owner).is_err());
+    storage.write(owner, slots.value, U256::MAX).unwrap();
     assert_eq!(
-        SlotKeys::read_value::<u64, _>(&mut storage, owner, key),
-        None
+        slots.load::<U256, _>(&mut storage, owner).unwrap().0.value,
+        U256::MAX
+    );
+    assert_eq!(
+        ScalarSlots::read_value::<U256, _>(&mut storage, owner, key),
+        Some(U256::MAX)
     );
 
     slots
-        .store(&mut storage, owner, &crdt::Scalar::<i64>::default())
+        .store(&mut storage, owner, &crdt::Scalar::<I256>::default())
         .unwrap();
-    for value in [
-        U256::from(i64::MAX as u64) + U256::from(1),
-        I256::unchecked_from(i64::MIN).into_raw() - U256::from(1),
-    ] {
-        storage.write(owner, slots.value, value).unwrap();
-        assert!(slots.load::<i64, _>(&mut storage, owner).is_err());
+    for value in [I256::MIN, I256::MAX] {
+        storage.write(owner, slots.value, value.into_raw()).unwrap();
         assert_eq!(
-            SlotKeys::read_value::<i64, _>(&mut storage, owner, key),
-            None
+            slots.load::<I256, _>(&mut storage, owner).unwrap().0.value,
+            value
+        );
+        assert_eq!(
+            ScalarSlots::read_value::<I256, _>(&mut storage, owner, key),
+            Some(value)
         );
     }
 
     storage.write(owner, slots.value, U256::ZERO).unwrap();
-    storage
-        .write(owner, slots.pos_delta, U256::from(u64::MAX) + U256::from(1))
-        .unwrap();
-    assert!(slots.load::<i64, _>(&mut storage, owner).is_err());
+    storage.write(owner, slots.pos_delta, U256::MAX).unwrap();
+    assert_eq!(
+        slots.load::<I256, _>(&mut storage, owner).unwrap().0.delta,
+        Some(DeltaOp::Add(U256::MAX))
+    );
 }
 
 #[test]
 fn split_deltas_round_trip_and_clear_the_opposite_slot() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = SlotKeys::new(key);
+    let slots = ScalarSlots::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta, expected) in [
         (
@@ -158,7 +157,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
         };
         slots.store(&mut storage, owner, &state).unwrap();
         assert_eq!(
-            SlotKeys::read_delta(&mut storage, owner, key),
+            ScalarSlots::read_delta(&mut storage, owner, key),
             Some(expected)
         );
         assert_eq!(
@@ -172,7 +171,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
 fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = SlotKeys::new(key);
+    let slots = ScalarSlots::new(key);
     let mut storage = EvmStorage::default();
     let state = crdt::Scalar::<U256> {
         value: U256::from(50),
@@ -202,7 +201,7 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
             slots.neg_delta,
         ] {
             assert_eq!(
-                SlotKeys::read_delta(&mut storage, owner, field_key),
+                ScalarSlots::read_delta(&mut storage, owner, field_key),
                 Some((pos, neg))
             );
         }
@@ -216,7 +215,7 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
         KeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO),
         KeyCodec::encode(ApiAddress::Container, 3, Address::ZERO),
     ] {
-        assert_eq!(SlotKeys::read_delta(&mut storage, owner, invalid), None);
+        assert_eq!(ScalarSlots::read_delta(&mut storage, owner, invalid), None);
     }
 }
 
@@ -234,7 +233,7 @@ fn invalid_pending_arithmetic_does_not_write_any_slots() {
             ..Default::default()
         };
         assert!(
-            SlotKeys::new(key)
+            ScalarSlots::new(key)
                 .store(&mut storage, Address::ZERO, &state)
                 .is_err()
         );

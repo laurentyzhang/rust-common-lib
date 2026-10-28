@@ -1,6 +1,6 @@
 use std::{hint::black_box, time::Instant};
 
-use alloy_primitives::U256 as AlloyU256;
+use alloy_primitives::{I256 as AlloyI256, U256 as AlloyU256};
 use alloy_rlp::{Decodable, Encodable, decode_exact, encode};
 use rust_common_lib::crdt::{NonComm, Scalar, Set, codecs::internal, crdt::Crdt, state::DeltaOp};
 
@@ -87,30 +87,21 @@ fn compare_internal_codec_with_rlp_on_same_objects() {
         internal::bytes::decode,
     );
 
-    let mut int64 = Scalar::<i64>::default();
-    int64.add_delta(&DeltaOp::Add(1_000)).unwrap();
-    int64.apply_delta();
-    int64.add_delta(&DeltaOp::Sub(250)).unwrap();
+    let mut int256 = Scalar::<AlloyI256>::default();
+    int256
+        .add_delta(&DeltaOp::Add(AlloyU256::from(1_000)))
+        .unwrap();
+    int256.apply_delta();
+    int256
+        .add_delta(&DeltaOp::Sub(AlloyU256::from(250)))
+        .unwrap();
     compare(
-        "I64",
-        &int64,
-        internal::int64::encoded_size,
-        internal::int64::encode,
-        internal::int64::encode_to,
-        internal::int64::decode,
-    );
-
-    let mut uint64 = Scalar::<u64>::default();
-    uint64.add_delta(&DeltaOp::Add(1_000)).unwrap();
-    uint64.apply_delta();
-    uint64.add_delta(&DeltaOp::Add(250)).unwrap();
-    compare(
-        "U64",
-        &uint64,
-        internal::uint64::encoded_size,
-        internal::uint64::encode,
-        internal::uint64::encode_to,
-        internal::uint64::decode,
+        "I256",
+        &int256,
+        internal::int256::encoded_size,
+        internal::int256::encode,
+        internal::int256::encode_to,
+        internal::int256::decode,
     );
 
     let mut u256 = Scalar::<AlloyU256>::default();

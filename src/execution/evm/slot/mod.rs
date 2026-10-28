@@ -9,7 +9,9 @@ mod tests;
 
 use alloy_primitives::{Address, U256};
 
-pub(in crate::execution::evm) use scalar::{Field, SlotKeys};
+pub use key_codec::KeyCodec;
+pub(in crate::execution::evm) use key_codec::{API_OFFSET, FIELD_OFFSET};
+pub(in crate::execution::evm) use scalar::{Field, ScalarSlots};
 
 /// Reads and writes account-scoped EVM storage slots.
 pub(in crate::execution::evm) trait SlotStorage {

@@ -592,7 +592,7 @@ mod conflict_checker {
     fn vm_read_remove_conflicts_survive_drain_import_and_ordering() {
         for value in [
             CrdtValue::from(NonComm::<[u8]>::new(vec![1]).unwrap()),
-            CrdtValue::from(Scalar::<u64>::default()),
+            CrdtValue::from(Scalar::<alloy_primitives::U256>::default()),
         ] {
             for delete_reads_first in [false, true] {
                 for reverse_import in [false, true] {
@@ -641,12 +641,12 @@ mod conflict_checker {
                 CrdtDelta::Bytes(vec![2]),
             ),
             (
-                CrdtValue::from(Scalar::<i64>::default()),
-                CrdtDelta::I64(DeltaOp::Add(1)),
+                CrdtValue::from(Scalar::<alloy_primitives::I256>::default()),
+                CrdtDelta::I256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
-                CrdtValue::from(Scalar::<u64>::default()),
-                CrdtDelta::U64(DeltaOp::Add(1)),
+                CrdtValue::from(Scalar::<alloy_primitives::U256>::default()),
+                CrdtDelta::U256(DeltaOp::Add(alloy_primitives::U256::from(1))),
             ),
             (
                 CrdtValue::from(Scalar::<alloy_primitives::U256>::default()),
@@ -772,10 +772,22 @@ mod conflict_checker {
 
     #[test]
     fn import_splits_numeric_data_between_access_and_arithmetic_checks() {
-        let mut first = Scalar::<i64>::new(-10, 10).unwrap();
-        first.add_delta(&DeltaOp::Add(3)).unwrap();
-        let mut second = Scalar::<i64>::new(-10, 10).unwrap();
-        second.add_delta(&DeltaOp::Add(9)).unwrap();
+        let mut first = Scalar::<alloy_primitives::I256>::new(
+            alloy_primitives::I256::unchecked_from(-10),
+            alloy_primitives::I256::unchecked_from(10),
+        )
+        .unwrap();
+        first
+            .add_delta(&DeltaOp::Add(alloy_primitives::U256::from(3)))
+            .unwrap();
+        let mut second = Scalar::<alloy_primitives::I256>::new(
+            alloy_primitives::I256::unchecked_from(-10),
+            alloy_primitives::I256::unchecked_from(10),
+        )
+        .unwrap();
+        second
+            .add_delta(&DeltaOp::Add(alloy_primitives::U256::from(9)))
+            .unwrap();
 
         let mut detector = ConflictChecker::new();
         detector.import(vec![
@@ -784,13 +796,13 @@ mod conflict_checker {
                 2,
                 7,
                 operations(0, 0, 1, 0),
-                Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(first)))),
+                Status::Value(CrdtValue::Numeric(Numeric::I256(Cow::Owned(first)))),
             ),
             output(
                 3,
                 7,
                 operations(1, 0, 1, 0),
-                Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(second)))),
+                Status::Value(CrdtValue::Numeric(Numeric::I256(Cow::Owned(second)))),
             ),
         ]);
 
@@ -809,8 +821,8 @@ mod conflict_checker {
                 )
         }));
         assert!(rejected.iter().any(|(record, reason)| {
-            matches!(record.data.current(), Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
-                    if value.delta().copied() == Some(DeltaOp::Add(9)))
+            matches!(record.data.current(), Status::Value(CrdtValue::Numeric(Numeric::I256(value)))
+                    if value.delta().copied() == Some(DeltaOp::Add(alloy_primitives::U256::from(9))))
                 && matches!(
                     reason,
                     Reason::NumericError(crate::resolver::reason::NumericError::AboveUpperLimit(_))
@@ -849,24 +861,38 @@ mod sum_checker {
         Numeric::U256(Cow::Owned(value))
     }
 
-    fn u64_value(delta: u64) -> Numeric<'static> {
-        let mut value = Scalar::<u64>::default();
+    fn u64_value(delta: alloy_primitives::U256) -> Numeric<'static> {
+        let mut value = Scalar::<alloy_primitives::U256>::default();
         value.add_delta(&DeltaOp::Add(delta)).unwrap();
-        Numeric::U64(Cow::Owned(value))
+        Numeric::U256(Cow::Owned(value))
     }
 
-    fn u64_operation(operation: DeltaOp<u64>) -> Numeric<'static> {
-        let mut value = Scalar::<u64>::default();
-        value.add_delta(&DeltaOp::Add(10)).unwrap();
+    fn u64_operation(operation: DeltaOp<alloy_primitives::U256>) -> Numeric<'static> {
+        let mut value = Scalar::<alloy_primitives::U256>::default();
+        value
+            .add_delta(&DeltaOp::Add(alloy_primitives::U256::from(10)))
+            .unwrap();
         value.apply_delta();
         value.add_delta(&operation).unwrap();
-        Numeric::U64(Cow::Owned(value))
+        Numeric::U256(Cow::Owned(value))
+    }
+
+    fn signed_operation(value: i64) -> DeltaOp<alloy_primitives::U256> {
+        if value < 0 {
+            DeltaOp::Sub(alloy_primitives::U256::from(value.unsigned_abs()))
+        } else {
+            DeltaOp::Add(alloy_primitives::U256::from(value as u64))
+        }
     }
 
     fn i64_value(delta: i64, lower: i64, upper: i64) -> Numeric<'static> {
-        let mut value = Scalar::<i64>::new(lower, upper).unwrap();
-        value.add_delta(&delta.into()).unwrap();
-        Numeric::I64(Cow::Owned(value))
+        let mut value = Scalar::<alloy_primitives::I256>::new(
+            alloy_primitives::I256::unchecked_from(lower),
+            alloy_primitives::I256::unchecked_from(upper),
+        )
+        .unwrap();
+        value.add_delta(&signed_operation(delta)).unwrap();
+        Numeric::I256(Cow::Owned(value))
     }
 
     fn execution<K>(
@@ -980,96 +1006,48 @@ mod sum_checker {
     }
 
     #[test]
-    fn accumulate_i64_mixed_signs_reports_underflow_and_overflow() {
-        for (initial, deltas, overflow_ids) in [
-            // Pending delta reaches MIN, cancels to zero, then reaches MAX.
-            (
-                0,
-                vec![
-                    i64::MIN + 1,
-                    i64::MIN + 2,
-                    -1,
-                    0,
-                    1,
-                    i64::MAX,
-                    i64::MAX,
-                    i64::MAX,
-                    i64::MAX,
-                ],
-                [8, 9],
-            ),
-            // Underflow occurs in stored value + pending delta. Later deltas
-            // reach MIN, cancel, reach pending MAX, and overflow pending delta.
-            (
-                -10,
-                vec![
-                    i64::MIN + 11,
-                    -2,
-                    -1,
-                    0,
-                    1,
-                    i64::MAX - 10,
-                    i64::MAX,
-                    i64::MAX,
-                    i64::MAX,
-                ],
-                [8, 9],
-            ),
-            // Underflow occurs in pending delta; overflow occurs when adding
-            // a representable pending delta (MAX - 2) to the stored value 10.
-            (
-                10,
-                vec![
-                    i64::MIN + 1,
-                    i64::MIN + 2,
-                    -1,
-                    0,
-                    1,
-                    i64::MAX / 2,
-                    i64::MAX / 2,
-                    i64::MAX / 2,
-                    i64::MAX / 2,
-                    i64::MAX / 2,
-                ],
-                [9, 10],
-            ),
-        ] {
-            let mut base = Scalar::<i64>::default();
-            base.add_delta(&initial.into()).unwrap();
-            base.apply_delta();
-            assert_mixed_sign_rejections(
-                Numeric::I64(Cow::Owned(base)),
-                deltas
-                    .into_iter()
-                    .map(|delta| CrdtDelta::I64(delta.into()))
-                    .collect(),
-                2,
-                &overflow_ids,
-            );
-        }
+    fn accumulate_i256_mixed_signs_reports_underflow_and_overflow() {
+        let sign = alloy_primitives::U256::from(1) << 255;
+        let deltas = vec![
+            CrdtDelta::I256(DeltaOp::Sub(sign - alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Sub(alloy_primitives::U256::from(2))),
+            CrdtDelta::I256(DeltaOp::Sub(alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Add(alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Add(alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Add(sign - alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Add(sign - alloy_primitives::U256::from(1))),
+            CrdtDelta::I256(DeltaOp::Add(sign - alloy_primitives::U256::from(1))),
+        ];
+        assert_mixed_sign_rejections(
+            Numeric::I256(Cow::Owned(Scalar::<alloy_primitives::I256>::default())),
+            deltas,
+            2,
+            &[7, 8],
+        );
     }
 
     #[test]
     fn accumulate_u64_mixed_signs_reports_underflow_and_overflow() {
-        let mut base = Scalar::<u64>::default();
-        base.add_delta(&DeltaOp::Add(10)).unwrap();
+        let mut base = Scalar::<alloy_primitives::U256>::default();
+        base.add_delta(&DeltaOp::Add(alloy_primitives::U256::from(10)))
+            .unwrap();
         base.apply_delta();
 
         // 10 - 6 = 4; -5 underflows; -4 reaches zero; +10 cancels;
         // +(MAX - 10) reaches MAX. Both following additions overflow.
         let deltas = [
-            DeltaOp::Sub(6),
-            DeltaOp::Sub(5),
-            DeltaOp::Sub(4),
-            DeltaOp::Add(0),
-            DeltaOp::Add(10),
-            DeltaOp::Add(u64::MAX - 10),
-            DeltaOp::Add(u64::MAX - 10),
-            DeltaOp::Add(u64::MAX - 10),
+            DeltaOp::Sub(alloy_primitives::U256::from(6)),
+            DeltaOp::Sub(alloy_primitives::U256::from(5)),
+            DeltaOp::Sub(alloy_primitives::U256::from(4)),
+            DeltaOp::Add(alloy_primitives::U256::ZERO),
+            DeltaOp::Add(alloy_primitives::U256::from(10)),
+            DeltaOp::Add(alloy_primitives::U256::MAX - alloy_primitives::U256::from(10)),
+            DeltaOp::Add(alloy_primitives::U256::MAX - alloy_primitives::U256::from(10)),
+            DeltaOp::Add(alloy_primitives::U256::MAX - alloy_primitives::U256::from(10)),
         ];
         assert_mixed_sign_rejections(
-            Numeric::U64(Cow::Owned(base)),
-            deltas.into_iter().map(CrdtDelta::U64).collect(),
+            Numeric::U256(Cow::Owned(base)),
+            deltas.into_iter().map(CrdtDelta::U256).collect(),
             2,
             &[7, 8],
         );
@@ -1226,8 +1204,8 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(CrdtValue::Numeric(Numeric::I64(value)))
-                if value.delta().copied() == Some(DeltaOp::Add(4))
+            Status::Value(CrdtValue::Numeric(Numeric::I256(value)))
+                if value.delta().copied() == Some(DeltaOp::Add(alloy_primitives::U256::from(4)))
         ));
         assert!(matches!(
             reason,
@@ -1260,8 +1238,14 @@ mod sum_checker {
     #[test]
     fn accumulate_reports_arithmetic_overflow() {
         let mut sum_checker = SumChecker::new();
-        sum_checker.import(execution(1, vec![(7, u64_value(1))]));
-        sum_checker.import(execution(2, vec![(7, u64_value(u64::MAX))]));
+        sum_checker.import(execution(
+            1,
+            vec![(7, u64_value(alloy_primitives::U256::from(1)))],
+        ));
+        sum_checker.import(execution(
+            2,
+            vec![(7, u64_value(alloy_primitives::U256::MAX))],
+        ));
 
         let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 1);
@@ -1271,8 +1255,8 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(CrdtValue::Numeric(Numeric::U64(value)))
-                if value.delta() == Some(&DeltaOp::Add(u64::MAX))
+            Status::Value(CrdtValue::Numeric(Numeric::U256(value)))
+                if value.delta() == Some(&DeltaOp::Add(alloy_primitives::U256::MAX))
         ));
         assert!(matches!(
             reason,
@@ -1283,8 +1267,20 @@ mod sum_checker {
     #[test]
     fn accumulate_reports_arithmetic_underflow() {
         let mut sum_checker = SumChecker::new();
-        sum_checker.import(execution(1, vec![(7, u64_operation(DeltaOp::Sub(6)))]));
-        sum_checker.import(execution(2, vec![(7, u64_operation(DeltaOp::Sub(5)))]));
+        sum_checker.import(execution(
+            1,
+            vec![(
+                7,
+                u64_operation(DeltaOp::Sub(alloy_primitives::U256::from(6))),
+            )],
+        ));
+        sum_checker.import(execution(
+            2,
+            vec![(
+                7,
+                u64_operation(DeltaOp::Sub(alloy_primitives::U256::from(5))),
+            )],
+        ));
 
         let rejected = sum_checker.accumulate();
         assert_eq!(rejected.len(), 1);
@@ -1294,8 +1290,8 @@ mod sum_checker {
         assert_eq!(record.key, 7);
         assert!(matches!(
             record.data.current(),
-            Status::Value(CrdtValue::Numeric(Numeric::U64(value)))
-                if value.delta() == Some(&DeltaOp::Sub(5))
+            Status::Value(CrdtValue::Numeric(Numeric::U256(value)))
+                if value.delta() == Some(&DeltaOp::Sub(alloy_primitives::U256::from(5)))
         ));
         assert!(matches!(
             reason,

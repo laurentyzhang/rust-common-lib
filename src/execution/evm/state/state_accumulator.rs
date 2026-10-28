@@ -8,12 +8,12 @@ use crate::store::traits::Committer;
 
 /// Buffers transaction states and merges accepted changes into an EVM state cache.
 #[derive(Debug, Default)]
-pub struct EvmStateCommitter {
+pub struct EvmStateAccumulator {
     cache: EvmStateCache,
     buffered: BTreeMap<u64, MergeableEvmState>,
 }
 
-impl EvmStateCommitter {
+impl EvmStateAccumulator {
     pub fn new(cache: EvmStateCache) -> Self {
         Self {
             cache,
@@ -25,9 +25,14 @@ impl EvmStateCommitter {
     pub fn into_inner(self) -> EvmStateCache {
         self.cache
     }
+
+    /// Return the accepted state accumulated so far.
+    pub fn state(&self) -> &EvmState {
+        &self.cache.inner.inner
+    }
 }
 
-impl Committer<u64, EvmState> for EvmStateCommitter {
+impl Committer<u64, EvmState> for EvmStateAccumulator {
     /// Buffer a transaction state, replacing any earlier state with the same ID.
     fn buffer(&mut self, id: u64, state: EvmState) {
         self.buffered.insert(id, MergeableEvmState::new(state));

@@ -193,8 +193,7 @@ mod tests {
     #[test]
     fn merge_inserts_new_deltas_and_preserves_ordinary_slot_overwrites() {
         let delta = KeyCodec::encode(ApiAddress::Scalar, Field::PosDelta as u8, Address::ZERO);
-        let foreign =
-            KeyCodec::encode(ApiAddress::Container, Field::PosDelta as u8, Address::ZERO);
+        let foreign = KeyCodec::encode(ApiAddress::Container, Field::PosDelta as u8, Address::ZERO);
         let unknown = KeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO);
         let mut malformed = delta.to_be_bytes::<32>();
         malformed[0] ^= 0xff;

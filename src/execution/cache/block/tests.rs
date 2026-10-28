@@ -1,3 +1,5 @@
+use alloy_primitives::U256;
+
 use crate::execution::{BlockCache, BlockCacheWriter, cache::Entry};
 
 use crate::crdt::{
@@ -33,10 +35,10 @@ where
 }
 
 fn numeric_u64(number: u64) -> Entry<'static> {
-    Entry::Crdt(CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+    Entry::Crdt(CrdtValue::Numeric(Numeric::U256(std::borrow::Cow::Owned(
         Scalar {
-            value: number,
-            ..Scalar::<u64>::default()
+            value: U256::from(number),
+            ..Scalar::<U256>::default()
         },
     ))))
 }

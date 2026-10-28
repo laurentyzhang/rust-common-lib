@@ -23,12 +23,12 @@ pub struct TransactionOutcome<R, H = HaltReason> {
 
 impl<R, H> TransactionOutcome<R, H> {
     /// Merges inspector reads with state changes, keeping the state record for shared keys.
-    pub fn merge_records(&mut self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+    pub fn merge_records(&self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
-        for read in self.reads.drain(..) {
-            let mut tracked = read.data;
+        for read in &self.reads {
+            let mut tracked = read.data.clone();
             tracked.id = transaction_id;
-            unique_records.insert(read.key, tracked);
+            unique_records.insert(read.key.clone(), tracked);
         }
 
         for (key, mut write) in self.delta_records(transaction_id) {
@@ -131,8 +131,8 @@ impl<R, H> TransactionOutcome<R, H> {
     }
 }
 
-/// A transaction result tagged with its stable global ID and scheduled location.
-pub struct ScheduledTransactionResult<R, H = HaltReason> {
+/// A job result tagged with its stable global ID and scheduled location.
+pub struct JobResult<R, H = HaltReason> {
     pub id: ID,
     pub outcome: Result<TransactionOutcome<R, H>, BlockExecutionError>,
 }

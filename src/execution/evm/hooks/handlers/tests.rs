@@ -1,9 +1,9 @@
 use super::super::version::VERSION;
-use super::{CallHandler, ScalarHandler, scalar::IScalar};
+use super::{CallHandler, U256Handler, u256::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::execution::evm::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, KeyCodec, ReadRecorder, SlotKeys, key::Key,
+    ExitStatus, KeyCodec, ReadRecorder, ScalarSlots, key::Key,
 };
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
@@ -40,7 +40,7 @@ fn invoke(
     let mut internals = EvmInternals::new(journal, &block, &cfg, &tx);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     router
         .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
@@ -52,8 +52,8 @@ fn scalar_key(handle: Address) -> B256 {
     KeyCodec::encode(ApiAddress::Scalar, 2, handle).into()
 }
 
-fn slots(handle: Address) -> SlotKeys {
-    SlotKeys::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle))
+fn slots(handle: Address) -> ScalarSlots {
+    ScalarSlots::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle))
 }
 
 fn invoke_delta(
@@ -88,7 +88,7 @@ fn invoke_delta(
     }
 }
 
-fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: SlotKeys) -> [U256; 5] {
+fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarSlots) -> [U256; 5] {
     [
         keys.min,
         keys.max,
@@ -103,7 +103,7 @@ fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: SlotKeys)
 fn scalar_handler_recognizes_slots_through_the_trait() {
     use strum::IntoEnumIterator;
 
-    let handler: &dyn CallHandler = &ScalarHandler;
+    let handler: &dyn CallHandler = &U256Handler;
     for handle in [Address::ZERO, Address::repeat_byte(0xff)] {
         let keys = slots(handle);
         for slot in [
@@ -139,7 +139,7 @@ fn invalid_scalar_keys_revert_before_state_access() {
     let handle = Address::with_last_byte(1);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     for key in [
         B256::ZERO,
@@ -244,7 +244,7 @@ fn only_get_records_the_value_and_delta_observation() {
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let mut recorder = ReadRecorder::new(55);
     let get = IScalar::getCall {
@@ -329,7 +329,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     let second = Address::with_last_byte(2);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut left = factory.create_evm_with_inspector(
@@ -422,7 +422,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
     let slot = slots(handle).value;
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     for exit in [0xf3, 0xfd] {
@@ -522,7 +522,7 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = SlotKeys::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle));
+        let keys = ScalarSlots::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle));
         assert_eq!(keys, slots(handle));
         keys.store(&mut internals, owner, &state).unwrap();
         assert_eq!(
@@ -607,7 +607,7 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
             DeltaOp::Sub(magnitude) => (U256::ZERO, magnitude),
         };
         assert_eq!(
-            SlotKeys::read_delta(&mut internals, owner, keys.value),
+            ScalarSlots::read_delta(&mut internals, owner, keys.value),
             Some(expected)
         );
     }
@@ -1271,7 +1271,7 @@ fn evm_sub_returns_true_and_exports_only_the_pending_delta() {
         .unwrap();
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(db, EvmEnv::default());
@@ -1384,7 +1384,7 @@ fn get_rejects_invalid_call_contexts_without_loading_state() {
     let cfg: CfgEnv = CfgEnv::default();
     let tx = TxEnv::default();
     let mut router = CallRouter::new();
-    router.register(api, ScalarHandler).unwrap();
+    router.register(api, U256Handler).unwrap();
     for (scheme, value, target) in [
         (CallScheme::CallCodeOrDelegateCall, U256::ZERO, api),
         (CallScheme::Call, U256::from(1), api),
@@ -1426,7 +1426,7 @@ fn evm_get_returns_the_callers_stored_scalar_value() {
         .unwrap();
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(db, EvmEnv::default());
@@ -1459,7 +1459,7 @@ fn evm_exports_the_fields_under_the_caller_account() {
     );
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());

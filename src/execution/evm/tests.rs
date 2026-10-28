@@ -3,13 +3,14 @@ use super::recorder::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_ENT
 use super::{
     AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHandler, CallHookError,
-    CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, KeyCodec, ParaBlockConfig,
-    RegisterHookError, ScalarHandler, TransactionOutcome,
+    CallInput, CallOutput, CallRouter, CallScheme, EvmStateAccumulator, ExitStatus, KeyCodec,
+    ParaBlockConfig, RegisterHookError, TransactionOutcome, U256Handler,
 };
 
 use crate::{
     crdt::state::status::{Status, Tag},
-    execution::evm::key::{Key, KeyCodec},
+    execution::evm::key::{Key, KeyCodec as StoreKeyCodec},
+    resolver::ConflictChecker,
     store::StoreCodec,
 };
 use alloy_evm::{
@@ -92,8 +93,8 @@ fn evm_keys_round_trip() {
     ];
 
     for key in keys {
-        let encoded = KeyCodec.encode(&key).unwrap();
-        assert_eq!(KeyCodec.decode(&encoded).unwrap(), key);
+        let encoded = StoreKeyCodec.encode(&key).unwrap();
+        assert_eq!(StoreKeyCodec.decode(&encoded).unwrap(), key);
     }
 }
 
@@ -620,7 +621,7 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
 
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), ScalarHandler)
+        .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
     let evm_factory = ArcologyEvmFactory::try_new(router).unwrap();
     let callers = [0x31, 0x32, 0x33, 0x34].map(Address::with_last_byte);
@@ -630,15 +631,14 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
             OpChainHardforks::op_mainnet(),
             evm_factory.clone(),
         );
-        let executor = ArcologyParaBlockExecutor::new(
-            factory,
-            ParaBlockConfig {
-                workers,
-                env: EvmEnv::default(),
-                ctx: OpBlockExecutionCtx::default(),
-            },
-            |_, _| {},
-        );
+        let config = ParaBlockConfig {
+            env: EvmEnv::default(),
+            ctx: OpBlockExecutionCtx::default(),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
         let transactions = (0..12).map(|index| {
             let caller = callers[index / 3];
             let input = if index % 3 == 1 {
@@ -667,9 +667,17 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
                 },
             )
         });
-        let results = executor.execute_block(
-            &|| CacheDB::new(EmptyDB::default()),
+        let mut resolver = ConflictChecker::new();
+        let mut accumulator = EvmStateAccumulator::default();
+        let results = ArcologyParaBlockExecutor::execute_block(
+            &factory,
+            &config,
+            &pool,
+            &|_, _| {},
+            &|_| CacheDB::new(EmptyDB::default()),
             &SequenceScheduler,
+            &mut resolver,
+            &mut accumulator,
             transactions,
         );
         assert_eq!(results.len(), 12);
@@ -684,9 +692,9 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
                 continue;
             }
             assert!(outcome.result_and_state.result.is_success());
-            assert_eq!(outcome.reads.len(), 2);
+            assert_eq!(outcome.reads.len(), 3);
             let handle = Address::with_last_byte(if index % 3 == 0 { 1 } else { 2 });
-            for field in [2, 3] {
+            for field in [2, 3, 4] {
                 let key = Key::Storage(
                     callers[index / 3],
                     KeyCodec::encode(ApiAddress::Scalar, field, handle),
@@ -768,7 +776,7 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
     for workers in [0, 1, 2, 4] {
         let databases = AtomicUsize::new(0);
         let threads = Mutex::new(HashSet::new());
-        let make_db = || {
+        let make_db = |_: &EvmState| {
             databases.fetch_add(1, Ordering::Relaxed);
             threads.lock().unwrap().insert(std::thread::current().id());
             let mut db = CacheDB::new(EmptyDB::default());
@@ -796,21 +804,27 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
             OpChainHardforks::op_mainnet(),
             ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
         );
-        let executor = ArcologyParaBlockExecutor::new(
-            factory,
-            ParaBlockConfig {
-                workers,
-                env: EvmEnv::default(),
-                ctx: OpBlockExecutionCtx::default(),
-            },
-            |_, _| {},
-        );
-
+        let config = ParaBlockConfig {
+            env: EvmEnv::default(),
+            ctx: OpBlockExecutionCtx::default(),
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers.max(1))
+            .build()
+            .unwrap();
         // Reusing the executor across blocks must reuse the same bounded worker set.
         for block in 0..2 {
-            let results = executor.execute_block(
+            let mut resolver = ConflictChecker::new();
+            let mut accumulator = EvmStateAccumulator::default();
+            let results = ArcologyParaBlockExecutor::execute_block(
+                &factory,
+                &config,
+                &pool,
+                &|_, _| {},
                 &make_db,
                 &SequenceScheduler,
+                &mut resolver,
+                &mut accumulator,
                 (0..12).map(|index| transaction(callers[index / 3], Bytes::new())),
             );
             assert_eq!(results.len(), 12);
@@ -852,9 +866,17 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         assert!(threads.lock().unwrap().len() <= workers.max(1));
 
         // Separate snapshots start at the sender nonce plus their scheduler offset.
-        let results = executor.execute_block(
+        let mut resolver = ConflictChecker::new();
+        let mut accumulator = EvmStateAccumulator::default();
+        let results = ArcologyParaBlockExecutor::execute_block(
+            &factory,
+            &config,
+            &pool,
+            &|_, _| {},
             &make_db,
             &PassThroughScheduler::new(),
+            &mut resolver,
+            &mut accumulator,
             (0..3).map(|_| transaction(callers[0], Bytes::new())),
         );
         for (index, scheduled) in results.into_iter().enumerate() {
@@ -866,9 +888,17 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         }
 
         // A revert advances the sender nonce but its storage write is rolled back.
-        let results = executor.execute_block(
+        let mut resolver = ConflictChecker::new();
+        let mut accumulator = EvmStateAccumulator::default();
+        let results = ArcologyParaBlockExecutor::execute_block(
+            &factory,
+            &config,
+            &pool,
+            &|_, _| {},
             &make_db,
             &SequenceScheduler,
+            &mut resolver,
+            &mut accumulator,
             [
                 transaction(callers[0], Bytes::from_static(&[1])),
                 transaction(callers[0], Bytes::new()),
@@ -892,14 +922,21 @@ fn parallel_executor_preserves_sequence_state_and_reuses_workers() {
         );
 
         let before = databases.load(Ordering::Relaxed);
+        let mut resolver = ConflictChecker::new();
+        let mut accumulator = EvmStateAccumulator::default();
         assert!(
-            executor
-                .execute_block(
-                    &make_db,
-                    &SequenceScheduler,
-                    std::iter::empty::<(ArcologyTx, RecoveredOpTx)>()
-                )
-                .is_empty()
+            ArcologyParaBlockExecutor::execute_block(
+                &factory,
+                &config,
+                &pool,
+                &|_, _| {},
+                &make_db,
+                &SequenceScheduler,
+                &mut resolver,
+                &mut accumulator,
+                std::iter::empty::<(ArcologyTx, RecoveredOpTx)>(),
+            )
+            .is_empty()
         );
         assert_eq!(databases.load(Ordering::Relaxed), before);
     }
@@ -921,7 +958,7 @@ fn parallel_executor_returns_contract_outcome() {
         0xf3, // RETURN
     ]));
 
-    let make_db = || {
+    let make_db = |_: &EvmState| {
         let mut db = CacheDB::new(EmptyDB::default());
         db.insert_account_info(
             contract,
@@ -940,16 +977,14 @@ fn parallel_executor_returns_contract_outcome() {
         OpChainHardforks::op_mainnet(),
         evm_factory,
     );
-    let executor = ArcologyParaBlockExecutor::new(
-        factory,
-        ParaBlockConfig {
-            workers: 1,
-            env: EvmEnv::default(),
-            ctx: OpBlockExecutionCtx::default(),
-        },
-        |_, _| {},
-    );
-
+    let config = ParaBlockConfig {
+        env: EvmEnv::default(),
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
     let envelope: OpTxEnvelope = TxDeposit {
         from: caller,
         to: TxKind::Call(contract),
@@ -963,9 +998,17 @@ fn parallel_executor_returns_contract_outcome() {
         signer: caller,
     };
 
-    let mut results = executor.execute_block(
+    let mut resolver = ConflictChecker::new();
+    let mut accumulator = EvmStateAccumulator::default();
+    let mut results = ArcologyParaBlockExecutor::execute_block(
+        &factory,
+        &config,
+        &pool,
+        &|_, _| {},
         &make_db,
         &PassThroughScheduler::new(),
+        &mut resolver,
+        &mut accumulator,
         [(tx_env, recovered)],
     );
     let scheduled = results.pop().unwrap();

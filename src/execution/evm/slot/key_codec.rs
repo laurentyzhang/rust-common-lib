@@ -15,14 +15,14 @@
 //! The API byte matches [`ApiAddress`]'s call address suffix, not the storage owner.
 
 use alloy_primitives::{Address, U256};
+use strum::IntoEnumIterator;
 
-use super::{ApiAddress, version::VERSION};
-use strum::IntoEnumIterator; // 👈 ADD THIS LINE AT THE TOP
+use crate::execution::evm::hooks::{ApiAddress, VERSION};
 
 const VERSION_OFFSET: usize = 4;
-pub(super) const API_OFFSET: usize = 5;
+pub(in crate::execution::evm) const API_OFFSET: usize = 5;
 const RESERVED_OFFSET: usize = 6;
-pub(super) const FIELD_OFFSET: usize = 7;
+pub(in crate::execution::evm) const FIELD_OFFSET: usize = 7;
 const KEY_OFFSET: usize = 8;
 const HANDLE_OFFSET: usize = 12;
 

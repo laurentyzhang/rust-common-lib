@@ -12,7 +12,7 @@ impl Type for I256 {
 
     fn checked_apply(value: Self, operation: &DeltaOp<Self::Magnitude>) -> Option<Self> {
         let sign = U256::from(1) << 255;
-        let ordered = value.into_raw() ^ sign;
+        let ordered: U256 = value.into_raw() ^ sign;
         let projected = match operation {
             DeltaOp::Add(delta) => ordered.checked_add(*delta)?,
             DeltaOp::Sub(delta) => ordered.checked_sub(*delta)?,

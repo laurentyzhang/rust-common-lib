@@ -21,7 +21,7 @@ pub enum Field {
 /// Holds the five slot keys for one scalar instance, rather than their stored values.
 /// The owner address is supplied separately when accessing storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SlotKeys {
+pub struct ScalarSlots {
     pub min: U256,
     pub max: U256,
     pub value: U256,
@@ -31,7 +31,7 @@ pub struct SlotKeys {
 
 // Read individual fields using any recognized field key of the scalar instance.
 // Readers return None for invalid keys, backend failures, or values outside the requested type.
-impl SlotKeys {
+impl ScalarSlots {
     /// Validates the scalar API and field ID, then derives all five field keys.
     fn parse(key: U256) -> Option<Self> {
         let (api, field, _) = KeyCodec::decode(key)?;
@@ -85,7 +85,7 @@ impl SlotKeys {
 }
 
 // Construct a slot layout and transfer whole scalar states through a backend.
-impl SlotKeys {
+impl ScalarSlots {
     /// Derives all five field keys while preserving the instance key and prefix.
     /// The caller must validate the input key before calling this constructor.
     pub fn new(key: U256) -> Self {

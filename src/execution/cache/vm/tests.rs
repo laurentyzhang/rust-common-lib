@@ -1,3 +1,5 @@
+use alloy_primitives::U256;
+
 use crate::crdt::{
     Crdt, NonComm, Scalar,
     state::{CrdtDelta, DeltaOp, Numeric, NumericError, StateError, value::CrdtValue},
@@ -66,10 +68,10 @@ where
 }
 
 fn numeric_u64(number: u64) -> Entry<'static> {
-    Entry::Crdt(CrdtValue::Numeric(Numeric::U64(std::borrow::Cow::Owned(
+    Entry::Crdt(CrdtValue::Numeric(Numeric::U256(std::borrow::Cow::Owned(
         Scalar {
-            value: number,
-            ..Scalar::<u64>::default()
+            value: U256::from(number),
+            ..Scalar::<U256>::default()
         },
     ))))
 }
@@ -100,7 +102,7 @@ fn vm_cache_stores_opaque_entries_without_crdt_operations() {
         Some(&Entry::Other("opaque".to_owned()))
     );
     assert_eq!(
-        cache.add_delta(&7, CrdtDelta::U64(DeltaOp::Add(1))),
+        cache.add_delta(&7, CrdtDelta::U256(DeltaOp::Add(U256::from(1)))),
         Err(Error::State(StateError::TypeMismatch))
     );
 }
@@ -188,7 +190,7 @@ fn local_deletion_is_permanent_and_does_not_modify_fallback() {
 fn outer_cache_treats_inner_deletions_as_missing_records() {
     let original = numeric_u64(17);
     let replacement = numeric_u64(42);
-    let mut fallback = CachedStore::new(4, None);
+    let mut fallback = CachedStore::<i32, Entry<'_>>::new(4, None);
     fallback = write_cached(fallback, vec![(7, original.clone())]);
     let mut inner = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
     assert_eq!(inner.delete(&7), Ok(()));
@@ -280,8 +282,8 @@ fn short_operation_sequences_match_value_existence_model() {
 #[test]
 fn missing_key_can_be_deleted_created_read_and_deleted_again() {
     let key = 7;
-    let expected: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
-        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    let expected: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U256(
+        std::borrow::Cow::Owned(Scalar::<U256>::default()),
     )));
     let fallback = CachedStore::new(4, None);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
@@ -316,8 +318,8 @@ fn deleting_a_previously_read_missing_key_succeeds() {
 
 #[test]
 fn create_handles_existing_records_and_rejects_live_values() {
-    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
-        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U256(
+        std::borrow::Cow::Owned(Scalar::<U256>::default()),
     )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, value.clone())]);
@@ -346,8 +348,8 @@ fn create_handles_existing_records_and_rejects_live_values() {
 #[test]
 fn receiver_mutability_selects_cache_population() {
     let key = 7;
-    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
-        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U256(
+        std::borrow::Cow::Owned(Scalar::<U256>::default()),
     )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(key, value.clone())]);
@@ -365,8 +367,8 @@ fn receiver_mutability_selects_cache_population() {
 #[test]
 fn mutable_read_populates_only_the_outer_cache() {
     let key = 7;
-    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U64(
-        std::borrow::Cow::Owned(Scalar::<u64>::default()),
+    let value: Entry<'static> = Entry::Crdt(CrdtValue::Numeric(Numeric::U256(
+        std::borrow::Cow::Owned(Scalar::<U256>::default()),
     )));
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(key, value.clone())]);
@@ -387,11 +389,11 @@ fn drain_includes_all_accesses_but_only_dirty_transitions() {
     assert_eq!(
         (&mut cache)
             .get(&1)
-            .and_then(|value| value.as_ref().as_u64()),
-        Some(10)
+            .and_then(|value| value.as_ref().as_u256()),
+        Some(U256::from(10))
     );
     cache
-        .add_delta(&2, CrdtDelta::U64(DeltaOp::Add(5)))
+        .add_delta(&2, CrdtDelta::U256(DeltaOp::Add(U256::from(5))))
         .expect("delta should succeed");
     assert!((&mut cache).get(&3).is_none());
 
@@ -410,7 +412,7 @@ fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
     cache
-        .add_delta(&1, CrdtDelta::U64(DeltaOp::Add(5)))
+        .add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(5))))
         .expect("delta should succeed");
 
     let first = cache.drain().1;
@@ -420,16 +422,16 @@ fn drain_clears_pending_deltas_and_subsequent_reads_reload_fallback() {
     assert!(second.is_empty());
     assert_eq!(
         match first[0].data.current() {
-            Entry::Crdt(CrdtValue::Numeric(Numeric::U64(value))) => value.value().copied(),
+            Entry::Crdt(CrdtValue::Numeric(Numeric::U256(value))) => value.value().copied(),
             _ => None,
         },
-        Some(10)
+        Some(U256::from(10))
     );
     assert_eq!(
         (&mut cache)
             .get(&1)
-            .and_then(|value| value.as_ref().as_u64()),
-        Some(10)
+            .and_then(|value| value.as_ref().as_u256()),
+        Some(U256::from(10))
     );
 }
 
@@ -488,16 +490,16 @@ fn stage_adds_a_delta_to_an_existing_value() {
     let mut fallback = CachedStore::new(4, None);
     fallback = write_cached(fallback, vec![(1, numeric_u64(10))]);
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
-    let mut update = Scalar::<u64>::default();
-    update.add_delta(&DeltaOp::Add(5)).unwrap();
+    let mut update = Scalar::<U256>::default();
+    update.add_delta(&DeltaOp::Add(U256::from(5))).unwrap();
 
     cache = write_vm(cache, vec![(1, update.into())]);
 
     assert_eq!(
         (&mut cache)
             .get(&1)
-            .and_then(|value| value.as_ref().as_u64()),
-        Some(15)
+            .and_then(|value| value.as_ref().as_u256()),
+        Some(U256::from(15))
     );
 }
 
@@ -515,11 +517,20 @@ fn stage_deletes_an_existing_value() {
 
 #[test]
 fn stage_returns_delta_errors_without_changing_the_value() {
-    let mut fallback = CachedStore::new(4, None);
-    fallback = write_cached(fallback, vec![(1, numeric_u64(u64::MAX))]);
+    let mut fallback = CachedStore::<i32, Entry<'_>>::new(4, None);
+    fallback = write_cached(
+        fallback,
+        vec![(
+            1,
+            Entry::Crdt(CrdtValue::from(Scalar::<U256> {
+                value: U256::MAX,
+                ..Default::default()
+            })),
+        )],
+    );
     let mut cache = VmStateCache::new_with_fallback(CACHE_ID, &fallback);
-    let mut update = Scalar::<u64>::default();
-    update.add_delta(&DeltaOp::Add(1)).unwrap();
+    let mut update = Scalar::<U256>::default();
+    update.add_delta(&DeltaOp::Add(U256::from(1))).unwrap();
 
     let mut writer = VmStateCacheWriter::new(cache);
     let result = writer.flush(vec![(1, update.into())]);
@@ -527,15 +538,15 @@ fn stage_returns_delta_errors_without_changing_the_value() {
 
     assert!(matches!(
         result,
-        Err(StoreError::State(StateError::U64(NumericError::Overflow(
+        Err(StoreError::State(StateError::U256(NumericError::Overflow(
             _
         ))))
     ));
     assert_eq!(
         (&mut cache)
             .get(&1)
-            .and_then(|value| value.as_ref().as_u64()),
-        Some(u64::MAX)
+            .and_then(|value| value.as_ref().as_u256()),
+        Some(U256::MAX)
     );
 }
 
@@ -547,7 +558,7 @@ fn deleted_value_is_discarded_and_rejects_deltas() {
 
     cache.delete(&1).unwrap();
     assert_eq!(
-        cache.add_delta(&1, CrdtDelta::U64(DeltaOp::Add(5))),
+        cache.add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(5)))),
         Err(Error::State(StateError::CannotAddDeltaToMissingValue))
     );
     assert!(!cache.exists(&1));
@@ -574,7 +585,12 @@ fn vm_cache_with_vm_cache_fallback() {
 
     let mut result: Result<(), Error>;
 
-    result = vm_cache.insert(&1, Scalar::<u64>::new(0, 100).unwrap().into());
+    result = vm_cache.insert(
+        &1,
+        Scalar::<U256>::new(U256::from(0), U256::from(100))
+            .unwrap()
+            .into(),
+    );
     assert!(result.is_ok());
 
     result = vm_cache.insert(&1, NonComm::<[u8]>::new(vec![70, 71, 72]).unwrap().into());
@@ -585,33 +601,34 @@ fn vm_cache_with_vm_cache_fallback() {
 
     assert!(vm_cache.size() == 3);
 
-    let delta_result = vm_cache.add_delta(&1, CrdtDelta::U64(DeltaOp::Add(100)).into());
+    let delta_result =
+        vm_cache.add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(100))).into());
     assert!(delta_result.is_ok());
 
-    let delta_result = vm_cache.add_delta(&1, CrdtDelta::U64(DeltaOp::Add(1)).into());
+    let delta_result = vm_cache.add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(1))).into());
     assert!(matches!(
         delta_result,
-        Err(Error::State(StateError::U64(
+        Err(Error::State(StateError::U256(
             NumericError::AboveUpperLimit(_)
         )))
     ));
 
     let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
-    assert_eq!(applied.as_ref().as_u64(), Some(100));
+    assert_eq!(applied.as_ref().as_u256(), Some(U256::from(100)));
 
     applied = (&mut vm_cache).get(&2).expect("value should exist");
     assert_eq!(applied.as_ref().as_bytes(), Some(&[70, 71, 72][..]));
 
-    let mut delta = CrdtDelta::U64(DeltaOp::Sub(10));
+    let mut delta = CrdtDelta::U256(DeltaOp::Sub(U256::from(10)));
     let delta_result = vm_cache.add_delta(&1, delta.into());
     assert!(delta_result.is_ok()); // This should fail because the key already exists with a different value.
     applied = (&mut vm_cache).get(&1).expect("value should exist");
-    assert_eq!(applied.as_ref().as_u64(), Some(90));
+    assert_eq!(applied.as_ref().as_u256(), Some(U256::from(90)));
 
-    let delta_add = CrdtDelta::U64(DeltaOp::Add(1000));
+    let delta_add = CrdtDelta::U256(DeltaOp::Add(U256::from(1000)));
     let _ = vm_cache.add_delta(&1, delta_add.into());
 
-    let delta_sub = CrdtDelta::U64(DeltaOp::Sub(999));
+    let delta_sub = CrdtDelta::U256(DeltaOp::Sub(U256::from(999)));
     let _ = vm_cache.add_delta(&1, delta_sub.into());
 
     delta = CrdtDelta::Bytes(vec![10, 11]);
@@ -631,16 +648,16 @@ fn vm_cache_with_vm_cache_fallback() {
 
     // Get values from the new VM cache after it has been initialized with the block cache.
     let mut applied = (&mut vm_cache).get(&1).expect("value should exist");
-    assert_eq!(applied.as_ref().as_u64(), Some(90));
+    assert_eq!(applied.as_ref().as_u256(), Some(U256::from(90)));
 
     applied = (&mut vm_cache).get(&2).expect("value should exist");
     assert_eq!(applied.as_ref().as_bytes(), Some(&[10, 11][..]));
 
-    let delta_result = vm_cache.add_delta(&1, CrdtDelta::U64(DeltaOp::Add(5)).into());
+    let delta_result = vm_cache.add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(5))).into());
     assert!(delta_result.is_ok());
 
     applied = (&mut vm_cache).get(&1).expect("value should exist");
-    assert_eq!(applied.as_ref().as_u64(), Some(95));
+    assert_eq!(applied.as_ref().as_u256(), Some(U256::from(95)));
 
     assert_eq!(vm_cache.size(), 2);
 
@@ -748,11 +765,16 @@ fn vm_cache_with_block_cache_fallback() {
         let fallback_value = (&mut vm_cache)
             .get(&4)
             .expect("fallback value should exist");
-        assert_eq!(fallback_value.as_ref().as_u64(), Some(44));
+        assert_eq!(fallback_value.as_ref().as_u256(), Some(U256::from(44)));
         assert!(!block_cache.cache.contains_key(&4));
 
         vm_cache
-            .insert(&1, Scalar::<u64>::new(0, 100).unwrap().into())
+            .insert(
+                &1,
+                Scalar::<U256>::new(U256::from(0), U256::from(100))
+                    .unwrap()
+                    .into(),
+            )
             .unwrap();
         assert!(matches!(
             vm_cache.insert(&1, NonComm::<[u8]>::new(vec![1]).unwrap().into()),
@@ -763,16 +785,16 @@ fn vm_cache_with_block_cache_fallback() {
             .unwrap();
 
         vm_cache
-            .add_delta(&1, CrdtDelta::U64(DeltaOp::Add(100)))
+            .add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(100))))
             .unwrap();
         assert!(matches!(
-            vm_cache.add_delta(&1, CrdtDelta::U64(DeltaOp::Add(1))),
-            Err(Error::State(StateError::U64(
+            vm_cache.add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(1)))),
+            Err(Error::State(StateError::U256(
                 NumericError::AboveUpperLimit(_)
             )))
         ));
         vm_cache
-            .add_delta(&1, CrdtDelta::U64(DeltaOp::Sub(10)))
+            .add_delta(&1, CrdtDelta::U256(DeltaOp::Sub(U256::from(10))))
             .unwrap();
         vm_cache
             .add_delta(&2, CrdtDelta::Bytes(vec![10, 11]))
@@ -783,8 +805,8 @@ fn vm_cache_with_block_cache_fallback() {
                 .get(&1)
                 .expect("numeric value should exist")
                 .as_ref()
-                .as_u64(),
-            Some(90)
+                .as_u256(),
+            Some(U256::from(90))
         );
         assert_eq!(
             (&mut vm_cache)
@@ -808,8 +830,8 @@ fn vm_cache_with_block_cache_fallback() {
                 .get(&1)
                 .expect("flushed numeric value should exist")
                 .as_ref()
-                .as_u64(),
-            Some(90)
+                .as_u256(),
+            Some(U256::from(90))
         );
         assert_eq!(
             (&mut vm_cache)
@@ -821,7 +843,7 @@ fn vm_cache_with_block_cache_fallback() {
         );
 
         vm_cache
-            .add_delta(&1, CrdtDelta::U64(DeltaOp::Add(5)))
+            .add_delta(&1, CrdtDelta::U256(DeltaOp::Add(U256::from(5))))
             .unwrap();
         vm_cache
             .insert(&3, crate::crdt::Set::<u64>::new().unwrap().into())
@@ -844,8 +866,8 @@ fn vm_cache_with_block_cache_fallback() {
                 .get(&1)
                 .expect("updated numeric value should exist")
                 .as_ref()
-                .as_u64(),
-            Some(95)
+                .as_u256(),
+            Some(U256::from(95))
         );
 
         {
