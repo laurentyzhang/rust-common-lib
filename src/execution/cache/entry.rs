@@ -45,12 +45,8 @@ impl<T> Entry<'_, T> {
         }
     }
 
-    pub fn as_i64(&self) -> Option<i64> {
-        self.as_crdt()?.as_i64()
-    }
-
-    pub fn as_u64(&self) -> Option<u64> {
-        self.as_crdt()?.as_u64()
+    pub fn as_i256(&self) -> Option<alloy_primitives::I256> {
+        self.as_crdt()?.as_i256()
     }
 
     pub fn as_u256(&self) -> Option<alloy_primitives::U256> {
@@ -91,14 +87,8 @@ impl<T> From<Set<u64>> for Entry<'static, T> {
     }
 }
 
-impl<T> From<Scalar<i64>> for Entry<'static, T> {
-    fn from(value: Scalar<i64>) -> Self {
-        Self::Crdt(value.into())
-    }
-}
-
-impl<T> From<Scalar<u64>> for Entry<'static, T> {
-    fn from(value: Scalar<u64>) -> Self {
+impl<T> From<Scalar<alloy_primitives::I256>> for Entry<'static, T> {
+    fn from(value: Scalar<alloy_primitives::I256>) -> Self {
         Self::Crdt(value.into())
     }
 }

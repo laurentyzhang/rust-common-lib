@@ -30,8 +30,7 @@ impl From<crate::crdt::state::NumericError> for NumericError {
 impl From<crate::crdt::state::StateError> for Reason {
     fn from(error: crate::crdt::state::StateError) -> Self {
         let error = match error {
-            crate::crdt::state::StateError::I64(error)
-            | crate::crdt::state::StateError::U64(error)
+            crate::crdt::state::StateError::I256(error)
             | crate::crdt::state::StateError::U256(error) => error.into(),
             crate::crdt::state::StateError::CannotAddDeltaToMissingValue => {
                 NumericError::CannotAddDeltaToMissingValue

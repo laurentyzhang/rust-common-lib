@@ -2,7 +2,7 @@ use alloy_evm::revm::state::{EvmState, EvmStorage, EvmStorageSlot};
 use alloy_primitives::{U256, map::hash_map::Entry};
 use rayon::prelude::*;
 
-use crate::execution::evm::{ApiAddress, Field, SlotCodec};
+use crate::execution::evm::{ApiAddress, Field, KeyCodec};
 
 /// An owned EVM state with ordered parallel merging.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -55,7 +55,7 @@ impl MergeableEvmState {
                 }
 
                 for (key, new_value) in new_acct.storage {
-                    if !SlotCodec::is_api_key(key) || !old_acct.storage.contains_key(&key) {
+                    if !KeyCodec::is_api_key(key) || !old_acct.storage.contains_key(&key) {
                         old_acct.storage.insert(key, new_value);
                     } else {
                         Self::handle_api_slot(&mut old_acct.storage, key, new_value);
@@ -73,9 +73,11 @@ impl MergeableEvmState {
 
     /// Dispatches CRDT delta merging by API type.
     fn handle_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
-        match SlotCodec::decode(key) {
-            Some((ApiAddress::Scalar, field, _)) if field == Field::Delta as u8 => {
-                // Apply only this state's change to the encoded delta.
+        match KeyCodec::decode(key) {
+            Some((ApiAddress::Scalar, field, _))
+                if field == Field::PosDelta as u8 || field == Field::NegDelta as u8 =>
+            {
+                // Apply only this state's change to the delta magnitude.
                 let change = new_value
                     .present_value()
                     .wrapping_sub(new_value.original_value());
@@ -115,80 +117,85 @@ mod tests {
 
     #[test]
     fn scalar_merge_accumulates_changes_and_ignores_other_scalar_fields() {
-        let keys = [Field::Min, Field::Max, Field::Value, Field::Delta]
-            .map(|field| SlotCodec::encode(ApiAddress::Scalar, field as u8, Address::ZERO));
-        let zero = U256::ZERO;
-        for (original, existing, incoming, expected) in [
-            (
-                U256::from(10),
-                U256::from(15),
-                U256::from(13),
-                U256::from(18),
-            ),
-            (
-                U256::from(10),
-                U256::from(15),
-                U256::from(7),
-                U256::from(12),
-            ),
-            (
-                U256::from(10),
-                U256::from(15),
-                U256::from(10),
-                U256::from(15),
-            ),
-            (zero, U256::from(5), U256::MAX, U256::from(4)),
-        ] {
-            let mut merged = state(&[
-                (keys[0], zero, zero),
-                (keys[1], zero, U256::from(100)),
-                (keys[2], zero, U256::from(50)),
-                (keys[3], original, existing),
-            ]);
-            let original_slots = merged.inner[&Address::ZERO].storage.clone();
-            merged.merge(state(&[
-                (keys[0], zero, U256::from(20)),
-                (keys[1], zero, U256::from(200)),
-                (keys[2], zero, U256::from(70)),
-                (keys[3], original, incoming),
-            ]));
+        for field in [Field::PosDelta, Field::NegDelta] {
+            let keys = [Field::Min, Field::Max, Field::Value, field]
+                .map(|field| KeyCodec::encode(ApiAddress::Scalar, field as u8, Address::ZERO));
+            let zero = U256::ZERO;
+            for (original, existing, incoming, expected) in [
+                (
+                    U256::from(10),
+                    U256::from(15),
+                    U256::from(13),
+                    U256::from(18),
+                ),
+                (
+                    U256::from(10),
+                    U256::from(15),
+                    U256::from(7),
+                    U256::from(12),
+                ),
+                (
+                    U256::from(10),
+                    U256::from(15),
+                    U256::from(10),
+                    U256::from(15),
+                ),
+                (zero, U256::from(5), U256::MAX, U256::from(4)),
+            ] {
+                let mut merged = state(&[
+                    (keys[0], zero, zero),
+                    (keys[1], zero, U256::from(100)),
+                    (keys[2], zero, U256::from(50)),
+                    (keys[3], original, existing),
+                ]);
+                let original_slots = merged.inner[&Address::ZERO].storage.clone();
+                merged.merge(state(&[
+                    (keys[0], zero, U256::from(20)),
+                    (keys[1], zero, U256::from(200)),
+                    (keys[2], zero, U256::from(70)),
+                    (keys[3], original, incoming),
+                ]));
 
-            let slots = &merged.inner[&Address::ZERO].storage;
-            for key in &keys[..3] {
-                assert_eq!(slots[key], original_slots[key]);
+                let slots = &merged.inner[&Address::ZERO].storage;
+                for key in &keys[..3] {
+                    assert_eq!(slots[key], original_slots[key]);
+                }
+                assert_eq!(slots[&keys[3]].present_value(), expected);
+                assert_eq!(slots[&keys[3]].original_value(), original);
             }
-            assert_eq!(slots[&keys[3]].present_value(), expected);
-            assert_eq!(slots[&keys[3]].original_value(), original);
         }
     }
 
     #[test]
     fn scalar_delta_merge_handles_parallel_groups_and_sequential_snapshots() {
-        let key = SlotCodec::encode(ApiAddress::Scalar, Field::Delta as u8, Address::ZERO);
-        let baseline = U256::from(10);
-        let mut left = state(&[(key, baseline, U256::from(12))]);
-        left.merge(state(&[(key, baseline, U256::from(13))]));
-        let mut right = state(&[(key, baseline, U256::from(9))]);
-        right.merge(state(&[(key, baseline, U256::from(14))]));
-        left.merge(right);
-        assert_eq!(
-            left.inner[&Address::ZERO].storage[&key].present_value(),
-            U256::from(18)
-        );
+        for field in [Field::PosDelta, Field::NegDelta] {
+            let key = KeyCodec::encode(ApiAddress::Scalar, field as u8, Address::ZERO);
+            let baseline = U256::from(10);
+            let mut left = state(&[(key, baseline, U256::from(12))]);
+            left.merge(state(&[(key, baseline, U256::from(13))]));
+            let mut right = state(&[(key, baseline, U256::from(9))]);
+            right.merge(state(&[(key, baseline, U256::from(14))]));
+            left.merge(right);
+            assert_eq!(
+                left.inner[&Address::ZERO].storage[&key].present_value(),
+                U256::from(18)
+            );
 
-        let mut sequential = state(&[(key, baseline, U256::from(12))]);
-        sequential.merge(state(&[(key, U256::from(12), U256::from(15))]));
-        assert_eq!(
-            sequential.inner[&Address::ZERO].storage[&key].present_value(),
-            U256::from(15)
-        );
+            let mut sequential = state(&[(key, baseline, U256::from(12))]);
+            sequential.merge(state(&[(key, U256::from(12), U256::from(15))]));
+            assert_eq!(
+                sequential.inner[&Address::ZERO].storage[&key].present_value(),
+                U256::from(15)
+            );
+        }
     }
 
     #[test]
     fn merge_inserts_new_deltas_and_preserves_ordinary_slot_overwrites() {
-        let delta = SlotCodec::encode(ApiAddress::Scalar, Field::Delta as u8, Address::ZERO);
-        let foreign = SlotCodec::encode(ApiAddress::Container, Field::Delta as u8, Address::ZERO);
-        let unknown = SlotCodec::encode(ApiAddress::Scalar, 4, Address::ZERO);
+        let delta = KeyCodec::encode(ApiAddress::Scalar, Field::PosDelta as u8, Address::ZERO);
+        let foreign =
+            KeyCodec::encode(ApiAddress::Container, Field::PosDelta as u8, Address::ZERO);
+        let unknown = KeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO);
         let mut malformed = delta.to_be_bytes::<32>();
         malformed[0] ^= 0xff;
         let malformed = U256::from_be_bytes(malformed);

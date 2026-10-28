@@ -1,11 +1,10 @@
 pub mod batch;
 pub mod bytes;
 pub mod delta_op;
-pub mod int64;
+pub mod int256;
 pub mod tracked;
 pub mod u256;
 pub mod u64_set;
-pub mod uint64;
 
 pub type Result<T> = std::result::Result<T, &'static str>;
 
@@ -31,11 +30,6 @@ impl<'a> Writer<'a> {
 
     #[inline]
     pub(super) fn write_u32(&mut self, value: u32) -> Result<()> {
-        self.write_bytes(&value.to_le_bytes())
-    }
-
-    #[inline]
-    pub(super) fn write_i64(&mut self, value: i64) -> Result<()> {
         self.write_bytes(&value.to_le_bytes())
     }
 
@@ -85,13 +79,6 @@ impl<'a> Reader<'a> {
     pub(super) fn read_u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(
             self.read_bytes(4)?.try_into().map_err(|_| "invalid u32")?,
-        ))
-    }
-
-    #[inline]
-    pub(super) fn read_i64(&mut self) -> Result<i64> {
-        Ok(i64::from_le_bytes(
-            self.read_bytes(8)?.try_into().map_err(|_| "invalid i64")?,
         ))
     }
 

@@ -3,7 +3,7 @@ use super::{CallHandler, ScalarHandler, scalar::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::execution::evm::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, ReadRecorder, ScalarSlot, SlotCodec, key::Key,
+    ExitStatus, KeyCodec, ReadRecorder, SlotKeys, key::Key,
 };
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
@@ -49,11 +49,11 @@ fn invoke(
 }
 
 fn scalar_key(handle: Address) -> B256 {
-    SlotCodec::encode(ApiAddress::Scalar, 2, handle).into()
+    KeyCodec::encode(ApiAddress::Scalar, 2, handle).into()
 }
 
-fn slots(handle: Address) -> ScalarSlot {
-    ScalarSlot::new(SlotCodec::encode(ApiAddress::Scalar, 2, handle))
+fn slots(handle: Address) -> SlotKeys {
+    SlotKeys::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle))
 }
 
 fn invoke_delta(
@@ -88,8 +88,15 @@ fn invoke_delta(
     }
 }
 
-fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarSlot) -> [U256; 4] {
-    [keys.min, keys.max, keys.value, keys.delta].map(|key| journal.sload(owner, key).unwrap().data)
+fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: SlotKeys) -> [U256; 5] {
+    [
+        keys.min,
+        keys.max,
+        keys.value,
+        keys.pos_delta,
+        keys.neg_delta,
+    ]
+    .map(|key| journal.sload(owner, key).unwrap().data)
 }
 
 #[test]
@@ -99,14 +106,20 @@ fn scalar_handler_recognizes_slots_through_the_trait() {
     let handler: &dyn CallHandler = &ScalarHandler;
     for handle in [Address::ZERO, Address::repeat_byte(0xff)] {
         let keys = slots(handle);
-        for slot in [keys.min, keys.max, keys.value, keys.delta] {
+        for slot in [
+            keys.min,
+            keys.max,
+            keys.value,
+            keys.pos_delta,
+            keys.neg_delta,
+        ] {
             assert!(handler.is_valid_slot(slot));
         }
-        for field in 4..=u8::MAX {
-            assert!(!handler.is_valid_slot(SlotCodec::encode(ApiAddress::Scalar, field, handle)));
+        for field in 5..=u8::MAX {
+            assert!(!handler.is_valid_slot(KeyCodec::encode(ApiAddress::Scalar, field, handle)));
         }
         for api in ApiAddress::iter().filter(|api| *api != ApiAddress::Scalar) {
-            assert!(!handler.is_valid_slot(SlotCodec::encode(api, 0, handle)));
+            assert!(!handler.is_valid_slot(KeyCodec::encode(api, 0, handle)));
         }
 
         // Reject malformed namespace, version, and reserved bytes.
@@ -131,10 +144,10 @@ fn invalid_scalar_keys_revert_before_state_access() {
     for key in [
         B256::ZERO,
         B256::from(U256::from(5)),
-        B256::from(SlotCodec::encode(ApiAddress::Scalar, 4, handle)),
-        B256::from(SlotCodec::encode(ApiAddress::Scalar, 5, handle)),
-        B256::from(SlotCodec::encode(ApiAddress::Scalar, 255, handle)),
-        B256::from(SlotCodec::encode(ApiAddress::Container, 2, handle)),
+        B256::from(KeyCodec::encode(ApiAddress::Scalar, 6, handle)),
+        B256::from(KeyCodec::encode(ApiAddress::Scalar, 5, handle)),
+        B256::from(KeyCodec::encode(ApiAddress::Scalar, 255, handle)),
+        B256::from(KeyCodec::encode(ApiAddress::Container, 2, handle)),
     ] {
         let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
         let block = BlockEnv::default();
@@ -217,7 +230,7 @@ fn scalar_calls_preserve_all_24_instance_key_bytes() {
         assert_eq!(output.status, ExitStatus::Return);
         assert_eq!(U256::abi_decode_validate(&output.output).unwrap(), expected);
     }
-    assert_eq!(journal.evm_state()[&owner].storage.len(), 8);
+    assert_eq!(journal.evm_state()[&owner].storage.len(), 10);
 }
 
 #[test]
@@ -294,8 +307,12 @@ fn only_get_records_the_value_and_delta_observation() {
         }
     }
     let reads = recorder.drain();
-    assert_eq!(reads.len(), 2);
-    for slot in &[slots(handle).value, slots(handle).delta] {
+    assert_eq!(reads.len(), 3);
+    for slot in &[
+        slots(handle).value,
+        slots(handle).pos_delta,
+        slots(handle).neg_delta,
+    ] {
         let read = reads
             .iter()
             .find(|read| read.key == Key::Storage(owner, *slot))
@@ -351,8 +368,12 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     }
     for (evm, handle, id) in [(&mut left, first, 7), (&mut right, second, 8)] {
         let reads = evm.drain_reads();
-        assert_eq!(reads.len(), 2);
-        for slot in &[slots(handle).value, slots(handle).delta] {
+        assert_eq!(reads.len(), 3);
+        for slot in &[
+            slots(handle).value,
+            slots(handle).pos_delta,
+            slots(handle).neg_delta,
+        ] {
             let read = reads
                 .iter()
                 .find(|read| read.key == Key::Storage(owner, *slot))
@@ -378,9 +399,13 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     }))
     .unwrap();
     let reads = left.drain_reads();
-    assert_eq!(reads.len(), 2);
+    assert_eq!(reads.len(), 3);
     assert!(reads.iter().all(|read| read.id == 99));
-    for slot in &[slots(second).value, slots(second).delta] {
+    for slot in &[
+        slots(second).value,
+        slots(second).pos_delta,
+        slots(second).neg_delta,
+    ] {
         assert!(
             reads
                 .iter()
@@ -422,7 +447,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .unwrap();
         db.insert_account_storage(owner, slot, U256::from(42))
             .unwrap();
-        db.insert_account_storage(owner, slots(handle).delta, U256::from(5))
+        db.insert_account_storage(owner, slots(handle).pos_delta, U256::from(5))
             .unwrap();
         let mut evm =
             factory.create_evm_with_inspector(db, EvmEnv::default(), ReadRecorder::new(33));
@@ -451,7 +476,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             U256::from(if exit == 0xf3 { 47 } else { 42 })
         );
         assert_eq!(
-            account.storage[&slots(handle).delta].present_value(),
+            account.storage[&slots(handle).pos_delta].present_value(),
             U256::from(if exit == 0xf3 { 0 } else { 5 })
         );
         let reads = evm.drain_reads();
@@ -460,7 +485,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .iter()
             .filter(|read| matches!(read.key, Key::Storage(..)))
             .collect();
-        assert_eq!(storage.len(), 2);
+        assert_eq!(storage.len(), 3);
         let value_read = storage
             .iter()
             .find(|read| read.key == Key::Storage(owner, slot))
@@ -468,7 +493,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
         assert_eq!(value_read.data.operations.reads.count(), 2);
         let delta_read = storage
             .iter()
-            .find(|read| read.key == Key::Storage(owner, slots(handle).delta))
+            .find(|read| read.key == Key::Storage(owner, slots(handle).pos_delta))
             .unwrap();
         assert_eq!(delta_read.data.operations.reads.count(), 1);
     }
@@ -492,14 +517,18 @@ fn scalar_store_and_load_round_trip() {
     {
         let handle = Address::with_last_byte(index as u8);
         let state = crdt::Scalar::<U256> {
-            limits: (min, max),
+            min,
+            max,
             value,
             delta: None,
         };
-        let keys = ScalarSlot::new(SlotCodec::encode(ApiAddress::Scalar, 2, handle));
+        let keys = SlotKeys::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle));
         assert_eq!(keys, slots(handle));
-        // assert_eq!(keys.store(&mut internals, owner, &state).unwrap(), keys);
-        assert_eq!(keys.load(&mut internals, owner).unwrap(), (state, keys));
+        keys.store(&mut internals, owner, &state).unwrap();
+        assert_eq!(
+            keys.load::<U256, _>(&mut internals, owner).unwrap(),
+            (state, keys)
+        );
     }
 }
 
@@ -527,20 +556,20 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
             )
             .unwrap();
         let (state, loaded_slots) = slots(Address::from_word(call.key))
-            .load(&mut internals, owner)
+            .load::<U256, _>(&mut internals, owner)
             .unwrap();
         assert_eq!(loaded_slots, slots(Address::from_word(call.key)));
         assert_eq!(state.value, U256::from(50));
-        assert_eq!(state.limits, (call.min, call.max));
+        assert_eq!((state.min, state.max), (call.min, call.max));
         assert_eq!(state.delta, None);
     }
     journal.checkpoint_revert(checkpoint);
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let (state, _) = slots(Address::from_word(call.key))
-        .load(&mut internals, owner)
+        .load::<U256, _>(&mut internals, owner)
         .unwrap();
     assert_eq!(state.value, U256::ZERO);
-    assert_eq!(state.limits, (call.min, call.max));
+    assert_eq!((state.min, state.max), (call.min, call.max));
 }
 
 #[test]
@@ -562,20 +591,24 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
     {
         let handle = Address::with_last_byte(index as u8);
         let state = crdt::Scalar::<U256> {
-            limits: (U256::ZERO, U256::MAX),
+            min: U256::ZERO,
+            max: U256::MAX,
             value,
             delta: Some(delta),
         };
         let keys = slots(handle);
-        // assert_eq!(keys.store(&mut internals, owner, &state).unwrap(), keys);
-        assert_eq!(keys.load(&mut internals, owner).unwrap(), (state, keys));
-        let encoded_delta = match delta {
-            DeltaOp::Add(magnitude) => magnitude,
-            DeltaOp::Sub(magnitude) => U256::ZERO.wrapping_sub(magnitude),
+        keys.store(&mut internals, owner, &state).unwrap();
+        assert_eq!(
+            keys.load::<U256, _>(&mut internals, owner).unwrap(),
+            (state, keys)
+        );
+        let expected = match delta {
+            DeltaOp::Add(magnitude) => (magnitude, U256::ZERO),
+            DeltaOp::Sub(magnitude) => (U256::ZERO, magnitude),
         };
         assert_eq!(
-            internals.sload(owner, keys.delta).unwrap().data,
-            encoded_delta
+            SlotKeys::read_delta(&mut internals, owner, keys.value),
+            Some(expected)
         );
     }
 }
@@ -608,7 +641,7 @@ fn scalar_store_rejects_invalid_pending_arithmetic_before_writing() {
 }
 
 #[test]
-fn initializes_four_fields_and_returns_the_supplied_key() {
+fn initializes_five_fields_and_returns_the_supplied_key() {
     let mut journal = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
     let call = IScalar::initCall {
@@ -620,15 +653,21 @@ fn initializes_four_fields_and_returns_the_supplied_key() {
     assert_eq!(output.status, ExitStatus::Return);
     assert_eq!(B256::abi_decode_validate(&output.output).unwrap(), call.key);
     assert!(journal.evm_state()[&owner].is_touched());
-    assert_eq!(journal.evm_state()[&owner].storage.len(), 4);
+    assert_eq!(journal.evm_state()[&owner].storage.len(), 5);
     assert_eq!(
         stored_values(&mut journal, owner, slots(Address::from_word(call.key))),
-        [call.min, call.max, U256::ZERO, U256::ZERO]
+        [call.min, call.max, U256::ZERO, U256::ZERO, U256::ZERO]
     );
     let keys = slots(Address::from_word(call.key));
-    for (field, slot) in [keys.min, keys.max, keys.value, keys.delta]
-        .into_iter()
-        .enumerate()
+    for (field, slot) in [
+        keys.min,
+        keys.max,
+        keys.value,
+        keys.pos_delta,
+        keys.neg_delta,
+    ]
+    .into_iter()
+    .enumerate()
     {
         let bytes = slot.to_be_bytes::<32>();
         assert_eq!(&bytes[..6], &[b'A', b'R', b'C', b'O', VERSION, 0x85]);
@@ -712,7 +751,7 @@ fn initialization_reverts_with_the_journal_checkpoint() {
     journal.checkpoint_revert(checkpoint);
     assert_eq!(
         stored_values(&mut journal, owner, slots(Address::from_word(call.key))),
-        [U256::ZERO; 4]
+        [U256::ZERO; 5]
     );
 }
 
@@ -758,7 +797,7 @@ fn add_and_sub_defer_deltas_until_get_materializes_each_update() {
         assert_eq!(U256::abi_decode_validate(&output.output).unwrap(), value);
         assert_eq!(
             stored_values(&mut journal, owner, slots(handle)),
-            [init.min, init.max, value, U256::ZERO]
+            [init.min, init.max, value, U256::ZERO, U256::ZERO]
         );
     }
 }
@@ -798,7 +837,7 @@ fn add_accumulates_pending_deltas_and_get_resets_them() {
             U256::ZERO
         );
         assert_eq!(
-            journal.sload(owner, slots(handle).delta).unwrap().data,
+            journal.sload(owner, slots(handle).pos_delta).unwrap().data,
             U256::from(expected)
         );
     }
@@ -815,7 +854,7 @@ fn add_accumulates_pending_deltas_and_get_resets_them() {
     );
     assert_eq!(output.status, ExitStatus::Revert);
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
+        journal.sload(owner, slots(handle).pos_delta).unwrap().data,
         U256::from(45)
     );
     let output = invoke(
@@ -836,7 +875,7 @@ fn add_accumulates_pending_deltas_and_get_resets_them() {
         U256::from(45)
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
+        journal.sload(owner, slots(handle).pos_delta).unwrap().data,
         U256::ZERO
     );
     invoke(
@@ -854,8 +893,8 @@ fn add_accumulates_pending_deltas_and_get_resets_them() {
         U256::from(45)
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
-        U256::ZERO.wrapping_sub(U256::from(10))
+        journal.sload(owner, slots(handle).neg_delta).unwrap().data,
+        U256::from(10)
     );
     let output = invoke(
         &mut journal,
@@ -871,7 +910,7 @@ fn add_accumulates_pending_deltas_and_get_resets_them() {
         U256::from(35)
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
+        journal.sload(owner, slots(handle).pos_delta).unwrap().data,
         U256::ZERO
     );
 }
@@ -910,7 +949,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
         U256::ZERO
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
+        journal.sload(owner, slots(handle).pos_delta).unwrap().data,
         U256::MAX
     );
     let output = invoke(
@@ -944,8 +983,8 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
         U256::MAX
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
-        U256::from(1)
+        journal.sload(owner, slots(handle).neg_delta).unwrap().data,
+        U256::MAX
     );
     let output = invoke(
         &mut journal,
@@ -965,7 +1004,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
         U256::ZERO
     );
     assert_eq!(
-        journal.sload(owner, slots(handle).delta).unwrap().data,
+        journal.sload(owner, slots(handle).pos_delta).unwrap().data,
         U256::ZERO
     );
 }
@@ -1030,7 +1069,7 @@ fn invalid_deltas_leave_scalar_storage_unchanged() {
         assert_eq!(output.status, ExitStatus::Revert);
         assert_eq!(
             stored_values(&mut journal, owner, slots(handle)),
-            [min, max, value, U256::ZERO]
+            [min, max, value, U256::ZERO, U256::ZERO]
         );
     }
 }
@@ -1080,7 +1119,7 @@ fn add_and_sub_support_full_uint256_magnitudes() {
             expected
         );
         assert_eq!(
-            journal.sload(owner, slots(handle).delta).unwrap().data,
+            journal.sload(owner, slots(handle).pos_delta).unwrap().data,
             U256::ZERO
         );
     }
@@ -1203,7 +1242,13 @@ fn add_reverts_with_the_journal_checkpoint() {
     journal.checkpoint_revert(checkpoint);
     assert_eq!(
         stored_values(&mut journal, owner, slots(handle)),
-        [U256::ZERO, U256::from(100), U256::ZERO, U256::ZERO]
+        [
+            U256::ZERO,
+            U256::from(100),
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO
+        ]
     );
 }
 
@@ -1252,8 +1297,8 @@ fn evm_sub_returns_true_and_exports_only_the_pending_delta() {
         U256::from(42)
     );
     assert_eq!(
-        result.state[&owner].storage[&slots(handle).delta].present_value(),
-        U256::ZERO.wrapping_sub(U256::from(2))
+        result.state[&owner].storage[&slots(handle).neg_delta].present_value(),
+        U256::from(2)
     );
 }
 
@@ -1323,7 +1368,7 @@ fn get_writes_back_zero_for_an_uninitialized_scalar() {
         U256::ZERO
     );
     assert!(journal.evm_state()[&owner].is_touched());
-    assert_eq!(journal.evm_state()[&owner].storage.len(), 4);
+    assert_eq!(journal.evm_state()[&owner].storage.len(), 5);
 }
 
 #[test]
@@ -1441,8 +1486,14 @@ fn evm_exports_the_fields_under_the_caller_account() {
     );
     let keys = slots(Address::from_word(call.key));
     assert_eq!(
-        [keys.min, keys.max, keys.value, keys.delta,]
-            .map(|key| result.state[&owner].storage[&key].present_value()),
-        [call.min, call.max, U256::ZERO, U256::ZERO]
+        [
+            keys.min,
+            keys.max,
+            keys.value,
+            keys.pos_delta,
+            keys.neg_delta
+        ]
+        .map(|key| result.state[&owner].storage[&key].present_value()),
+        [call.min, call.max, U256::ZERO, U256::ZERO, U256::ZERO]
     );
 }

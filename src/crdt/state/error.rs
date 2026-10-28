@@ -11,8 +11,7 @@ pub enum NumericError {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StateError {
-    I64(NumericError),
-    U64(NumericError),
+    I256(NumericError),
     U256(NumericError),
     CannotAddDeltaToMissingValue,
     TypeMismatch,

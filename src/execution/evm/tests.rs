@@ -3,8 +3,8 @@ use super::recorder::MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER as RECORDER_MERGE_ENT
 use super::{
     AccountDecodeError, AccountInfoCodec, ApiAddress, ArcologyBlockExecutorFactory,
     ArcologyEvmFactory, ArcologyParaBlockExecutor, ArcologyTx, CallHandler, CallHookError,
-    CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, ParaBlockConfig, RegisterHookError,
-    ScalarHandler, SlotCodec, TransactionOutcome,
+    CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, KeyCodec, ParaBlockConfig,
+    RegisterHookError, ScalarHandler, TransactionOutcome,
 };
 
 use crate::{
@@ -647,7 +647,7 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
             } else {
                 let mut data = alloy_primitives::keccak256("get(bytes32)")[..4].to_vec();
                 let handle = Address::with_last_byte(if index % 3 == 0 { 1 } else { 2 });
-                let key = SlotCodec::encode(ApiAddress::Scalar, 2, handle);
+                let key = KeyCodec::encode(ApiAddress::Scalar, 2, handle);
                 data.extend_from_slice(&key.to_be_bytes::<32>());
                 data.into()
             };
@@ -689,7 +689,7 @@ fn parallel_executor_keeps_native_reads_transaction_local() {
             for field in [2, 3] {
                 let key = Key::Storage(
                     callers[index / 3],
-                    SlotCodec::encode(ApiAddress::Scalar, field, handle),
+                    KeyCodec::encode(ApiAddress::Scalar, field, handle),
                 );
                 let read = outcome.reads.iter().find(|read| read.key == key).unwrap();
                 assert_eq!(read.id, index as u64);

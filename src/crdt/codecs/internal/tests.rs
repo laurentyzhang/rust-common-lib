@@ -34,7 +34,8 @@ fn every_internal_type_round_trips() {
     let int64_value = Scalar::<i64> {
         value: -100,
         delta: Some(DeltaOp::Add(25)),
-        limits: (-1_000, 1_000),
+        min: -1_000,
+        max: 1_000,
     };
 
     let encoded = int64::encode(&int64_value).unwrap();
@@ -47,7 +48,8 @@ fn every_internal_type_round_trips() {
     let uint64_value = Scalar::<u64> {
         value: 100,
         delta: Some(DeltaOp::Add(25)),
-        limits: (0, 1_000),
+        min: 0,
+        max: 1_000,
     };
 
     let encoded = uint64::encode(&uint64_value).unwrap();
@@ -60,7 +62,8 @@ fn every_internal_type_round_trips() {
     let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(1_u64) << 200,
         delta: Some(DeltaOp::Add(AlloyU256::from(25))),
-        limits: (AlloyU256::ZERO, AlloyU256::MAX),
+        min: AlloyU256::ZERO,
+        max: AlloyU256::MAX,
     };
 
     let encoded = u256::encode(&u256_value).unwrap();
@@ -111,7 +114,8 @@ fn encode_to_rejects_short_buffers_without_writing() {
     let int64_value = Scalar::<i64> {
         value: 10,
         delta: Some(DeltaOp::Add(2)),
-        limits: (0, 100),
+        min: 0,
+        max: 100,
     };
 
     let mut output =
@@ -125,7 +129,8 @@ fn encode_to_rejects_short_buffers_without_writing() {
     let uint64_value = Scalar::<u64> {
         value: 10,
         delta: Some(DeltaOp::Add(2)),
-        limits: (0, 100),
+        min: 0,
+        max: 100,
     };
 
     let mut output =
@@ -139,7 +144,8 @@ fn encode_to_rejects_short_buffers_without_writing() {
     let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(10),
         delta: Some(DeltaOp::Add(AlloyU256::from(2))),
-        limits: (AlloyU256::ZERO, AlloyU256::from(100)),
+        min: AlloyU256::ZERO,
+        max: AlloyU256::from(100),
     };
 
     let mut output =
@@ -215,7 +221,8 @@ fn malformed_input_is_rejected() {
     let valid = Scalar::<i64> {
         value: 1,
         delta: None,
-        limits: (i64::MIN, i64::MAX),
+        min: i64::MIN,
+        max: i64::MAX,
     };
 
     let mut trailing = int64::encode(&valid).unwrap();
@@ -236,7 +243,8 @@ fn every_truncated_encoding_is_rejected() {
     let int64_encoded = int64::encode(&Scalar::<i64> {
         value: -10,
         delta: Some(DeltaOp::Add(2)),
-        limits: (-100, 100),
+        min: -100,
+        max: 100,
     })
     .unwrap();
     for end in 0..int64_encoded.len() {
@@ -246,7 +254,8 @@ fn every_truncated_encoding_is_rejected() {
     let uint64_encoded = uint64::encode(&Scalar::<u64> {
         value: 10,
         delta: Some(DeltaOp::Add(2)),
-        limits: (0, 100),
+        min: 0,
+        max: 100,
     })
     .unwrap();
     for end in 0..uint64_encoded.len() {
@@ -256,7 +265,8 @@ fn every_truncated_encoding_is_rejected() {
     let u256_encoded = u256::encode(&Scalar::<AlloyU256> {
         value: AlloyU256::from(10),
         delta: Some(DeltaOp::Add(AlloyU256::from(2))),
-        limits: (AlloyU256::ZERO, AlloyU256::from(100)),
+        min: AlloyU256::ZERO,
+        max: AlloyU256::from(100),
     })
     .unwrap();
     for end in 0..u256_encoded.len() {
@@ -292,7 +302,8 @@ fn primitive_encodings_match_golden_bytes() {
     let int64_value = Scalar::<i64> {
         value: -2,
         delta: None,
-        limits: (i64::MIN, i64::MAX),
+        min: i64::MIN,
+        max: i64::MAX,
     };
 
     let mut expected = vec![5];
@@ -304,7 +315,8 @@ fn primitive_encodings_match_golden_bytes() {
     let uint64_value = Scalar::<u64> {
         value: 1,
         delta: Some(DeltaOp::Add(2)),
-        limits: (3, 4),
+        min: 3,
+        max: 4,
     };
 
     let mut expected = vec![7];
@@ -317,7 +329,8 @@ fn primitive_encodings_match_golden_bytes() {
     let u256_value = Scalar::<AlloyU256> {
         value: AlloyU256::from(1),
         delta: Some(DeltaOp::Add(AlloyU256::ZERO)),
-        limits: (AlloyU256::ZERO, AlloyU256::MAX),
+        min: AlloyU256::ZERO,
+        max: AlloyU256::MAX,
     };
 
     let mut expected = vec![7];
@@ -357,7 +370,8 @@ fn path_and_batch_encodings_match_golden_bytes() {
     let uint64_value = Scalar::<u64> {
         value: 7,
         delta: Some(DeltaOp::Add(0)),
-        limits: (u64::MIN, u64::MAX),
+        min: u64::MIN,
+        max: u64::MAX,
     };
 
     let values: [&dyn InternalEncode; 2] = [&bytes_value, &uint64_value];
@@ -383,7 +397,8 @@ fn large_batch_uses_non_overlapping_parallel_sections() {
         Scalar::<u64> {
             value: 7,
             delta: Some(DeltaOp::Add(0)),
-            limits: (u64::MIN, u64::MAX),
+            min: u64::MIN,
+            max: u64::MAX,
         };
         2_048
     ];

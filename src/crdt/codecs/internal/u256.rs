@@ -44,8 +44,8 @@ pub fn encode_to(value: &Scalar<AlloyU256>, output: &mut [u8]) -> Result<u64> {
         };
         writer.write_bytes(&delta.to_le_bytes::<32>())?;
     }
-    writer.write_bytes(&value.limits.0.to_le_bytes::<32>())?;
-    writer.write_bytes(&value.limits.1.to_le_bytes::<32>())?;
+    writer.write_bytes(&value.min.to_le_bytes::<32>())?;
+    writer.write_bytes(&value.max.to_le_bytes::<32>())?;
     Ok(writer.finish() as u64)
 }
 
@@ -74,7 +74,7 @@ pub fn decode(input: &[u8]) -> Result<Scalar<AlloyU256>> {
         None
     };
 
-    let limits = if flags & LIMITS != 0 {
+    let (min, max) = if flags & LIMITS != 0 {
         (
             AlloyU256::from_le_bytes(reader.read_array::<32>()?),
             AlloyU256::from_le_bytes(reader.read_array::<32>()?),
@@ -87,6 +87,7 @@ pub fn decode(input: &[u8]) -> Result<Scalar<AlloyU256>> {
     Ok(Scalar {
         value,
         delta,
-        limits,
+        min,
+        max,
     })
 }

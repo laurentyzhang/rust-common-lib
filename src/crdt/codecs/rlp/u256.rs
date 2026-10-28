@@ -8,7 +8,7 @@ impl Encodable for Scalar<AlloyU256> {
         let has_value = 1_u8;
         let value = self.value;
         let has_limits = 1_u8;
-        let (lower, upper) = self.limits;
+        let (lower, upper) = (self.min, self.max);
         let payload_length = has_value.length()
             + value.length()
             + has_limits.length()
@@ -31,7 +31,7 @@ impl Encodable for Scalar<AlloyU256> {
         let has_value = 1_u8;
         let value = self.value;
         let has_limits = 1_u8;
-        let (lower, upper) = self.limits;
+        let (lower, upper) = (self.min, self.max);
         let payload_length = has_value.length()
             + value.length()
             + has_limits.length()
@@ -54,6 +54,12 @@ impl Decodable for Scalar<AlloyU256> {
             return Err(Error::Custom("invalid U256 encoding"));
         }
 
+        let (min, max) = if has_limits == 1 {
+            (lower, upper)
+        } else {
+            (AlloyU256::ZERO, AlloyU256::MAX)
+        };
+
         Ok(Self {
             value: if has_value == 1 {
                 value
@@ -61,11 +67,8 @@ impl Decodable for Scalar<AlloyU256> {
                 AlloyU256::ZERO
             },
             delta: None,
-            limits: if has_limits == 1 {
-                (lower, upper)
-            } else {
-                (AlloyU256::ZERO, AlloyU256::MAX)
-            },
+            min,
+            max,
         })
     }
 }
@@ -82,13 +85,15 @@ mod tests {
         let dirty = Scalar {
             value: AlloyU256::from(1_u64) << 200,
             delta: Some(DeltaOp::Add(AlloyU256::from(25))),
-            limits: (AlloyU256::ZERO, AlloyU256::MAX),
+            min: AlloyU256::ZERO,
+            max: AlloyU256::MAX,
         };
 
         let clean = Scalar {
             value: dirty.value,
             delta: None,
-            limits: dirty.limits,
+            min: dirty.min,
+            max: dirty.max,
         };
 
         assert_eq!(encode(&dirty), encode(&clean));

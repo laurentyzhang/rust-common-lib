@@ -18,14 +18,14 @@ mod tests;
 pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
 pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use hooks::{
-    ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus,
-    ScalarHandler, SlotCodec, dispatch_precompile,
+    ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus, KeyCodec,
+    ScalarHandler, dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use outcome::{ScheduledTransactionResult, TransactionOutcome};
-pub(in crate::execution::evm) use slot::{Field, ScalarSlot};
+pub(in crate::execution::evm) use slot::{Field, SlotKeys};
 pub use state::key;
 pub use state::{AccountInfoCodec, EvmStateCache, EvmStateCommitter, MergeableEvmState};
 pub use tracking::{ReadRecorder, StateReads, recorder};

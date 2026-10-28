@@ -1,7 +1,6 @@
-mod i64;
+mod i256;
 mod traits;
 mod u256;
-mod u64;
 
 pub use traits::Type;
 
@@ -13,7 +12,8 @@ use std::cmp::Ordering;
 pub struct Scalar<T: Type> {
     pub(crate) value: T,
     pub(crate) delta: Option<DeltaOp<T::Magnitude>>,
-    pub(crate) limits: (T, T),
+    pub(crate) min: T,
+    pub(crate) max: T,
 }
 
 impl<T: Type> Default for Scalar<T> {
@@ -21,7 +21,8 @@ impl<T: Type> Default for Scalar<T> {
         Self {
             value: T::ZERO,
             delta: None,
-            limits: (T::MIN, T::MAX),
+            min: T::MIN,
+            max: T::MAX,
         }
     }
 }
@@ -32,7 +33,8 @@ impl<T: Type> Scalar<T> {
         Ok(Self {
             value: T::ZERO,
             delta: None,
-            limits: (lower, upper),
+            min: lower,
+            max: upper,
         })
     }
 
@@ -82,7 +84,7 @@ impl<T: Type> Scalar<T> {
         let projected = T::checked_apply(current, operation)
             .ok_or_else(|| Self::arithmetic_error(&self.value, &pending, operation))?;
 
-        Self::check_against_limits(self.limits.0, self.limits.1, projected)?;
+        Self::check_against_limits(self.min, self.max, projected)?;
         Ok(T::delta_between(self.value, projected))
     }
 
@@ -143,7 +145,7 @@ impl<T: Type> Crdt<T, DeltaOp<T::Magnitude>> for Scalar<T> {
     }
 
     fn limits(&self) -> Option<(&T, &T)> {
-        Some((&self.limits.0, &self.limits.1))
+        Some((&self.min, &self.max))
     }
 
     fn is_numeric(&self) -> bool {

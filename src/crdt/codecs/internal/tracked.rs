@@ -7,11 +7,10 @@ use crate::crdt::state::{
     value::{CrdtValue, ValueSnapshots},
 };
 
-use super::{Reader, Result, Writer, bytes, int64, u64_set, u256, uint64};
+use super::{Reader, Result, Writer, bytes, int256, u64_set, u256};
 
 const BYTES: u8 = 1;
-const I64: u8 = 2;
-const U64: u8 = 3;
+const I256: u8 = 2;
 const U256: u8 = 4;
 const U64_SET: u8 = 5;
 const DELETED: u8 = 6;
@@ -25,8 +24,7 @@ const HEADER_SIZE: u64 = 34;
 fn value_tag(value: &Status) -> u8 {
     match value {
         Status::Value(CrdtValue::Bytes(_)) => BYTES,
-        Status::Value(CrdtValue::Numeric(Numeric::I64(_))) => I64,
-        Status::Value(CrdtValue::Numeric(Numeric::U64(_))) => U64,
+        Status::Value(CrdtValue::Numeric(Numeric::I256(_))) => I256,
         Status::Value(CrdtValue::Numeric(Numeric::U256(_))) => U256,
         Status::Value(CrdtValue::U64Set(_)) => U64_SET,
         Status::Value(CrdtValue::None) | Status::Tag(Tag::Missing) => MISSING,
@@ -41,8 +39,7 @@ fn value_size(value: &Status) -> Result<u64> {
     match value {
         Status::Tag(_) | Status::Value(CrdtValue::None) => Ok(0),
         Status::Value(CrdtValue::Bytes(value)) => bytes::encoded_size(value),
-        Status::Value(CrdtValue::Numeric(Numeric::I64(value))) => int64::encoded_size(value),
-        Status::Value(CrdtValue::Numeric(Numeric::U64(value))) => uint64::encoded_size(value),
+        Status::Value(CrdtValue::Numeric(Numeric::I256(value))) => int256::encoded_size(value),
         Status::Value(CrdtValue::Numeric(Numeric::U256(value))) => u256::encoded_size(value),
         Status::Value(CrdtValue::U64Set(value)) => u64_set::encoded_size(value),
     }
@@ -52,8 +49,7 @@ fn encode_value_to(value: &Status, output: &mut [u8]) -> Result<u64> {
     match value {
         Status::Tag(_) | Status::Value(CrdtValue::None) => Ok(0),
         Status::Value(CrdtValue::Bytes(value)) => bytes::encode_to(value, output),
-        Status::Value(CrdtValue::Numeric(Numeric::I64(value))) => int64::encode_to(value, output),
-        Status::Value(CrdtValue::Numeric(Numeric::U64(value))) => uint64::encode_to(value, output),
+        Status::Value(CrdtValue::Numeric(Numeric::I256(value))) => int256::encode_to(value, output),
         Status::Value(CrdtValue::Numeric(Numeric::U256(value))) => u256::encode_to(value, output),
         Status::Value(CrdtValue::U64Set(value)) => u64_set::encode_to(value, output),
     }
@@ -145,12 +141,9 @@ pub fn decode(input: &[u8]) -> Result<Tracked<Status, Status>> {
 fn decode_value(tag: u8, payload: &[u8]) -> Result<Status> {
     let value = match tag {
         BYTES => Status::Value(CrdtValue::Bytes(Cow::Owned(bytes::decode(payload)?))),
-        I64 => Status::Value(CrdtValue::Numeric(Numeric::I64(Cow::Owned(int64::decode(
+        I256 => Status::Value(CrdtValue::Numeric(Numeric::I256(Cow::Owned(int256::decode(
             payload,
         )?)))),
-        U64 => Status::Value(CrdtValue::Numeric(Numeric::U64(Cow::Owned(
-            uint64::decode(payload)?,
-        )))),
         U256 => Status::Value(CrdtValue::Numeric(Numeric::U256(Cow::Owned(u256::decode(
             payload,
         )?)))),
@@ -168,7 +161,7 @@ fn decode_value(tag: u8, payload: &[u8]) -> Result<Status> {
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::U256 as AlloyU256;
+    use alloy_primitives::{I256 as AlloyI256, U256 as AlloyU256};
 
     use crate::crdt::{
         NonComm, Scalar, Set,
@@ -202,8 +195,14 @@ mod tests {
             Status::Tag(Tag::Default),
             Status::Tag(Tag::Stripped),
             Status::Value(NonComm::<[u8]>::new(vec![1, 2, 3]).unwrap().into()),
-            Status::Value(Scalar::<i64>::new(-10, 10).unwrap().into()),
-            Status::Value(Scalar::<u64>::new(0, 100).unwrap().into()),
+            Status::Value(
+                Scalar::<AlloyI256>::new(
+                    AlloyI256::unchecked_from(-10),
+                    AlloyI256::unchecked_from(10),
+                )
+                .unwrap()
+                .into(),
+            ),
             Status::Value(
                 Scalar::<AlloyU256>::new(AlloyU256::ZERO, AlloyU256::from(100))
                     .unwrap()

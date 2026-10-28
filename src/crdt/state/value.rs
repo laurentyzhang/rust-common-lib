@@ -13,8 +13,7 @@ pub struct ValueSnapshots<T0, T1> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtDelta {
     Bytes(Vec<u8>),
-    I64(DeltaOp<u64>),
-    U64(DeltaOp<u64>),
+    I256(DeltaOp<alloy_primitives::U256>),
     U256(DeltaOp<alloy_primitives::U256>),
     U64Set(Vec<DeltaOp<u64>>),
     None,
@@ -25,16 +24,6 @@ pub enum CrdtDelta {
 pub enum DeltaOp<T> {
     Add(T),
     Sub(T),
-}
-
-impl From<i64> for DeltaOp<u64> {
-    fn from(value: i64) -> Self {
-        if value < 0 {
-            Self::Sub(value.unsigned_abs())
-        } else {
-            Self::Add(value as u64)
-        }
-    }
 }
 
 /// A CRDT value whose payload may be borrowed.
@@ -77,16 +66,9 @@ impl<'a> CrdtValue<'a> {
         }
     }
 
-    pub fn as_i64(&self) -> Option<i64> {
+    pub fn as_i256(&self) -> Option<alloy_primitives::I256> {
         match self {
-            Self::Numeric(Numeric::I64(value)) => value.value().copied(),
-            _ => None,
-        }
-    }
-
-    pub fn as_u64(&self) -> Option<u64> {
-        match self {
-            Self::Numeric(Numeric::U64(value)) => value.value().copied(),
+            Self::Numeric(Numeric::I256(value)) => value.value().copied(),
             _ => None,
         }
     }
@@ -145,8 +127,7 @@ impl<'a> CrdtValue<'a> {
         match self {
             Self::Bytes(value) => value.delta().is_some(),
             Self::U64Set(value) => value.delta().is_some(),
-            Self::Numeric(Numeric::I64(value)) => value.delta().is_some(),
-            Self::Numeric(Numeric::U64(value)) => value.delta().is_some(),
+            Self::Numeric(Numeric::I256(value)) => value.delta().is_some(),
             Self::Numeric(Numeric::U256(value)) => value.delta().is_some(),
             Self::None => false,
         }

@@ -89,7 +89,8 @@ macro_rules! unsigned_delta_tests {
                 type TestCrdt = $crdt;
                 let mut value = TestCrdt {
                     value: n(10),
-                    limits: (n(5), n(15)),
+                    min: n(5),
+                    max: n(15),
                     ..Default::default()
                 };
                 value.add_delta(&DeltaOp::Sub(n(5))).unwrap();

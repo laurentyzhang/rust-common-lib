@@ -30,9 +30,8 @@ impl<'a> StoreCodec<CrdtValue<'a>> for CrdtValueCodec {
         let (tag, payload) = match value {
             CrdtValue::None => (0, Ok(Vec::new())),
             CrdtValue::Bytes(value) => (1, internal::bytes::encode(value.as_ref())),
-            CrdtValue::Numeric(Numeric::I64(value)) => (2, internal::int64::encode(value.as_ref())),
-            CrdtValue::Numeric(Numeric::U64(value)) => {
-                (3, internal::uint64::encode(value.as_ref()))
+            CrdtValue::Numeric(Numeric::I256(value)) => {
+                (2, internal::int256::encode(value.as_ref()))
             }
             CrdtValue::Numeric(Numeric::U256(value)) => (4, internal::u256::encode(value.as_ref())),
             CrdtValue::U64Set(value) => (5, internal::u64_set::encode(value.as_ref())),
@@ -53,10 +52,7 @@ impl<'a> StoreCodec<CrdtValue<'a>> for CrdtValueCodec {
             1 => internal::bytes::decode(payload)
                 .map(CrdtValue::from)
                 .map_err(codec_error),
-            2 => internal::int64::decode(payload)
-                .map(CrdtValue::from)
-                .map_err(codec_error),
-            3 => internal::uint64::decode(payload)
+            2 => internal::int256::decode(payload)
                 .map(CrdtValue::from)
                 .map_err(codec_error),
             4 => internal::u256::decode(payload)

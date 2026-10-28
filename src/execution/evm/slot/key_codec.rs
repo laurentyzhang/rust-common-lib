@@ -28,9 +28,9 @@ const HANDLE_OFFSET: usize = 12;
 
 /// Encodes and decodes concurrent storage slots.
 /// ARCO(4) | version(1) | API(1) | reserved(1) | field(1) | key(24)
-pub struct SlotCodec;
+pub struct KeyCodec;
 
-impl SlotCodec {
+impl KeyCodec {
     /// Encode an address handle, left-padded to the 24-byte logical key.
     ///
     /// Fields of the same instance share a handle and use different field IDs.
@@ -88,9 +88,9 @@ mod tests {
         for api in ApiAddress::iter() {
             for handle in [Address::ZERO, Address::repeat_byte(0xff)] {
                 for field in u8::MIN..=u8::MAX {
-                    let slot = SlotCodec::encode(api, field, handle);
-                    assert!(SlotCodec::is_api_key(slot));
-                    assert_eq!(SlotCodec::decode(slot).unwrap().0, api);
+                    let slot = KeyCodec::encode(api, field, handle);
+                    assert!(KeyCodec::is_api_key(slot));
+                    assert_eq!(KeyCodec::decode(slot).unwrap().0, api);
                 }
             }
         }
@@ -100,7 +100,7 @@ mod tests {
     fn api_address_suffixes_are_not_api_slot_keys() {
         for api in ApiAddress::iter() {
             for slot in [U256::ZERO, U256::from(api as u8), U256::MAX] {
-                assert!(!SlotCodec::is_api_key(slot));
+                assert!(!KeyCodec::is_api_key(slot));
             }
         }
     }
@@ -108,9 +108,9 @@ mod tests {
     #[test]
     fn foreign_namespaces_are_rejected_for_every_api() {
         for api in ApiAddress::iter() {
-            let mut bytes = SlotCodec::encode(api, 0, Address::ZERO).to_be_bytes::<32>();
+            let mut bytes = KeyCodec::encode(api, 0, Address::ZERO).to_be_bytes::<32>();
             bytes[0] ^= 0xff;
-            assert!(!SlotCodec::is_api_key(U256::from_be_bytes(bytes)));
+            assert!(!KeyCodec::is_api_key(U256::from_be_bytes(bytes)));
         }
     }
 
@@ -126,8 +126,8 @@ mod tests {
                 let mut key = [0; 24];
                 key[HANDLE_OFFSET - KEY_OFFSET..].copy_from_slice(handle.as_slice());
                 for field in [0, 1, 2, 3, 255] {
-                    let slot = SlotCodec::encode(api, field, handle);
-                    assert_eq!(SlotCodec::decode(slot), Some((api, field, key)));
+                    let slot = KeyCodec::encode(api, field, handle);
+                    assert_eq!(KeyCodec::decode(slot), Some((api, field, key)));
                     assert!(slots.insert(slot));
                 }
             }
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn prefix_contains_api_address_and_field() {
-        let slot = SlotCodec::encode(ApiAddress::Container, 3, Address::repeat_byte(0xab));
+        let slot = KeyCodec::encode(ApiAddress::Container, 3, Address::repeat_byte(0xab));
         let bytes = slot.to_be_bytes::<32>();
         assert_eq!(
             &bytes[..KEY_OFFSET],
@@ -153,7 +153,7 @@ mod tests {
             Address::repeat_byte(0xff),
             Address::with_last_byte(1),
         ] {
-            let slot = SlotCodec::encode(ApiAddress::Scalar, 2, handle);
+            let slot = KeyCodec::encode(ApiAddress::Scalar, 2, handle);
             let bytes = slot.to_be_bytes::<32>();
             assert_eq!(
                 &bytes[..KEY_OFFSET],
@@ -166,10 +166,10 @@ mod tests {
 
     #[test]
     fn rejects_native_slots_and_unknown_prefix_fields() {
-        assert_eq!(SlotCodec::decode(U256::ZERO), None);
-        assert_eq!(SlotCodec::decode(U256::MAX), None);
+        assert_eq!(KeyCodec::decode(U256::ZERO), None);
+        assert_eq!(KeyCodec::decode(U256::MAX), None);
 
-        let slot = SlotCodec::encode(ApiAddress::Scalar, 0, Address::ZERO);
+        let slot = KeyCodec::encode(ApiAddress::Scalar, 0, Address::ZERO);
         for (index, value) in [
             (0, 0),
             (1, 0),
@@ -181,23 +181,23 @@ mod tests {
         ] {
             let mut bytes = slot.to_be_bytes::<32>();
             bytes[index] = value;
-            assert_eq!(SlotCodec::decode(U256::from_be_bytes(bytes)), None);
-            assert!(!SlotCodec::is_api_key(U256::from_be_bytes(bytes)));
+            assert_eq!(KeyCodec::decode(U256::from_be_bytes(bytes)), None);
+            assert!(!KeyCodec::is_api_key(U256::from_be_bytes(bytes)));
         }
     }
 
     #[test]
     fn only_the_current_version_is_recognized() {
-        let slot = SlotCodec::encode(ApiAddress::Scalar, 0, Address::ZERO);
+        let slot = KeyCodec::encode(ApiAddress::Scalar, 0, Address::ZERO);
         for version in u8::MIN..=u8::MAX {
             let mut bytes = slot.to_be_bytes::<32>();
             bytes[VERSION_OFFSET] = version;
             assert_eq!(
-                SlotCodec::decode(U256::from_be_bytes(bytes)).is_some(),
+                KeyCodec::decode(U256::from_be_bytes(bytes)).is_some(),
                 version == VERSION
             );
             assert_eq!(
-                SlotCodec::is_api_key(U256::from_be_bytes(bytes)),
+                KeyCodec::is_api_key(U256::from_be_bytes(bytes)),
                 version == VERSION
             );
         }

@@ -1,12 +1,15 @@
-mod codec;
 mod evm_internals;
 mod evm_state;
 mod evm_storage;
+mod key_codec;
 mod scalar;
+
+#[cfg(test)]
+mod tests;
 
 use alloy_primitives::{Address, U256};
 
-pub(in crate::execution::evm) use scalar::{Field, ScalarSlot};
+pub(in crate::execution::evm) use scalar::{Field, SlotKeys};
 
 /// Reads and writes account-scoped EVM storage slots.
 pub(in crate::execution::evm) trait SlotStorage {
