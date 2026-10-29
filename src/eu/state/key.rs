@@ -10,7 +10,7 @@ use alloy_primitives::{Address, U256};
 // use super::account_codec::{AccountDecodeError, AccountInfoCodec};
 // use crate::crdt::state::{DeltaOp, value::CrdtValue};
 // use crate::crdt::{NonComm as CrdtNonComm, Scalar};
-// use crate::execution::{VmStateCache, VmStateCacheWriter};
+// use crate::eu::{VmStateCache, VmStateCacheWriter};
 use crate::store::{StoreCodec, StoreError};
 
 /// Cache keys for EVM accounts and storage slots.

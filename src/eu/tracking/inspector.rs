@@ -1,7 +1,7 @@
 //! Opcode-based read capture backed by the shared state read recorder.
 
 use super::recorder::ReadRecorder;
-use crate::execution::evm::key::Key;
+use crate::eu::key::Key;
 use alloy_evm::revm::{
     Inspector,
     bytecode::opcode,

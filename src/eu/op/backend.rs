@@ -15,7 +15,7 @@ use alloy_evm::{
 use alloy_op_evm::{OpBlockExecutorFactory, OpEvm, OpEvmContext, OpEvmFactory};
 use alloy_primitives::{Address, Bytes};
 
-pub(in crate::execution::evm) use alloy_op_evm::post_exec::PostExecEvmFactoryAdapter;
+pub(in crate::eu) use alloy_op_evm::post_exec::PostExecEvmFactoryAdapter;
 
 pub(super) use alloy_op_evm::post_exec::{
     PostExecEvm, PostExecEvmFactoryHooks, PostExecExecutedTx, PostExecTxContext,

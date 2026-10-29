@@ -3,7 +3,8 @@ use std::convert::Infallible;
 use alloy_evm::revm::state::{Account, EvmStorageSlot};
 use alloy_primitives::{Address, U256};
 
-use super::super::{AccountStorage, SlotStorage, StateDb};
+use super::super::super::{AccountStorage, SlotStorage};
+use super::StateDb;
 
 /// Reads and writes slots under their owning account in an EVM state map.
 impl SlotStorage for StateDb {

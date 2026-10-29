@@ -1,10 +1,10 @@
 use crate::collections;
-use crate::execution::cache::Entry;
+use crate::eu::cache::Entry;
 use crate::store::traits::FallbackStore;
 
 /// A cache for storing all state transitions within a block.
 pub struct BlockCache<'a, K, T = ()> {
-    pub(in crate::execution) cache: collections::shard_map::ShardMap<K, Entry<'a, T>>,
+    pub(in crate::eu) cache: collections::shard_map::ShardMap<K, Entry<'a, T>>,
     pub(super) fallback: Option<&'a dyn FallbackStore<K, Entry<'a, T>>>,
 }
 

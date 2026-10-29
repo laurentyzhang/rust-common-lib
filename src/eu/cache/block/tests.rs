@@ -1,6 +1,6 @@
 use alloy_primitives::U256;
 
-use crate::execution::{BlockCache, BlockCacheWriter, cache::Entry};
+use crate::eu::{BlockCache, BlockCacheWriter, cache::Entry};
 
 use crate::crdt::{
     Scalar,

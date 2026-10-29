@@ -4,7 +4,7 @@ use rust_common_lib::{
         Crdt, Scalar,
         state::{CrdtDelta, CrdtValue, DeltaOp, Numeric, Status, Tracked, status::Tag},
     },
-    execution::{Entry, VmStateCache, output::ExecutionOutput},
+    eu::{Entry, VmStateCache, output::ExecutionOutput},
     resolver::{
         ConflictChecker,
         reason::{AccessConflict, NumericError, Reason},

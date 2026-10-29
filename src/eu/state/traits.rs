@@ -13,7 +13,7 @@ pub trait AccountStorage {
 }
 
 /// Reads and writes account-scoped EVM storage slots.
-pub(in crate::execution::evm) trait SlotStorage {
+pub(in crate::eu) trait SlotStorage {
     type Error;
 
     fn read(&mut self, owner: Address, key: U256) -> Result<U256, Self::Error>;

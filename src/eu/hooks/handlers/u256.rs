@@ -1,7 +1,7 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
-use crate::execution::evm::{
+use crate::eu::{
     API_OFFSET, ApiAddress, CallHookError, FIELD_OFFSET, Field, KeyCodec, ReadRecorder,
     ScalarSlots, key::Key,
 };

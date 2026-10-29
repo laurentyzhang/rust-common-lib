@@ -8,13 +8,13 @@ use crate::crdt::state::{
     status::{Status, Tag},
     value::ValueSnapshots,
 };
-use crate::execution::evm::key::Key;
-use crate::execution::output::ExecutionOutput;
+use crate::eu::key::Key;
+use crate::eu::output::ExecutionOutput;
 use rayon::prelude::*;
 
 pub type StateReads = Vec<ExecutionOutput<Key, Tracked<Status, Status>>>;
 
-pub(in crate::execution::evm) const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
+pub(in crate::eu) const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
 
 /// Counts state reads for one transaction, independently of their capture location.
 pub struct ReadRecorder {
@@ -38,7 +38,7 @@ impl ReadRecorder {
     }
 
     /// Clears counts without changing the current transaction ID.
-    pub(in crate::execution::evm) fn clear(&mut self) {
+    pub(in crate::eu) fn clear(&mut self) {
         self.reads.clear();
     }
 
@@ -58,7 +58,7 @@ impl ReadRecorder {
     }
 
     /// Takes EVM-local counts under this recorder's transaction ID.
-    pub(in crate::execution::evm) fn merge_reads(&mut self, other: &mut Self) {
+    pub(in crate::eu) fn merge_reads(&mut self, other: &mut Self) {
         if self.reads.len() < other.reads.len() {
             std::mem::swap(&mut self.reads, &mut other.reads);
         }
@@ -123,7 +123,7 @@ impl ReadRecorder {
             .collect()
     }
 
-    pub(in crate::execution::evm) fn should_merge_parallel(recorders: &[ReadRecorder]) -> bool {
+    pub(in crate::eu) fn should_merge_parallel(recorders: &[ReadRecorder]) -> bool {
         let pairs = recorders.len() / 2;
         let workers = rayon::current_num_threads().min(pairs);
 

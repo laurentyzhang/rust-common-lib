@@ -8,4 +8,4 @@ pub use address::ApiAddress;
 pub use handlers::{CallHandler, U256Handler};
 pub use output::{CallOutput, ExitStatus};
 pub use router::{CallInput, CallRouter, CallScheme, dispatch_precompile};
-pub(in crate::execution::evm) use version::VERSION;
+pub(in crate::eu) use version::VERSION;

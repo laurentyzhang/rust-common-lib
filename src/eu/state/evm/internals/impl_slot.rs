@@ -1,8 +1,8 @@
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, U256};
 
-use super::super::SlotStorage;
-use crate::execution::evm::CallHookError;
+use super::super::super::SlotStorage;
+use crate::eu::CallHookError;
 
 /// Reads and writes slots through the current EVM journal.
 impl SlotStorage for EvmInternals<'_> {

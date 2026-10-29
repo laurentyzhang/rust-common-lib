@@ -1,5 +1,5 @@
 use super::cache::VmStateCache;
-use crate::execution::cache::Entry;
+use crate::eu::cache::Entry;
 use crate::store::traits::StoreError;
 
 pub struct VmStateCacheWriter<'a, K, T = ()> {

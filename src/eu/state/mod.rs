@@ -1,12 +1,10 @@
-mod evm_storage;
-mod internals;
+pub mod evm;
 pub mod key;
-pub mod statedb;
 mod traits;
 
 #[cfg(test)]
 mod tests;
 
-pub use statedb::{StatDbCommitter, StateDb};
+pub use evm::state::{StatDbCommitter, StateDb};
 pub use traits::AccountStorage;
-pub(in crate::execution::evm) use traits::SlotStorage;
+pub(in crate::eu) use traits::SlotStorage;

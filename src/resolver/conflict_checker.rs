@@ -9,7 +9,7 @@ use crate::crdt::state::{
     status::{Status, Tag},
     value::{CrdtValue, ValueSnapshots},
 };
-use crate::execution::output::ExecutionOutput;
+use crate::eu::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
 /// Coordinates access and numeric conflict checks and combines their results.

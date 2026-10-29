@@ -1,5 +1,5 @@
 use super::cache::BlockCache;
-use crate::execution::cache::Entry;
+use crate::eu::cache::Entry;
 use crate::store::traits::{FallbackStore, StoreError};
 
 pub struct BlockCacheWriter<'a, K, T = ()> {

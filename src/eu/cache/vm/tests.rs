@@ -4,7 +4,7 @@ use crate::crdt::{
     Crdt, NonComm, Scalar,
     state::{CrdtDelta, DeltaOp, Numeric, NumericError, StateError, value::CrdtValue},
 };
-use crate::execution::{
+use crate::eu::{
     BlockCache, BlockCacheWriter, VmStateCache,
     cache::Entry,
     cache::vm::{Error, VmStateCacheWriter},

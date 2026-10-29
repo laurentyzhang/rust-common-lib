@@ -8,7 +8,8 @@ use alloy_evm::revm::{
 };
 use alloy_primitives::{Address, B256, U256};
 
-use super::super::{AccountStorage, StateDb};
+use super::super::super::AccountStorage;
+use super::StateDb;
 
 impl Database for StateDb {
     type Error = Infallible;

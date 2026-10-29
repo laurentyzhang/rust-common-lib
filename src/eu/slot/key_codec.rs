@@ -17,12 +17,12 @@
 use alloy_primitives::{Address, U256};
 use strum::IntoEnumIterator;
 
-use crate::execution::evm::hooks::{ApiAddress, VERSION};
+use crate::eu::hooks::{ApiAddress, VERSION};
 
 const VERSION_OFFSET: usize = 4;
-pub(in crate::execution::evm) const API_OFFSET: usize = 5;
+pub(in crate::eu) const API_OFFSET: usize = 5;
 const RESERVED_OFFSET: usize = 6;
-pub(in crate::execution::evm) const FIELD_OFFSET: usize = 7;
+pub(in crate::eu) const FIELD_OFFSET: usize = 7;
 const KEY_OFFSET: usize = 8;
 const HANDLE_OFFSET: usize = 12;
 
@@ -46,7 +46,7 @@ impl KeyCodec {
     }
 
     /// Selects a field while preserving the prefix and instance key.
-    pub(in crate::execution::evm) fn with_field(key: U256, field: u8) -> U256 {
+    pub(in crate::eu) fn with_field(key: U256, field: u8) -> U256 {
         let mut bytes = key.to_be_bytes::<32>();
         bytes[FIELD_OFFSET] = field;
         U256::from_be_bytes(bytes)

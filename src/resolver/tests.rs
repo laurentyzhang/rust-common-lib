@@ -6,7 +6,7 @@ mod access_checker {
         status::{Status, Tag},
         value::CrdtValue,
     };
-    use crate::execution::output::ExecutionOutput;
+    use crate::eu::output::ExecutionOutput;
     use crate::resolver::access_checker::AccessChecker;
     use crate::resolver::reason::Reason;
     use crate::resolver::traits::Checker;
@@ -484,8 +484,8 @@ mod conflict_checker {
             value::{CrdtValue, ValueSnapshots},
         },
     };
-    use crate::execution::VmStateCache;
-    use crate::execution::{cache::Entry, output::ExecutionOutput};
+    use crate::eu::VmStateCache;
+    use crate::eu::{cache::Entry, output::ExecutionOutput};
     use crate::resolver::access_checker::AccessChecker;
     use crate::resolver::conflict_checker::*;
     use crate::resolver::reason::{AccessConflict, Reason};
@@ -839,7 +839,7 @@ mod sum_checker {
             value::ValueSnapshots,
         },
     };
-    use crate::execution::output::ExecutionOutput;
+    use crate::eu::output::ExecutionOutput;
     use crate::resolver::reason::Reason;
     use crate::resolver::sum_checker::*;
     use std::borrow::Cow;

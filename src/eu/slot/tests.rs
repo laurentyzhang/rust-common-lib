@@ -1,7 +1,7 @@
 use super::super::state::SlotStorage;
 use super::{Field, ScalarSlots};
 use crate::crdt::{self, state::DeltaOp};
-use crate::execution::evm::{ApiAddress, KeyCodec};
+use crate::eu::{ApiAddress, KeyCodec};
 use alloy_evm::revm::state::EvmStorage;
 use alloy_primitives::{Address, I256, U256};
 

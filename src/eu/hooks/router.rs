@@ -42,7 +42,7 @@ pub struct CallInput<'a> {
 #[derive(Clone, Default)]
 pub struct CallRouter {
     // Keep registration and collision checks ordered without building an address list.
-    pub(in crate::execution::evm) handlers: BTreeMap<Address, Arc<dyn CallHandler>>,
+    pub(in crate::eu) handlers: BTreeMap<Address, Arc<dyn CallHandler>>,
 }
 
 impl fmt::Debug for CallRouter {

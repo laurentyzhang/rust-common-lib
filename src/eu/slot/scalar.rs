@@ -5,7 +5,7 @@ use alloy_primitives::{Address, U256};
 use super::super::state::SlotStorage;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::execution::evm::{ApiAddress, CallHookError, KeyCodec};
+use crate::eu::{ApiAddress, CallHookError, KeyCodec};
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]

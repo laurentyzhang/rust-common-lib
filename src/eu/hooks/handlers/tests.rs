@@ -1,7 +1,7 @@
 use super::super::version::VERSION;
 use super::{CallHandler, U256Handler, u256::IScalar};
 use crate::crdt::{self, state::DeltaOp};
-use crate::execution::evm::{
+use crate::eu::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
     ExitStatus, KeyCodec, ReadRecorder, ScalarSlots, key::Key,
 };

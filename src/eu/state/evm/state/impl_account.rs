@@ -1,7 +1,8 @@
 use alloy_evm::revm::state::{Account, EvmState};
 use alloy_primitives::Address;
 
-use super::super::{AccountStorage, StateDb};
+use super::super::super::AccountStorage;
+use super::StateDb;
 
 impl AccountStorage for StateDb {
     /// Return the account at the requested address.

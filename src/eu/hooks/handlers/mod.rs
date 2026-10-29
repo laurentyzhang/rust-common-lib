@@ -9,7 +9,7 @@ use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 
 use super::{CallInput, CallOutput};
-use crate::execution::evm::{CallHookError, ReadRecorder};
+use crate::eu::{CallHookError, ReadRecorder};
 
 /// Handles calls for one reserved address.
 pub trait CallHandler: Send + Sync {

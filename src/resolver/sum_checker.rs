@@ -1,6 +1,6 @@
 use super::traits::{Checker, Rejected};
 use crate::crdt::state::{Numeric, Status, Tracked, value::CrdtValue};
-use crate::execution::output::ExecutionOutput;
+use crate::eu::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
 pub struct SumChecker<K> {

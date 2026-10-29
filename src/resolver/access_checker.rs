@@ -7,7 +7,7 @@ use crate::crdt::state::{
     status::{Status, Tag},
     value::CrdtValue,
 };
-use crate::execution::output::ExecutionOutput;
+use crate::eu::output::ExecutionOutput;
 use std::collections::{BTreeSet, HashMap};
 
 /// Checks access conflicts for both numeric and nonnumeric records.

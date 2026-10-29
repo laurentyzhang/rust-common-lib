@@ -4,8 +4,8 @@ use crate::crdt::state::{
     StateError, Status, Tracked, op::Operations, status::Tag, value::CrdtValue,
     value::ValueSnapshots,
 };
-use crate::execution::cache::Entry;
-use crate::execution::output::ExecutionOutput;
+use crate::eu::cache::Entry;
+use crate::eu::output::ExecutionOutput;
 use crate::store::traits::FallbackStore;
 use crate::store::traits::StoreError;
 use std::borrow::Cow;

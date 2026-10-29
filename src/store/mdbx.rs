@@ -141,7 +141,7 @@ mod tests {
                 Scalar,
                 state::{CrdtValue, Numeric},
             },
-            execution::evm::key::{Key, KeyCodec},
+            eu::key::{Key, KeyCodec},
             store::CrdtValueCodec,
         };
 
