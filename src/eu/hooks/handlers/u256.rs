@@ -3,7 +3,7 @@ use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
 use crate::eu::{
     API_OFFSET, ApiAddress, CallHookError, FIELD_OFFSET, Field, KeyCodec, ReadRecorder,
-    ScalarSlots, key::Key,
+    ScalarAdapter, key::Key,
 };
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
@@ -40,7 +40,7 @@ impl U256Handler {
             ..Default::default()
         };
 
-        let slot_keys = ScalarSlots::new(key);
+        let slot_keys = ScalarAdapter::new(key);
         slot_keys.store(internals, input.caller, &scalar)?;
         Ok(CallOutput::returned(0, call.key.abi_encode()))
     }
@@ -58,7 +58,7 @@ impl U256Handler {
         }
 
         let (mut scalar, storage) =
-            ScalarSlots::new(key).load::<U256, _>(internals, input.caller)?;
+            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller)?;
         if scalar.add_delta(&DeltaOp::Add(call.delta)).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
@@ -80,7 +80,7 @@ impl U256Handler {
         }
 
         let (mut scalar, storage) =
-            ScalarSlots::new(key).load::<U256, _>(internals, input.caller)?;
+            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller)?;
 
         if scalar.add_delta(&DeltaOp::Sub(call.delta)).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
@@ -90,22 +90,20 @@ impl U256Handler {
         Ok(CallOutput::returned(0, true.abi_encode()))
     }
 
-    /// Materializes pending deltas and writes the scalar back to its original slots.
+    /// Returns the base value plus pending deltas without changing stored fields.
     fn get(
         &self,
         key: U256,
         _call: IScalar::getCall,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-    ) -> Result<(U256, ScalarSlots), CallHookError> {
+        api_reads: &mut ReadRecorder,
+    ) -> Result<(U256, ScalarAdapter), CallHookError> {
         let (mut scalar, storage) =
-            ScalarSlots::new(key).load::<U256, _>(internals, input.caller)?;
+            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller)?;
 
-        // This will NOT modify the original scalar directly;
-        // it only applies pending deltas before returning the value.
-        storage.store(internals, input.caller, scalar.apply_delta())?;
-
-        Ok((scalar.value, storage))
+        api_reads.record(Key::Storage(input.caller, storage.value));
+        Ok((scalar.apply_delta().value, storage))
     }
 }
 
@@ -135,8 +133,8 @@ impl CallHandler for U256Handler {
             Ok(IScalar::IScalarCalls::add(call)) => self.add(key, call, input, internals),
             Ok(IScalar::IScalarCalls::sub(call)) => self.sub(key, call, input, internals),
             Ok(IScalar::IScalarCalls::get(call)) => {
-                let (value, scalar_storage) = self.get(key, call, input, internals)?;
-                // Preserve the observation even when materialization changes no slot values.
+                let (value, scalar_storage) = self.get(key, call, input, internals, api_reads)?;
+                // Record the base value and both delta slots used to compute the result.
                 for slot in [
                     scalar_storage.value,
                     scalar_storage.pos_delta,

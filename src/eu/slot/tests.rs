@@ -1,5 +1,5 @@
 use super::super::state::SlotStorage;
-use super::{Field, ScalarSlots};
+use super::{Field, ScalarAdapter};
 use crate::crdt::{self, state::DeltaOp};
 use crate::eu::{ApiAddress, KeyCodec};
 use alloy_evm::revm::state::EvmStorage;
@@ -9,7 +9,7 @@ use alloy_primitives::{Address, I256, U256};
 fn u256_values_and_full_width_deltas_round_trip() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = ScalarSlots::new(key);
+    let slots = ScalarAdapter::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta) in [
         (U256::ZERO, Some(DeltaOp::Add(U256::MAX))),
@@ -27,15 +27,15 @@ fn u256_values_and_full_width_deltas_round_trip() {
             (state, slots)
         );
         assert_eq!(
-            ScalarSlots::read_min::<U256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_min::<U256, _>(&mut storage, owner, key),
             Some(U256::ZERO)
         );
         assert_eq!(
-            ScalarSlots::read_max::<U256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_max::<U256, _>(&mut storage, owner, key),
             Some(U256::MAX)
         );
         assert_eq!(
-            ScalarSlots::read_value::<U256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_value::<U256, _>(&mut storage, owner, key),
             Some(value)
         );
     }
@@ -45,7 +45,7 @@ fn u256_values_and_full_width_deltas_round_trip() {
 fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = ScalarSlots::new(key);
+    let slots = ScalarAdapter::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta) in [
         (I256::MIN, Some(DeltaOp::Add(U256::MAX))),
@@ -66,15 +66,15 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
             (state, slots)
         );
         assert_eq!(
-            ScalarSlots::read_min::<I256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_min::<I256, _>(&mut storage, owner, key),
             Some(I256::MIN)
         );
         assert_eq!(
-            ScalarSlots::read_max::<I256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_max::<I256, _>(&mut storage, owner, key),
             Some(I256::MAX)
         );
         assert_eq!(
-            ScalarSlots::read_value::<I256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_value::<I256, _>(&mut storage, owner, key),
             Some(value)
         );
     }
@@ -84,7 +84,7 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
 fn typed_loads_accept_full_width_values_and_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = ScalarSlots::new(key);
+    let slots = ScalarAdapter::new(key);
     let mut storage = EvmStorage::default();
     slots
         .store(&mut storage, owner, &crdt::Scalar::<U256>::default())
@@ -95,7 +95,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
         U256::MAX
     );
     assert_eq!(
-        ScalarSlots::read_value::<U256, _>(&mut storage, owner, key),
+        ScalarAdapter::read_value::<U256, _>(&mut storage, owner, key),
         Some(U256::MAX)
     );
 
@@ -109,7 +109,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
             value
         );
         assert_eq!(
-            ScalarSlots::read_value::<I256, _>(&mut storage, owner, key),
+            ScalarAdapter::read_value::<I256, _>(&mut storage, owner, key),
             Some(value)
         );
     }
@@ -126,7 +126,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
 fn split_deltas_round_trip_and_clear_the_opposite_slot() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = ScalarSlots::new(key);
+    let slots = ScalarAdapter::new(key);
     let mut storage = EvmStorage::default();
     for (value, delta, expected) in [
         (
@@ -158,7 +158,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
         };
         slots.store(&mut storage, owner, &state).unwrap();
         assert_eq!(
-            ScalarSlots::read_delta(&mut storage, owner, key),
+            ScalarAdapter::read_delta(&mut storage, owner, key),
             Some(expected)
         );
         assert_eq!(
@@ -172,7 +172,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
 fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let slots = ScalarSlots::new(key);
+    let slots = ScalarAdapter::new(key);
     let mut storage = EvmStorage::default();
     let state = crdt::Scalar::<U256> {
         value: U256::from(50),
@@ -202,7 +202,7 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
             slots.neg_delta,
         ] {
             assert_eq!(
-                ScalarSlots::read_delta(&mut storage, owner, field_key),
+                ScalarAdapter::read_delta(&mut storage, owner, field_key),
                 Some((pos, neg))
             );
         }
@@ -216,7 +216,10 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
         KeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO),
         KeyCodec::encode(ApiAddress::Container, 3, Address::ZERO),
     ] {
-        assert_eq!(ScalarSlots::read_delta(&mut storage, owner, invalid), None);
+        assert_eq!(
+            ScalarAdapter::read_delta(&mut storage, owner, invalid),
+            None
+        );
     }
 }
 
@@ -234,7 +237,7 @@ fn invalid_pending_arithmetic_does_not_write_any_slots() {
             ..Default::default()
         };
         assert!(
-            ScalarSlots::new(key)
+            ScalarAdapter::new(key)
                 .store(&mut storage, Address::ZERO, &state)
                 .is_err()
         );

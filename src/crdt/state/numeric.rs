@@ -1,5 +1,5 @@
 use super::{CrdtDelta, StateError};
-use crate::crdt::Crdt;
+use crate::crdt::{Crdt, Type};
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]

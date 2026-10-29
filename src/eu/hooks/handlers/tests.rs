@@ -3,7 +3,7 @@ use super::{CallHandler, U256Handler, u256::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::eu::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, KeyCodec, ReadRecorder, ScalarSlots, key::Key,
+    ExitStatus, KeyCodec, ReadRecorder, ScalarAdapter, key::Key,
 };
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
@@ -52,8 +52,8 @@ fn scalar_key(handle: Address) -> B256 {
     KeyCodec::encode(ApiAddress::Scalar, 2, handle).into()
 }
 
-fn slots(handle: Address) -> ScalarSlots {
-    ScalarSlots::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle))
+fn slots(handle: Address) -> ScalarAdapter {
+    ScalarAdapter::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle))
 }
 
 fn invoke_delta(
@@ -88,7 +88,7 @@ fn invoke_delta(
     }
 }
 
-fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarSlots) -> [U256; 5] {
+fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarAdapter) -> [U256; 5] {
     [
         keys.min,
         keys.max,
@@ -522,7 +522,7 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = ScalarSlots::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle));
+        let keys = ScalarAdapter::new(KeyCodec::encode(ApiAddress::Scalar, 2, handle));
         assert_eq!(keys, slots(handle));
         keys.store(&mut internals, owner, &state).unwrap();
         assert_eq!(
@@ -607,7 +607,7 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
             DeltaOp::Sub(magnitude) => (U256::ZERO, magnitude),
         };
         assert_eq!(
-            ScalarSlots::read_delta(&mut internals, owner, keys.value),
+            ScalarAdapter::read_delta(&mut internals, owner, keys.value),
             Some(expected)
         );
     }
