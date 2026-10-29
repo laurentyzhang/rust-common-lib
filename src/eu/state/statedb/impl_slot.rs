@@ -1,12 +1,12 @@
 use std::convert::Infallible;
 
-use alloy_evm::revm::state::{Account, EvmState, EvmStorageSlot};
+use alloy_evm::revm::state::{Account, EvmStorageSlot};
 use alloy_primitives::{Address, U256};
 
-use super::SlotStorage;
+use super::super::{AccountStorage, SlotStorage, StateDb};
 
 /// Reads and writes slots under their owning account in an EVM state map.
-impl SlotStorage for EvmState {
+impl SlotStorage for StateDb {
     type Error = Infallible;
 
     fn read(&mut self, owner: Address, slot: U256) -> Result<U256, Self::Error> {
@@ -22,7 +22,10 @@ impl SlotStorage for EvmState {
     }
 
     fn write(&mut self, owner: Address, slot: U256, value: U256) -> Result<(), Self::Error> {
-        let account = self.entry(owner).or_insert_with(Account::default);
+        let account = self
+            .inner_mut()
+            .entry(owner)
+            .or_insert_with(Account::default);
         account.mark_touch();
         match account.storage.get_mut(&slot) {
             Some(current) => current.present_value = value,
@@ -45,7 +48,7 @@ mod tests {
     fn reads_and_writes_present_values() {
         let owner = Address::repeat_byte(0x11);
         let slot = U256::from(7);
-        let mut state = EvmState::default();
+        let mut state = StateDb::default();
 
         assert_eq!(state.read(owner, slot).unwrap(), U256::ZERO);
         state.write(owner, slot, U256::from(10)).unwrap();

@@ -1,48 +1,16 @@
-//! Cached EVM state and the REVM database interface.
+//! REVM database adapter for an owned EVM state.
 
 use std::convert::Infallible;
 
 use alloy_evm::revm::{
     Database,
-    state::{Account, AccountInfo, Bytecode, EvmState},
+    state::{AccountInfo, Bytecode},
 };
 use alloy_primitives::{Address, B256, U256};
 
-use super::MergeableEvmState;
+use super::super::{AccountStorage, StateDb};
 
-/// A cache for EVM state that supports parallel merging and provides a `Database` interface.
-#[derive(Debug, Default)]
-pub struct EvmStateCache {
-    pub(super) inner: MergeableEvmState,
-}
-
-impl EvmStateCache {
-    /// Create a cache owning the supplied state.
-    pub fn new(state: EvmState) -> Self {
-        Self {
-            inner: MergeableEvmState::new(state),
-        }
-    }
-
-    /// Return the cached account at the requested address.
-    pub fn get(&self, address: &Address) -> Option<&Account> {
-        self.inner.inner.get(address)
-    }
-
-    /// Iterate over the cached accounts.
-    pub(crate) fn accounts(&self) -> impl Iterator<Item = &Account> {
-        self.inner.inner.values()
-    }
-
-    /// Consume the cache and return its accumulated state for persistence.
-    pub fn into_evm_state(self) -> EvmState {
-        self.inner.into()
-    }
-}
-
-/// Implement the `Database` trait for `EvmStateCache` to provide EVM with account and
-/// storage access.
-impl Database for EvmStateCache {
+impl Database for StateDb {
     type Error = Infallible;
 
     /// Return account information unless the account is absent or deleted.

@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, U256};
 
-use super::SlotStorage;
+use super::super::state::SlotStorage;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
 use crate::execution::evm::{ApiAddress, CallHookError, KeyCodec};
