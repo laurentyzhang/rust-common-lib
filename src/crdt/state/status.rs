@@ -28,7 +28,9 @@ pub fn reduce_to_statuses(
     };
 
     let current = match &value.current {
-        CrdtValue::Numeric(value) => Status::Value(CrdtValue::Numeric(value.clone().into_owned())),
+        value @ (CrdtValue::I256(_) | CrdtValue::U256(_)) => {
+            Status::Value(value.clone().into_owned())
+        }
         CrdtValue::None => {
             if original == Status::Tag(Tag::Missing) {
                 Status::Tag(Tag::Missing) // Original value was missing too.

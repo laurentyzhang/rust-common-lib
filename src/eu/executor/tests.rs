@@ -2,10 +2,10 @@ use super::*;
 use crate::{
     crdt::{
         Crdt,
-        state::{DeltaOp, Numeric, Status, status::Tag, value::CrdtValue},
+        state::{DeltaOp, Status, status::Tag, value::CrdtValue},
     },
     eu::{ApiAddress, Field, KeyCodec, ScalarAdapter},
-    resolver::reason::{AccessConflict, NumericError, Reason},
+    planner::resolver::reason::{AccessConflict, NumericError, Reason},
 };
 use alloy_evm::revm::{
     context_interface::result::{
@@ -18,7 +18,7 @@ use alloy_primitives::{Bytes, U256};
 fn successful_job(id: u64, gas: u64, state: EvmState) -> JobResult<u64> {
     JobResult {
         id: ID::new(id),
-        outcome: Ok(TransactionOutcome {
+        outcome: Ok(JobOutcome {
             result_and_state: ResultAndState::new(
                 ExecutionResult::Success {
                     reason: SuccessReason::Stop,
@@ -102,7 +102,7 @@ fn scalar_exports_preserve_snapshots_and_combine_reads_without_stripping_numeric
     assert_eq!(scalar.operations.deltas.count(), 1);
     assert_eq!(scalar.operations.removes.count(), 0);
     for (snapshot, expected) in [(scalar.original(), original), (scalar.current(), current)] {
-        let Status::Value(CrdtValue::Numeric(Numeric::U256(value))) = snapshot else {
+        let Status::Value(CrdtValue::U256(value)) = snapshot else {
             panic!("scalar snapshots must retain their numeric payload");
         };
         assert_eq!(
@@ -142,7 +142,10 @@ fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
             outcome.reads = reads.drain();
             assert!(outcome.merge_records(id).iter().any(|(record_key, data)| {
                 *record_key == Key::Storage(Address::ZERO, key)
-                    && matches!(data.current(), Status::Value(CrdtValue::Numeric(_)))
+                    && matches!(
+                        data.current(),
+                        Status::Value(CrdtValue::I256(_) | CrdtValue::U256(_))
+                    )
             }));
             job
         })

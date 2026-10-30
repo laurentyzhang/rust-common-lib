@@ -1,6 +1,6 @@
-use super::{Numeric, StateError};
+use super::StateError;
 use crate::crdt::Crdt;
-use crate::crdt::{NonComm, Set};
+use crate::crdt::{NonComm, Scalar, Set};
 
 /// The original and current states of a tracked value.
 #[derive(Clone, PartialEq)]
@@ -31,7 +31,8 @@ pub enum DeltaOp<T> {
 pub enum CrdtValue<'a> {
     Bytes(std::borrow::Cow<'a, NonComm<[u8]>>),
     U64Set(std::borrow::Cow<'a, Set<u64>>),
-    Numeric(Numeric<'a>),
+    I256(std::borrow::Cow<'a, Scalar<alloy_primitives::I256>>),
+    U256(std::borrow::Cow<'a, Scalar<alloy_primitives::U256>>),
     None,
 }
 
@@ -52,7 +53,8 @@ impl<'a> CrdtValue<'a> {
         match self {
             Self::Bytes(value) => CrdtValue::Bytes(std::borrow::Cow::Owned(value.into_owned())),
             Self::U64Set(value) => CrdtValue::U64Set(std::borrow::Cow::Owned(value.into_owned())),
-            Self::Numeric(value) => CrdtValue::Numeric(value.into_owned()),
+            Self::I256(value) => CrdtValue::I256(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U256(value) => CrdtValue::U256(std::borrow::Cow::Owned(value.into_owned())),
             Self::None => CrdtValue::None,
         }
     }
@@ -61,21 +63,22 @@ impl<'a> CrdtValue<'a> {
         match value {
             Self::Bytes(value) => Self::Bytes(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
-            Self::Numeric(value) => Self::Numeric(Numeric::from_borrowed(value)),
+            Self::I256(value) => Self::I256(std::borrow::Cow::Borrowed(value.as_ref())),
+            Self::U256(value) => Self::U256(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::None => Self::None,
         }
     }
 
     pub fn as_i256(&self) -> Option<alloy_primitives::I256> {
         match self {
-            Self::Numeric(Numeric::I256(value)) => value.value().copied(),
+            Self::I256(value) => value.value().copied(),
             _ => None,
         }
     }
 
     pub fn as_u256(&self) -> Option<alloy_primitives::U256> {
         match self {
-            Self::Numeric(Numeric::U256(value)) => value.value().copied(),
+            Self::U256(value) => value.value().copied(),
             _ => None,
         }
     }
@@ -96,7 +99,7 @@ impl<'a> CrdtValue<'a> {
 
     pub fn is_numeric(&self) -> bool {
         match self {
-            Self::Numeric(_) => true,
+            Self::I256(_) | Self::U256(_) => true,
             _ => false,
         }
     }
@@ -105,7 +108,7 @@ impl<'a> CrdtValue<'a> {
         match self {
             Self::Bytes(value) => value.is_commutative(),
             Self::U64Set(value) => value.is_commutative(),
-            Self::Numeric(_) => true,
+            Self::I256(_) | Self::U256(_) => true,
             Self::None => false,
         }
     }
@@ -118,7 +121,12 @@ impl<'a> CrdtValue<'a> {
             Self::U64Set(value) => value
                 .delta()
                 .map_or(CrdtDelta::None, |delta| CrdtDelta::U64Set(delta.to_vec())),
-            Self::Numeric(value) => value.delta(),
+            Self::I256(value) => value
+                .delta()
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::I256(*delta)),
+            Self::U256(value) => value
+                .delta()
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U256(*delta)),
             Self::None => CrdtDelta::None,
         }
     }
@@ -127,8 +135,8 @@ impl<'a> CrdtValue<'a> {
         match self {
             Self::Bytes(value) => value.delta().is_some(),
             Self::U64Set(value) => value.delta().is_some(),
-            Self::Numeric(Numeric::I256(value)) => value.delta().is_some(),
-            Self::Numeric(Numeric::U256(value)) => value.delta().is_some(),
+            Self::I256(value) => value.delta().is_some(),
+            Self::U256(value) => value.delta().is_some(),
             Self::None => false,
         }
     }
@@ -144,7 +152,12 @@ impl<'a> CrdtValue<'a> {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 
-            (Self::Numeric(value), delta) => value.add_delta(delta),
+            (Self::I256(value), CrdtDelta::I256(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
+            (Self::U256(value), CrdtDelta::U256(delta)) => {
+                value.to_mut().add_delta(delta).map(|_| ())
+            }
 
             _ => Err(StateError::TypeMismatch),
         }
@@ -162,8 +175,12 @@ impl<'a> CrdtValue<'a> {
                 self
             }
 
-            Self::Numeric(value) => {
-                value.apply_delta();
+            Self::I256(value) => {
+                value.to_mut().apply_delta();
+                self
+            }
+            Self::U256(value) => {
+                value.to_mut().apply_delta();
                 self
             }
             Self::None => self,

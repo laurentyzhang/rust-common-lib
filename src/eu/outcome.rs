@@ -1,27 +1,45 @@
 use std::collections::HashMap;
 
 use alloy_evm::block::BlockExecutionError;
-use alloy_evm::revm::context_interface::result::{HaltReason, ResultAndState};
+use alloy_evm::revm::context_interface::result::ResultAndState;
+use op_revm::OpHaltReason as EvmHaltReason;
 
 use super::{StateReads, key::Key};
+use crate::crdt::Scalar;
+use crate::eu::ScalarAdapter;
 use crate::{
     crdt::state::{
-        Tracked,
+        DeltaOp, Tracked,
         op::Operations,
         status::{Status, Tag},
         value::ValueSnapshots,
     },
-    scheduler::ID,
+    planner::scheduler::ID,
 };
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HaltReason {
+    Evm(EvmHaltReason),
+    Custom(String),
+}
+
 /// The EVM output, receipt, and recorded state reads for one transaction.
-pub struct TransactionOutcome<R, H = HaltReason> {
+pub struct JobOutcome<R, H = HaltReason> {
+    pub id: ID,
     pub result_and_state: ResultAndState<H>,
     pub receipt: R,
     pub reads: StateReads, // Combined from opcode inspection and API handlers.
 }
 
-impl<R, H> TransactionOutcome<R, H> {
+impl<R, H> JobOutcome<R, H> {
+    pub fn new(id: ID, result_and_state: ResultAndState<H>, receipt: R, reads: StateReads) -> Self {
+        Self {
+            id,
+            result_and_state,
+            receipt,
+            reads,
+        }
+    }
     /// Merges inspector reads with state changes, keeping the state record for shared keys.
     pub fn merge_records(&self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
@@ -92,12 +110,12 @@ impl<R, H> TransactionOutcome<R, H> {
         records
     }
 
-    /// Collects storage records from the result state.
+    /// Collects storage records from the result state for access and bound checks.
     fn slot_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let mut records = Vec::new();
 
         for (address, account) in &self.result_and_state.state {
-            for (slot, value) in &account.storage {
+            for (slot_key, value) in &account.storage {
                 let mut operations = Operations::default();
 
                 let original = if value.original_value().is_zero() {
@@ -106,23 +124,53 @@ impl<R, H> TransactionOutcome<R, H> {
                     Tag::Stripped
                 };
 
-                let current = if !value.is_changed() {
-                    Tag::Missing
+                let current = if ScalarAdapter::is_value_key(*slot_key) {
+                    operations.deltas.increment();
+                    let slots = ScalarAdapter::new(*slot_key);
+                    let [min, max, base, positive, negative] = [
+                        slots.min,
+                        slots.max,
+                        slots.value,
+                        slots.pos_delta,
+                        slots.neg_delta,
+                    ]
+                    .map(|key| {
+                        account
+                            .storage
+                            .get(&key)
+                            .map(|slot| slot.present_value())
+                            .unwrap_or_default()
+                    });
+                    Status::Value(
+                        Scalar {
+                            min,
+                            max,
+                            value: base,
+                            delta: match positive.cmp(&negative) {
+                                std::cmp::Ordering::Greater => {
+                                    Some(DeltaOp::Add(positive - negative))
+                                }
+                                std::cmp::Ordering::Less => Some(DeltaOp::Sub(negative - positive)),
+                                std::cmp::Ordering::Equal => None,
+                            },
+                        }
+                        .into(),
+                    )
                 } else if value.present_value().is_zero() {
                     operations.removes.increment();
-                    Tag::Deleted
+                    Status::Tag(Tag::Deleted)
                 } else {
                     operations.deltas.increment();
-                    Tag::Stripped
+                    Status::Tag(Tag::Stripped)
                 };
 
                 records.push((
-                    Key::Storage(*address, *slot),
+                    Key::Storage(*address, *slot_key),
                     Tracked {
                         id,
                         value: ValueSnapshots {
                             original: Status::Tag(original),
-                            current: Status::Tag(current),
+                            current,
                         },
                         operations,
                     },
@@ -137,5 +185,5 @@ impl<R, H> TransactionOutcome<R, H> {
 /// A job result tagged with its stable global ID and scheduled location.
 pub struct JobResult<R, H = HaltReason> {
     pub id: ID,
-    pub outcome: Result<TransactionOutcome<R, H>, BlockExecutionError>,
+    pub outcome: Result<JobOutcome<R, H>, BlockExecutionError>,
 }

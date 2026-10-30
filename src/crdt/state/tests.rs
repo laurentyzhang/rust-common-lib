@@ -111,26 +111,6 @@ macro_rules! unsigned_delta_tests {
                 assert_eq!(value.value(), Some(&n(15)));
                 assert_eq!(value.delta, None);
             }
-
-            #[test]
-            fn subtraction_survives_internal_codec_but_storage_omits_pending_delta() {
-                use crate::crdt::codecs::internal::$codec as codec;
-                let mut value = <$crdt>::default();
-                value.add_delta(&DeltaOp::Add(<$number>::MAX)).unwrap();
-                value.apply_delta();
-                let clean = value.clone();
-                value.add_delta(&DeltaOp::Sub(<$number>::MAX)).unwrap();
-                let encoded = codec::encode(&value).unwrap();
-                assert_eq!(encoded[0], 15);
-                let mut decoded = codec::decode(&encoded).unwrap();
-                assert!(decoded == value);
-                decoded.apply_delta();
-                assert_eq!(decoded.value(), Some(&n(0)));
-                assert_eq!(alloy_rlp::encode(&value), alloy_rlp::encode(&clean));
-                let stored = alloy_rlp::decode_exact::<$crdt>(&alloy_rlp::encode(&value)).unwrap();
-                assert!(stored == clean);
-                assert!(codec::decode(&[16]).is_err());
-            }
         }
     };
 }
@@ -169,7 +149,7 @@ mod tracked {
     use super::Tracked;
     use crate::crdt::{
         Scalar,
-        state::{CrdtDelta, Numeric, value::CrdtValue},
+        state::{CrdtDelta, value::CrdtValue},
     };
 
     #[test]
@@ -189,11 +169,10 @@ mod tracked {
 
     #[test]
     fn deleting_preexisting_value_is_permanent() {
-        let value: CrdtValue<'static> =
-            CrdtValue::Numeric(Numeric::U256(std::borrow::Cow::Owned(Scalar::<
-                alloy_primitives::U256,
-            >::default(
-            ))));
+        let value: CrdtValue<'static> = CrdtValue::U256(std::borrow::Cow::Owned(Scalar::<
+            alloy_primitives::U256,
+        >::default(
+        )));
         let mut tracked = Tracked::new_borrowed(&value, 7);
 
         assert!(tracked.remove().is_ok());

@@ -1,17 +1,18 @@
-use strum::IntoEnumIterator;
-use strum_macros::EnumIter;
+use strum_macros::{EnumIter, FromRepr};
 
-use alloy_primitives::Address;
+use crate::namespace::{Namespace, NamespaceCodec};
+
+use alloy_primitives::{Address, U256};
 
 /// Arcology's reserved EVM call targets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumIter)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumIter, FromRepr)]
 #[repr(u8)]
 pub enum ApiAddress {
-    Io = 0x60,
-    Container = 0x84,
-    Scalar = 0x85,
-    Runtime = 0xa0,
-    Multiprocess = 0xb0,
+    Io = Namespace::Io as u8,
+    Container = Namespace::Container as u8,
+    Scalar = Namespace::Scalar as u8,
+    Runtime = Namespace::Runtime as u8,
+    Multiprocess = Namespace::Multiprocess as u8,
 }
 
 impl ApiAddress {
@@ -20,7 +21,12 @@ impl ApiAddress {
     }
 
     pub fn contains(address: u8) -> bool {
-        Self::iter().any(|variant| variant as u8 == address)
+        Self::from_repr(address).is_some()
+    }
+
+    pub fn is_storage_key(key: U256) -> bool {
+        NamespaceCodec::decode(&key.to_be_bytes::<32>())
+            .is_some_and(|(namespace, _)| Self::try_from(namespace).is_ok())
     }
 
     /// Builds the canonical low Arcology address for a one-byte suffix.
@@ -28,5 +34,19 @@ impl ApiAddress {
         let mut bytes = [0_u8; 20];
         bytes[19] = suffix;
         Address::from(bytes)
+    }
+}
+
+impl From<ApiAddress> for Namespace {
+    fn from(api: ApiAddress) -> Self {
+        Self::from_repr(api as u8).expect("API IDs are registered namespaces")
+    }
+}
+
+impl TryFrom<Namespace> for ApiAddress {
+    type Error = ();
+
+    fn try_from(namespace: Namespace) -> Result<Self, Self::Error> {
+        Self::from_repr(namespace as u8).ok_or(())
     }
 }

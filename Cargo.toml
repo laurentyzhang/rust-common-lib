@@ -9,7 +9,6 @@ mdbx = ["dep:reth-db"]
 
 [dependencies]
 im = "15.0.0"
-alloy-rlp = "0.3.16"
 alloy-primitives = { version = "1.6.1", features = ["rlp"] }
 alloy-sol-types = "1.7.3"
 alloy-evm = "0.38.0"
@@ -39,10 +38,6 @@ harness = false
 
 [[bench]]
 name = "accumulator_sorting"
-harness = false
-
-[[bench]]
-name = "conflict_detection"
 harness = false
 
 [[bench]]

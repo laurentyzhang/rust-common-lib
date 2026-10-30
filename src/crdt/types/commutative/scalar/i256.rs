@@ -1,5 +1,5 @@
 use super::{Scalar, Type};
-use crate::crdt::state::{CrdtValue, DeltaOp, Numeric, NumericError, StateError};
+use crate::crdt::state::{CrdtValue, DeltaOp, NumericError, StateError};
 use alloy_primitives::{I256, U256};
 use std::borrow::Cow;
 
@@ -32,6 +32,6 @@ impl Type for I256 {
 
 impl From<Scalar<I256>> for CrdtValue<'static> {
     fn from(value: Scalar<I256>) -> Self {
-        CrdtValue::Numeric(Numeric::I256(Cow::Owned(value)))
+        CrdtValue::I256(Cow::Owned(value))
     }
 }

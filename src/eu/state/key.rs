@@ -1,19 +1,7 @@
-//! A revm `Database` over a `VmStateCache`, which falls back to its `FallbackStore` on a miss.
-
-// use std::collections::HashMap;
-
-// use alloy_evm::revm::bytecode::Bytecode;
-// use alloy_evm::revm::state::{AccountInfo, EvmState};
-// use alloy_evm::revm::{Database, DatabaseCommit};
 use alloy_primitives::{Address, U256};
 
-// use super::account_codec::{AccountDecodeError, AccountInfoCodec};
-// use crate::crdt::state::{DeltaOp, value::CrdtValue};
-// use crate::crdt::{NonComm as CrdtNonComm, Scalar};
-// use crate::eu::{VmStateCache, VmStateCacheWriter};
 use crate::store::{StoreCodec, StoreError};
 
-/// Cache keys for EVM accounts and storage slots.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum Key {
     Account(Address),

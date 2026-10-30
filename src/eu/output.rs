@@ -1,11 +1,12 @@
 use std::cmp::Ordering;
 
 use crate::crdt::state::status::Status;
-use crate::crdt::state::{Numeric, Tracked};
+use crate::crdt::{Scalar, Type, state::Tracked};
+use crate::planner::scheduler::ID;
 
 #[derive(Clone)]
 pub struct ExecutionOutput<K, T> {
-    pub id: u64,
+    pub id: ID,
     pub key: K,
     pub gas_used: u64,
     pub data: T,
@@ -54,21 +55,21 @@ impl<K> Ord for ExecutionOutput<K, Tracked<Status, Status>> {
     }
 }
 
-impl<K> PartialEq for ExecutionOutput<K, Tracked<Status, Numeric<'static>>> {
+impl<K, T: Type> PartialEq for ExecutionOutput<K, Tracked<Status, Scalar<T>>> {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
     }
 }
 
-impl<K> Eq for ExecutionOutput<K, Tracked<Status, Numeric<'static>>> {}
+impl<K, T: Type> Eq for ExecutionOutput<K, Tracked<Status, Scalar<T>>> {}
 
-impl<K> PartialOrd for ExecutionOutput<K, Tracked<Status, Numeric<'static>>> {
+impl<K, T: Type> PartialOrd for ExecutionOutput<K, Tracked<Status, Scalar<T>>> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<K> Ord for ExecutionOutput<K, Tracked<Status, Numeric<'static>>> {
+impl<K, T: Type> Ord for ExecutionOutput<K, Tracked<Status, Scalar<T>>> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.data.compare(&other.data)
     }

@@ -107,7 +107,7 @@ impl ReadRecorder {
                 operations.reads = count.into();
 
                 ExecutionOutput {
-                    id: self.id,
+                    id: crate::planner::scheduler::ID::new(self.id),
                     key,
                     gas_used: 0,
                     data: Tracked {
@@ -157,7 +157,7 @@ mod tests {
         assert!(native.drain().is_empty());
         let reads = transaction.drain();
         assert_eq!(reads.len(), 1);
-        assert_eq!(reads[0].id, 17);
+        assert_eq!(reads[0].id.global, 17);
         assert_eq!(reads[0].data.id, 17);
         assert_eq!(reads[0].key, key);
         assert_eq!(reads[0].data.operations.reads.count(), 3);
@@ -175,7 +175,7 @@ mod tests {
 
         let reads = recorder.drain();
         assert_eq!(reads.len(), 1);
-        assert_eq!(reads[0].id, 2);
+        assert_eq!(reads[0].id.global, 2);
         assert_eq!(reads[0].key, key);
         assert_eq!(reads[0].data.operations.reads.count(), 2);
         assert!(recorder.drain().is_empty());

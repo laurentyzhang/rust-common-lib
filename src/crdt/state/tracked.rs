@@ -1,9 +1,10 @@
 use super::{
-    CrdtDelta, Numeric, StateError, Status, numeric::ComparableNumeric, op::Operations,
-    status::Tag, value::CrdtValue, value::ValueSnapshots,
+    CrdtDelta, StateError, Status, op::Operations, status::Tag, value::CrdtValue,
+    value::ValueSnapshots,
 };
 
 // use crate::crdt::state::status::Tag;
+use crate::crdt::{Scalar, Type};
 use crate::store::traits::StoreError;
 use std::cmp::Ordering;
 
@@ -68,12 +69,12 @@ impl Tracked<Status, Status> {
     }
 }
 
-impl Tracked<Status, Numeric<'static>> {
+impl<T: Type> Tracked<Status, Scalar<T>> {
     pub fn compare(&self, other: &Self) -> Ordering {
-        let left = ComparableNumeric::new(&self.value.current);
-        let right = ComparableNumeric::new(&other.value.current);
-
-        left.compare(&right, || self.id.cmp(&other.id))
+        self.value
+            .current
+            .compare(&other.value.current)
+            .then_with(|| self.id.cmp(&other.id))
     }
 }
 

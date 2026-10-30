@@ -1,14 +1,12 @@
 //! Shared CRDT values, deltas, and access tracking.
 
 pub mod error;
-pub mod numeric;
 pub mod op;
 pub mod status;
 pub mod tracked;
 pub mod value;
 
 pub use error::{NumericError, StateError};
-pub use numeric::Numeric;
 pub use status::Status;
 pub use tracked::Tracked;
 pub use value::{CrdtDelta, CrdtValue, DeltaOp};

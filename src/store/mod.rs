@@ -5,7 +5,7 @@ pub mod mdbx;
 pub mod traits;
 pub mod writer;
 
-pub use codec::{CrdtValueCodec, IdentityCodec, StoreCodec};
+pub use codec::{IdentityCodec, StoreCodec};
 #[cfg(feature = "mdbx")]
 pub use mdbx::MdbxStore;
 pub use traits::{FallbackStore, StoreError};

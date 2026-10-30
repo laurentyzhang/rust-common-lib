@@ -1,10 +1,10 @@
-use super::super::version::VERSION;
 use super::{CallHandler, U256Handler, u256::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::eu::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
     ExitStatus, KeyCodec, ReadRecorder, ScalarAdapter, key::Key,
 };
+use crate::namespace::codec::VERSION;
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
     revm::{
@@ -317,7 +317,7 @@ fn only_get_records_the_value_and_delta_observation() {
             .iter()
             .find(|read| read.key == Key::Storage(owner, *slot))
             .unwrap();
-        assert_eq!(read.id, 55);
+        assert_eq!(read.id.global, 55);
         assert_eq!(read.data.operations.reads.count(), 2);
     }
 }
@@ -378,7 +378,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
                 .iter()
                 .find(|read| read.key == Key::Storage(owner, *slot))
                 .unwrap();
-            assert_eq!(read.id, id);
+            assert_eq!(read.id.global, id);
             assert_eq!(read.data.id, id);
             assert_eq!(read.data.operations.reads.count(), 1);
         }
@@ -400,7 +400,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     .unwrap();
     let reads = left.drain_reads();
     assert_eq!(reads.len(), 3);
-    assert!(reads.iter().all(|read| read.id == 99));
+    assert!(reads.iter().all(|read| read.id.global == 99));
     for slot in &[
         slots(second).value,
         slots(second).pos_delta,
@@ -480,7 +480,11 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             U256::from(if exit == 0xf3 { 0 } else { 5 })
         );
         let reads = evm.drain_reads();
-        assert!(reads.iter().all(|read| read.id == 33 && read.data.id == 33));
+        assert!(
+            reads
+                .iter()
+                .all(|read| read.id.global == 33 && read.data.id == 33)
+        );
         let storage: Vec<_> = reads
             .iter()
             .filter(|read| matches!(read.key, Key::Storage(..)))

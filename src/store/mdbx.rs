@@ -135,25 +135,14 @@ mod tests {
     }
 
     #[test]
-    fn evm_key_and_crdt_value_round_trip() {
-        use crate::{
-            crdt::{
-                Scalar,
-                state::{CrdtValue, Numeric},
-            },
-            eu::key::{Key, KeyCodec},
-            store::CrdtValueCodec,
-        };
+    fn evm_key_and_raw_value_round_trip() {
+        use crate::eu::key::{Key, KeyCodec};
 
         let directory = tempfile::tempdir().unwrap();
-        let mut mdbx: MdbxStore<Key, CrdtValue<'static>, _, _> =
-            MdbxStore::open(directory.path(), KeyCodec, CrdtValueCodec).unwrap();
+        let mut mdbx: MdbxStore<Key, Vec<u8>, _, _> =
+            MdbxStore::open(directory.path(), KeyCodec, IdentityCodec).unwrap();
         let key = Key::Account(alloy_primitives::Address::repeat_byte(0x11));
-        let value = CrdtValue::Numeric(Numeric::U256(std::borrow::Cow::Owned(Scalar {
-            value: alloy_primitives::U256::from(42),
-            ..Scalar::<alloy_primitives::U256>::default()
-        })));
-
+        let value = vec![42];
         mdbx.flush(vec![(key.clone(), value.clone())]).unwrap();
         assert_eq!(mdbx.get(&key).unwrap(), Some(value));
     }

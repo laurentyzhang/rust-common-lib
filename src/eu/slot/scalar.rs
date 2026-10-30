@@ -5,7 +5,8 @@ use alloy_primitives::{Address, U256};
 use super::super::state::SlotStorage;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::eu::{ApiAddress, CallHookError, KeyCodec, key::Key};
+use crate::eu::{CallHookError, KeyCodec};
+use crate::namespace::Namespace;
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]
@@ -32,10 +33,39 @@ pub struct ScalarAdapter {
 // Read individual fields using any recognized field key of the scalar instance.
 // Readers return None for invalid keys, backend failures, or values outside the requested type.
 impl ScalarAdapter {
+    pub fn is_scalar_key(key: U256) -> bool {
+        match KeyCodec::decode(key) {
+            Some((namespace, field, _)) => {
+                namespace == Namespace::Scalar && Field::from_repr(field).is_some()
+            }
+            None => false,
+        }
+    }
+
+    /// Checks if the given key corresponds to a delta field of a scalar.
+    pub fn is_value_key(key: U256) -> bool {
+        match KeyCodec::decode(key) {
+            Some((namespace, field, _)) => {
+                namespace == Namespace::Scalar
+                    && matches!(Field::from_repr(field), Some(Field::Value))
+            }
+            None => false,
+        }
+    }
+
+    pub fn has(key: U256) -> bool {
+        match KeyCodec::decode(key) {
+            Some((namespace, field, _)) => {
+                namespace == Namespace::Scalar && Field::from_repr(field).is_some()
+            }
+            None => false,
+        }
+    }
+
     /// Validates the scalar API and field ID, then derives all five field keys.
     pub(in crate::eu) fn parse(key: U256) -> Option<Self> {
-        let (api, field, _) = KeyCodec::decode(key)?;
-        if api != ApiAddress::Scalar || Field::from_repr(field).is_none() {
+        let (namespace, field, _) = KeyCodec::decode(key)?;
+        if namespace != Namespace::Scalar || Field::from_repr(field).is_none() {
             return None;
         }
         Some(Self::new(key))

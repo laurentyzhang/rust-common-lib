@@ -4,6 +4,7 @@ use rayon::prelude::*;
 
 use super::StateDb;
 use crate::eu::{ApiAddress, Field, KeyCodec};
+use crate::namespace::Namespace;
 
 impl StateDb {
     pub fn merge(&mut self, other: Self) {
@@ -41,7 +42,7 @@ impl StateDb {
                 }
 
                 for (key, new_value) in new_acct.storage {
-                    if !KeyCodec::is_api_key(key) || !old_acct.storage.contains_key(&key) {
+                    if !ApiAddress::is_storage_key(key) || !old_acct.storage.contains_key(&key) {
                         old_acct.storage.insert(key, new_value);
                     } else {
                         Self::handle_api_slot(&mut old_acct.storage, key, new_value);
@@ -60,7 +61,7 @@ impl StateDb {
     /// Dispatches CRDT delta merging by API type.
     fn handle_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
         match KeyCodec::decode(key) {
-            Some((ApiAddress::Scalar, field, _))
+            Some((Namespace::Scalar, field, _))
                 if field == Field::PosDelta as u8 || field == Field::NegDelta as u8 =>
             {
                 // Apply only this state's change to the delta magnitude.

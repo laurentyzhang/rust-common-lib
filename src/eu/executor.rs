@@ -1,9 +1,7 @@
 //! Arcology's parallel execution worker set.
 
-use alloy_evm::block::{
-    BlockExecutionError, BlockExecutor, BlockExecutorFactory, ExecutableTx, StateDB, TxResult,
-};
-use alloy_evm::{EvmEnv, EvmFactory};
+use alloy_evm::block::{BlockExecutionError, BlockExecutorFactory, ExecutableTx, StateDB};
+use alloy_evm::{Database, EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
 use alloy_primitives::Address;
 use rayon::{ThreadPool, prelude::*};
@@ -14,17 +12,15 @@ use alloy_evm::revm::{
 };
 
 use super::{
-    ArcologyEvmFactory, ReadRecorder, StatDbCommitter,
-    key::Key,
-    op::backend::PostExecEvmFactoryAdapter,
-    outcome::{JobResult, TransactionOutcome},
+    ArcologyEvmFactory, ReadRecorder, StatDbCommitter, key::Key,
+    op::backend::PostExecEvmFactoryAdapter, outcome::JobOutcome, output::ExecutionOutput,
 };
-use crate::{
-    eu::output::ExecutionOutput,
-    resolver::ConflictChecker,
-    scheduler::{Generation, ID, Job, JobSequence, Scheduler},
-    store::traits::Committer,
+use crate::planner::{
+    Planner,
+    resolver::{ConflictChecker, ConflictResult},
+    scheduler::{Generation, ID, Job, JobSequence},
 };
+use crate::store::traits::Committer;
 
 /// Settings shared by every worker of a block.
 pub struct ParaBlockConfig<F: BlockExecutorFactory> {
@@ -44,9 +40,9 @@ impl ArcologyParaBlockExecutor {
     /// receipt's cumulative gas as the running total up to and including its tx.
     /// Failed transactions don't count toward the total.
     pub fn finish_block<Receipt, HaltReason>(
-        mut results: Vec<JobResult<Receipt, HaltReason>>,
+        mut results: Vec<JobOutcome<Receipt, HaltReason>>,
         set_cumulative: &impl Fn(&mut Receipt, u64),
-    ) -> Vec<JobResult<Receipt, HaltReason>> {
+    ) -> Vec<JobOutcome<Receipt, HaltReason>> {
         // Please note that the results are sorted by the original transaction index.
         // So the execution order is NOT necessarily the same as the original order.
         results.sort_by_key(|result| result.id);
@@ -57,15 +53,13 @@ impl ArcologyParaBlockExecutor {
     /// Writes the running gas total into each successful receipt, in the given order,
     /// and returns the total.
     pub fn accumulate_gas<Receipt, HaltReason>(
-        results: &mut [JobResult<Receipt, HaltReason>],
+        results: &mut [JobOutcome<Receipt, HaltReason>],
         set_cumulative: &impl Fn(&mut Receipt, u64),
     ) -> u64 {
         let mut cumulative = 0;
         for result in results {
-            if let Ok(execution) = &mut result.outcome {
-                cumulative += execution.result_and_state.result.tx_gas_used();
-                set_cumulative(&mut execution.receipt, cumulative);
-            }
+            cumulative += result.result_and_state.result.tx_gas_used();
+            set_cumulative(&mut result.receipt, cumulative);
         }
         cumulative
     }
@@ -99,18 +93,24 @@ impl ArcologyParaBlockExecutor {
     }
 
     /// Executes a block: schedules the ordered transactions, runs the generations in turn
-    /// and returns the results in block order with cumulative gas applied.
-    pub fn execute_block<F, DB, TxEnv, R>(
+    /// and returns ordered outcomes and each generation's conflict/history result.
+    pub fn execute_block<F, DB, PDB, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
-        make_db: &(impl Fn(&EvmState) -> DB + Sync),
-        scheduler: &impl Scheduler<(TxEnv, R)>,
-        resolver: &mut ConflictChecker<Key>,
-        accumulator: &mut StatDbCommitter,
+        make_db: &(impl Fn(&dyn Database) -> DB + Sync),
+        fallback: &dyn Database,
+        planner: &mut Planner<PDB, Key>,
+        committer: &mut StatDbCommitter,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
-    ) -> Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
+    ) -> Result<
+        (
+            Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
+            Vec<ConflictResult<Key>>,
+        ),
+        BlockExecutionError,
+    >
     where
         F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>
             + Send
@@ -119,6 +119,7 @@ impl ArcologyParaBlockExecutor {
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         DB: StateDB,
+        PDB: Database,
         F::Receipt: Clone + Send,
         TxEnv: Transaction,
         (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
@@ -130,105 +131,113 @@ impl ArcologyParaBlockExecutor {
             .map(|(index, tx)| Job::new(ID::new(index as u64), tx));
 
         let mut results = Vec::new();
-        for generation in scheduler.schedule(jobs) {
-            let mut generation_results = Self::run_generation(
+        let mut resolutions = Vec::new();
+        for generation in planner.plan(jobs)? {
+            let (generation_results, conflicts) = Self::run_generation(
                 factory,
                 config,
                 pool,
                 make_db,
-                accumulator.inner(),
+                committer,
                 generation,
-            );
-            Self::resolve_generation(&mut generation_results, resolver, accumulator);
+                &mut planner.checker,
+            )?;
+            resolutions.push(planner.resolve(conflicts)?);
             results.extend(generation_results);
         }
 
         // Finish the block by restoring block order and applying cumulative gas.
-        Self::finish_block(results, set_cumulative)
+        Ok((Self::finish_block(results, set_cumulative), resolutions))
     }
 
-    /// Resolves one generation and merges only accepted transaction states.
-    fn resolve_generation<Receipt, HaltReason>(
-        results: &[JobResult<Receipt, HaltReason>],
-        resolver: &mut ConflictChecker<Key>,
-        accumulator: &mut StatDbCommitter,
-    ) {
-        for result in results {
-            let Ok(outcome) = &result.outcome else {
-                continue;
-            };
-            let id = result.id.global;
+    /// Executes independent sequences in parallel, keeping each sequence intact.
+    /// Checks conflicts and merges accepted results into the committer's working state.
+    fn run_generation<F, DB, Tx>(
+        factory: &F,
+        config: &ParaBlockConfig<F>,
+        pool: &ThreadPool,
+        statedb: &dyn Database,
+        committer: &mut StatDbCommitter,
+        generation: Generation<Tx>,
+        checker: &mut ConflictChecker<Key>,
+    ) -> Result<
+        (
+            Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
+            ConflictResult<Key>,
+        ),
+        BlockExecutionError,
+    >
+    where
+        F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>
+            + Send
+            + Sync,
+        for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
+        <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
+        <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
+        DB: StateDB,
+        F::Receipt: Clone + Send,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
+    {
+        // let state = committer.inner();
+        // Avoid dispatch overhead when there is no parallel work.
+        let results = if generation.sequences.len() <= 1 || pool.current_num_threads() == 1 {
+            let mut results = Vec::new();
+            for sequence in generation.sequences {
+                results.extend(Self::run_sequence(
+                    factory, config, make_db, state, sequence,
+                )?);
+            }
+            results
+        } else {
+            // Indexed collection preserves plan order across parallel workers.
+            let results: Result<Vec<_>, BlockExecutionError> = pool.install(|| {
+                generation
+                    .sequences
+                    .into_par_iter()
+                    .map(|sequence| Self::run_sequence(factory, config, make_db, statedb, sequence))
+                    .collect()
+            });
+            results?.into_iter().flatten().collect()
+        };
+
+        let mut empty_ids = Vec::new();
+        for outcome in &results {
+            let id = outcome.id.global;
+            committer.buffer(id, outcome.result_and_state.state.clone());
             let gas_used = outcome.result_and_state.result.tx_gas_used();
-            resolver.import(
-                outcome
-                    .merge_records(id)
+            let records = outcome.merge_records(id);
+            if records.is_empty() {
+                empty_ids.push(id);
+            }
+            checker.import(
+                records
                     .into_iter()
                     .map(|(key, data)| ExecutionOutput {
-                        id,
+                        id: outcome.id,
                         key,
                         gas_used,
                         data,
                     })
                     .collect(),
             );
-            accumulator.buffer(id, outcome.result_and_state.state.clone());
         }
-
-        let conflicts = resolver.check_conflicts();
-        accumulator.stage(conflicts.committable.into_iter().collect());
-        accumulator.flush();
+        let mut conflicts = checker.check_conflicts();
+        conflicts.committable.extend(empty_ids);
+        committer.stage(conflicts.committable.iter().copied().collect());
+        committer.flush();
+        Ok((results, conflicts))
     }
 
-    /// Executes independent sequences in parallel, keeping each sequence intact.
-    /// Returns after all sequences finish; block ordering and gas are finalized separately.
-    fn run_generation<F, DB, Tx>(
-        factory: &F,
-        config: &ParaBlockConfig<F>,
-        pool: &ThreadPool,
-        make_db: &(impl Fn(&EvmState) -> DB + Sync),
-        state: &EvmState,
-        generation: Generation<Tx>,
-    ) -> Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
-    where
-        F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>
-            + Send
-            + Sync,
-        for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
-        <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
-        <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
-        DB: StateDB,
-        F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
-    {
-        // Avoid dispatch overhead when there is no parallel work.
-        if generation.sequences.len() <= 1 || pool.current_num_threads() == 1 {
-            return generation
-                .sequences
-                .into_iter()
-                .flat_map(|sequence| Self::run_sequence(factory, config, make_db, state, sequence))
-                .collect();
-        }
-
-        // Workers take whole sequences as they become available. Indexed collection
-        // preserves plan order without coupling execution to fixed transaction chunks.
-        let results: Vec<_> = pool.install(|| {
-            generation
-                .sequences
-                .into_par_iter()
-                .map(|sequence| Self::run_sequence(factory, config, make_db, state, sequence))
-                .collect()
-        });
-        results.into_iter().flatten().collect()
-    }
-
-    /// Reuses one executor so committed transaction changes reach the next job.
+    /// Supplies a private database and runs one scheduled sequence.
     fn run_sequence<F, DB, Tx>(
         factory: &F,
         config: &ParaBlockConfig<F>,
-        make_db: &(impl Fn(&EvmState) -> DB + Sync),
-        state: &EvmState,
+        make_db: &(impl Fn() -> DB + Sync),
         sequence: JobSequence<Tx>,
-    ) -> Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>
+    ) -> Result<
+        Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
+        BlockExecutionError,
+    >
     where
         F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>
             + Send
@@ -240,57 +249,28 @@ impl ArcologyParaBlockExecutor {
         F::Receipt: Clone + Send,
         Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
     {
-        let Some(first) = sequence.jobs.first() else {
-            return Vec::new();
-        };
-        let mut db = make_db(state);
-
+        if sequence.jobs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = make_db();
         if let Err(error) = Self::offset_nonces(&mut db, &sequence) {
-            return sequence
-                .jobs
-                .into_iter()
-                .map(|job| JobResult {
-                    id: job.id,
-                    outcome: Err(BlockExecutionError::msg(format!(
-                        "sequence initialization failed: {error}"
-                    ))),
-                })
-                .collect();
+            return Err(BlockExecutionError::msg(format!(
+                "sequence initialization failed: {error}"
+            )));
         }
-
-        let evm = factory.evm_factory().create_evm_with_inspector(
+        JobSequence {
             db,
-            config.env.clone(),
-            ReadRecorder::new(first.id.global),
-        );
-
-        let mut executor = factory.create_executor(evm, config.ctx.clone());
-        let mut results = Vec::with_capacity(sequence.jobs.len());
-        for job in sequence.jobs {
-            let id = job.id;
-            // Reads and their IDs belong to this transaction, even after a failed job.
-            executor.evm_mut().reset_reads(id.global);
-            let outcome = (|| {
-                let mut result_and_state = None;
-                // This commits into the sequence's private DB before the next job starts.
-                executor.execute_transaction_with_result_closure(job.tx, |result| {
-                    result_and_state = Some(result.result().clone());
-                })?;
-                let receipt = executor
-                    .receipts()
-                    .last()
-                    .cloned()
-                    .expect("a committed transaction has a receipt");
-                let merged_reads = executor.evm_mut().drain_reads();
-                Ok(TransactionOutcome {
-                    result_and_state: result_and_state
-                        .expect("a successful execution has a result"),
-                    receipt,
-                    reads: merged_reads,
-                })
-            })();
-            results.push(JobResult { id, outcome });
+            jobs: sequence.jobs,
+            nonce_offsets: Vec::new(),
         }
-        results
+        .run(
+            factory,
+            config.env.clone(),
+            config.ctx.clone(),
+            sequence.nonce_offsets,
+        )
     }
 }
+
+#[cfg(test)]
+mod generation_tests;
