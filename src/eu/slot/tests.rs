@@ -1,8 +1,7 @@
-use super::super::state::SlotStorage;
+use super::super::state::ApiStore;
 use super::{Field, ScalarAdapter};
 use crate::crdt::{self, state::DeltaOp};
-use crate::eu::{ApiAddress, KeyCodec};
-use alloy_evm::revm::state::EvmStorage;
+use crate::eu::{ApiAddress, KeyCodec, StateDb};
 use alloy_primitives::{Address, I256, U256};
 
 #[test]
@@ -10,7 +9,7 @@ fn u256_values_and_full_width_deltas_round_trip() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
-    let mut storage = EvmStorage::default();
+    let mut storage = StateDb::default();
     for (value, delta) in [
         (U256::ZERO, Some(DeltaOp::Add(U256::MAX))),
         (U256::MAX, Some(DeltaOp::Sub(U256::MAX))),
@@ -46,7 +45,7 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
-    let mut storage = EvmStorage::default();
+    let mut storage = StateDb::default();
     for (value, delta) in [
         (I256::MIN, Some(DeltaOp::Add(U256::MAX))),
         (I256::MAX, Some(DeltaOp::Sub(U256::MAX))),
@@ -85,7 +84,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
-    let mut storage = EvmStorage::default();
+    let mut storage = StateDb::default();
     slots
         .store(&mut storage, owner, &crdt::Scalar::<U256>::default())
         .unwrap();
@@ -127,7 +126,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
-    let mut storage = EvmStorage::default();
+    let mut storage = StateDb::default();
     for (value, delta, expected) in [
         (
             U256::ZERO,
@@ -173,7 +172,7 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     let owner = Address::ZERO;
     let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
-    let mut storage = EvmStorage::default();
+    let mut storage = StateDb::default();
     let state = crdt::Scalar::<U256> {
         value: U256::from(50),
         ..Default::default()
@@ -230,7 +229,7 @@ fn invalid_pending_arithmetic_does_not_write_any_slots() {
         (U256::MAX, DeltaOp::Add(U256::from(1))),
         (U256::ZERO, DeltaOp::Sub(U256::from(1))),
     ] {
-        let mut storage = EvmStorage::default();
+        let mut storage = StateDb::default();
         let state = crdt::Scalar::<U256> {
             value,
             delta: Some(delta),
@@ -241,6 +240,6 @@ fn invalid_pending_arithmetic_does_not_write_any_slots() {
                 .store(&mut storage, Address::ZERO, &state)
                 .is_err()
         );
-        assert!(storage.is_empty());
+        assert!(storage.inner().is_empty());
     }
 }

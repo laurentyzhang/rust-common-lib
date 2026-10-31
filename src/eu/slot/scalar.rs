@@ -2,7 +2,7 @@
 
 use alloy_primitives::{Address, U256};
 
-use super::super::state::SlotStorage;
+use super::super::state::ApiStore;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
 use crate::eu::{CallHookError, KeyCodec};
@@ -33,15 +33,6 @@ pub struct ScalarAdapter {
 // Read individual fields using any recognized field key of the scalar instance.
 // Readers return None for invalid keys, backend failures, or values outside the requested type.
 impl ScalarAdapter {
-    pub fn is_scalar_key(key: U256) -> bool {
-        match KeyCodec::decode(key) {
-            Some((namespace, field, _)) => {
-                namespace == Namespace::Scalar && Field::from_repr(field).is_some()
-            }
-            None => false,
-        }
-    }
-
     /// Checks if the given key corresponds to a delta field of a scalar.
     pub fn is_value_key(key: U256) -> bool {
         match KeyCodec::decode(key) {
@@ -51,66 +42,6 @@ impl ScalarAdapter {
             }
             None => false,
         }
-    }
-
-    pub fn has(key: U256) -> bool {
-        match KeyCodec::decode(key) {
-            Some((namespace, field, _)) => {
-                namespace == Namespace::Scalar && Field::from_repr(field).is_some()
-            }
-            None => false,
-        }
-    }
-
-    /// Validates the scalar API and field ID, then derives all five field keys.
-    pub(in crate::eu) fn parse(key: U256) -> Option<Self> {
-        let (namespace, field, _) = KeyCodec::decode(key)?;
-        if namespace != Namespace::Scalar || Field::from_repr(field).is_none() {
-            return None;
-        }
-        Some(Self::new(key))
-    }
-
-    /// Reads the lower bound for the scalar identified by `key` under `owner`.
-    pub fn read_min<T, S>(storage: &mut S, owner: Address, key: U256) -> Option<T>
-    where
-        T: AbiCodec,
-        S: SlotStorage,
-    {
-        let slots = Self::parse(key)?;
-        T::from_word(storage.read(owner, slots.min).ok()?)
-    }
-
-    /// Reads the upper bound for the scalar identified by `key` under `owner`.
-    pub fn read_max<T, S>(storage: &mut S, owner: Address, key: U256) -> Option<T>
-    where
-        T: AbiCodec,
-        S: SlotStorage,
-    {
-        let slots = Self::parse(key)?;
-        T::from_word(storage.read(owner, slots.max).ok()?)
-    }
-
-    /// Reads the base value without applying the pending delta.
-    pub fn read_value<T, S>(storage: &mut S, owner: Address, key: U256) -> Option<T>
-    where
-        T: AbiCodec,
-        S: SlotStorage,
-    {
-        let slots = Self::parse(key)?;
-        T::from_word(storage.read(owner, slots.value).ok()?)
-    }
-
-    /// Reads the positive and negative delta magnitudes as raw words, in that order.
-    pub fn read_delta<S>(storage: &mut S, owner: Address, key: U256) -> Option<(U256, U256)>
-    where
-        S: SlotStorage,
-    {
-        let slots = Self::parse(key)?;
-        Some((
-            storage.read(owner, slots.pos_delta).ok()?,
-            storage.read(owner, slots.neg_delta).ok()?,
-        ))
     }
 }
 
@@ -138,7 +69,7 @@ impl ScalarAdapter {
     where
         T: AbiCodec,
         T::Magnitude: AbiCodec,
-        S: SlotStorage,
+        S: ApiStore,
         S::Error: std::fmt::Display,
     {
         // Read all five scalar fields from storage into a temporary array.
@@ -196,7 +127,7 @@ impl ScalarAdapter {
     where
         T: AbiCodec,
         T::Magnitude: AbiCodec,
-        S: SlotStorage,
+        S: ApiStore,
         S::Error: std::fmt::Display,
     {
         let (pos_delta, neg_delta) = match state.delta {

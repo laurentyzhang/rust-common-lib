@@ -7,4 +7,4 @@ mod tests;
 
 pub use evm::state::{StatDbCommitter, StateDb};
 pub use traits::AccountStorage;
-pub(in crate::eu) use traits::SlotStorage;
+pub(in crate::eu) use traits::ApiStore;

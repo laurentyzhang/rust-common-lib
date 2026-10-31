@@ -1,19 +1,21 @@
-use alloy_evm::revm::state::{Account, EvmState};
+use alloy_evm::revm::state::{Account, AccountInfo, EvmState};
 use alloy_primitives::{Address, U256};
 
 pub trait AccountStorage {
-    /// Return the account at the requested address.
-    fn get(&self, address: &Address) -> Option<&Account>;
+    type Error;
 
-    /// Iterate over the accounts.
+    /// Read account information from local state or the fallback.
+    fn get(&self, address: &Address) -> Result<Option<AccountInfo>, Self::Error>;
+
+    /// Iterate over locally stored accounts.
     fn accounts(&self) -> impl Iterator<Item = &Account>;
 
-    /// Return the owned state for persistence.
+    /// Return the owned local state for persistence.
     fn into_evm_state(self) -> EvmState;
 }
 
-/// Reads and writes account-scoped EVM storage slots.
-pub(in crate::eu) trait SlotStorage {
+/// Trait for reading and writing key-value pairs for the APIs.
+pub(in crate::eu) trait ApiStore {
     type Error;
 
     fn read(&mut self, owner: Address, key: U256) -> Result<U256, Self::Error>;

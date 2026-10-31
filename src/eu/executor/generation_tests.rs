@@ -2,7 +2,10 @@ use super::*;
 use crate::eu::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
 use alloy_evm::{
     FromRecoveredTx, RecoveredTx,
-    revm::state::{Account, AccountInfo, Bytecode, EvmState},
+    revm::{
+        Database, DatabaseRef,
+        state::{Account, AccountInfo, Bytecode, EvmState},
+    },
 };
 use alloy_op_evm::block::OpAlloyReceiptBuilder;
 use alloy_op_hardforks::OpChainHardforks;
@@ -10,6 +13,7 @@ use alloy_primitives::{Address, Bytes, TxKind, U256};
 use op_alloy::consensus::{OpTxEnvelope, TxDeposit};
 use op_revm::OpSpecId;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 struct Recovered {
     tx: OpTxEnvelope,
@@ -44,6 +48,54 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 }
 
 #[test]
+fn sequence_nonce_offsets_are_local_and_checked() {
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
+    );
+    let mut env = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::BEDROCK;
+    for (nonce, offset, expected) in [(7, 0, Some(8)), (7, 2, Some(10)), (u64::MAX, 1, None)] {
+        let job = job(1, Address::repeat_byte(0x99));
+        let caller = Address::from(job.sender);
+        let fallback = StateDb::new(EvmState::from_iter([(
+            caller,
+            Account::from(AccountInfo {
+                nonce,
+                ..Default::default()
+            }),
+        )]));
+        let mut sequence = JobSequence {
+            jobs: vec![job],
+            nonce_offsets: vec![Default::default()],
+        };
+        sequence.nonce_offsets[0].sender = caller.into_array();
+        sequence.nonce_offsets[0].offset = offset;
+        let result = sequence.run(
+            &factory,
+            &fallback,
+            env.clone(),
+            OpBlockExecutionCtx::default(),
+        );
+        if let Some(expected) = expected {
+            let outcomes = result.unwrap();
+            assert!(outcomes[0].result_and_state.result.is_success());
+            assert_eq!(
+                outcomes[0].result_and_state.state[&caller].info.nonce,
+                expected
+            );
+        } else {
+            let error = result
+                .err()
+                .expect("nonce overflow must reject the sequence");
+            assert!(error.to_string().contains("sequence sender nonce overflow"));
+        }
+        assert_eq!(fallback.basic_ref(caller).unwrap().unwrap().nonce, nonce);
+    }
+}
+
+#[test]
 fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -70,6 +122,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         }),
     )]);
 
+    let persistent = Arc::new(StateDb::new(state.clone()));
     for workers in [1, 2] {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(workers)
@@ -81,7 +134,6 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             sequences: [1, 2]
                 .into_iter()
                 .map(|id| JobSequence {
-                    db: (),
                     jobs: vec![job(id, contract)],
                     nonce_offsets: Vec::new(),
                 })
@@ -91,7 +143,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &factory,
             &config,
             &pool,
-            &|state| StateDb::new(state.clone()),
+            &persistent,
             &mut committer,
             generation,
             &mut checker,
@@ -130,16 +182,16 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
 
         let generation = Generation {
             sequences: vec![JobSequence {
-                db: (),
                 jobs: vec![job(3, contract)],
                 nonce_offsets: Vec::new(),
             }],
         };
+        let fallback = Arc::new(StateDb::new(committer.inner().clone()));
         let (outcomes, result) = ArcologyParaBlockExecutor::run_generation(
             &factory,
             &config,
             &pool,
-            &|state| StateDb::new(state.clone()),
+            &fallback,
             &mut committer,
             generation,
             &mut checker,
@@ -165,7 +217,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &config,
             &pool,
             &|_, _| {},
-            &|state| StateDb::new(state.clone()),
+            &persistent,
             &mut planner,
             &mut committer,
             [job(1, contract).tx, job(2, contract).tx],
@@ -181,5 +233,9 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             U256::from(1)
         );
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
+        assert_eq!(
+            persistent.storage_ref(contract, U256::ZERO).unwrap(),
+            U256::ZERO
+        );
     }
 }

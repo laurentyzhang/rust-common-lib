@@ -1,6 +1,13 @@
 use super::super::sender::Sender;
-use alloy_evm::revm::context_interface::Transaction;
+use alloy_evm::{
+    Evm,
+    block::{BlockExecutionError, BlockExecutor, ExecutableTx, StateDB, TxResult},
+    revm::context_interface::Transaction,
+};
 use alloy_primitives::{Address, TxKind};
+use std::ops::DerefMut;
+
+use crate::eu::{ArcologyEvm, JobOutcome, ReadRecorder};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ID {
@@ -43,6 +50,39 @@ pub struct Job<Tx> {
     /// Bypass this transaction's callee restrictions, while respecting another
     /// transaction's isolated execution. Deferral remains profile-driven.
     pub fully_parallelizable: bool,
+}
+
+impl<Tx> Job<Tx> {
+    /// Executes one transaction using the sequence's existing executor and database.
+    pub fn run<E, DB>(
+        self,
+        executor: &mut E,
+    ) -> Result<JobOutcome<E::Receipt, <E::Evm as Evm>::HaltReason>, BlockExecutionError>
+    where
+        E: BlockExecutor,
+        E::Evm: DerefMut<Target = ArcologyEvm<DB, ReadRecorder>>,
+        E::Receipt: Clone,
+        DB: StateDB,
+        Tx: ExecutableTx<E>,
+    {
+        executor.evm_mut().reset_reads(self.id.global);
+        let mut result_and_state = None;
+        executor.execute_transaction_with_result_closure(self.tx, |result| {
+            result_and_state = Some(result.result().clone());
+        })?;
+        let receipt = executor
+            .receipts()
+            .last()
+            .cloned()
+            .expect("a committed transaction has a receipt");
+        let reads = executor.evm_mut().drain_reads();
+        Ok(JobOutcome::new(
+            self.id,
+            result_and_state.expect("a successful execution has a result"),
+            receipt,
+            reads,
+        ))
+    }
 }
 
 impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {

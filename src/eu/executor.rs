@@ -1,18 +1,14 @@
 //! Arcology's parallel execution worker set.
 
-use alloy_evm::block::{BlockExecutionError, BlockExecutorFactory, ExecutableTx, StateDB};
+use alloy_evm::block::{BlockExecutionError, BlockExecutorFactory, ExecutableTx};
 use alloy_evm::{Database, EvmEnv, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
-use alloy_primitives::Address;
 use rayon::{ThreadPool, prelude::*};
 
-use alloy_evm::revm::{
-    context_interface::Transaction,
-    state::{Account, EvmState},
-};
+use alloy_evm::revm::{DatabaseRef, context_interface::Transaction};
 
 use super::{
-    ArcologyEvmFactory, ReadRecorder, StatDbCommitter, key::Key,
+    ArcologyEvmFactory, ReadRecorder, StatDbCommitter, StateDb, key::Key,
     op::backend::PostExecEvmFactoryAdapter, outcome::JobOutcome, output::ExecutionOutput,
 };
 use crate::planner::{
@@ -63,44 +59,14 @@ impl ArcologyParaBlockExecutor {
         }
         cumulative
     }
-    /// Applies every sender nonce offset with one database commit.
-    fn offset_nonces<DB: StateDB, Tx>(
-        db: &mut DB,
-        sequence: &JobSequence<Tx>,
-    ) -> Result<(), BlockExecutionError> {
-        let mut state = EvmState::default();
-        for entry in &sequence.nonce_offsets {
-            if entry.offset == 0 {
-                continue;
-            }
-
-            let address = Address::from(entry.sender);
-            let mut info = db
-                .basic(address)
-                .map_err(BlockExecutionError::other)?
-                .unwrap_or_default();
-            info.nonce = info
-                .nonce
-                .checked_add(entry.offset)
-                .ok_or_else(|| BlockExecutionError::msg("sequence sender nonce overflow"))?;
-            state.insert(address, Account::from(info).with_touched_mark());
-        }
-
-        if !state.is_empty() {
-            db.commit(state);
-        }
-        Ok(())
-    }
-
     /// Executes a block: schedules the ordered transactions, runs the generations in turn
     /// and returns ordered outcomes and each generation's conflict/history result.
-    pub fn execute_block<F, DB, PDB, TxEnv, R>(
+    pub fn execute_block<'db, F, PDB, Fallback, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
-        make_db: &(impl Fn(&dyn Database) -> DB + Sync),
-        fallback: &dyn Database,
+        fallback: &'db Fallback,
         planner: &mut Planner<PDB, Key>,
         committer: &mut StatDbCommitter,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
@@ -118,11 +84,12 @@ impl ArcologyParaBlockExecutor {
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
-        DB: StateDB,
         PDB: Database,
+        Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send,
         TxEnv: Transaction,
-        (TxEnv, R): Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
+        (TxEnv, R):
+            Send + for<'a> ExecutableTx<F::Executor<'a, StateDb<&'db Fallback>, ReadRecorder>>,
     {
         // Convert the incoming transactions into jobs with assigned IDs.
         let jobs = transactions
@@ -137,7 +104,7 @@ impl ArcologyParaBlockExecutor {
                 factory,
                 config,
                 pool,
-                make_db,
+                fallback,
                 committer,
                 generation,
                 &mut planner.checker,
@@ -152,11 +119,11 @@ impl ArcologyParaBlockExecutor {
 
     /// Executes independent sequences in parallel, keeping each sequence intact.
     /// Checks conflicts and merges accepted results into the committer's working state.
-    fn run_generation<F, DB, Tx>(
+    fn run_generation<'db, F, Fallback, Tx>(
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
-        statedb: &dyn Database,
+        fallback: &'db Fallback,
         committer: &mut StatDbCommitter,
         generation: Generation<Tx>,
         checker: &mut ConflictChecker<Key>,
@@ -174,18 +141,15 @@ impl ArcologyParaBlockExecutor {
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
-        DB: StateDB,
+        Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, StateDb<&'db Fallback>, ReadRecorder>>,
     {
-        // let state = committer.inner();
         // Avoid dispatch overhead when there is no parallel work.
         let results = if generation.sequences.len() <= 1 || pool.current_num_threads() == 1 {
             let mut results = Vec::new();
             for sequence in generation.sequences {
-                results.extend(Self::run_sequence(
-                    factory, config, make_db, state, sequence,
-                )?);
+                results.extend(Self::run_sequence(factory, config, sequence, fallback)?);
             }
             results
         } else {
@@ -194,7 +158,7 @@ impl ArcologyParaBlockExecutor {
                 generation
                     .sequences
                     .into_par_iter()
-                    .map(|sequence| Self::run_sequence(factory, config, make_db, statedb, sequence))
+                    .map(|sequence| Self::run_sequence(factory, config, sequence, fallback))
                     .collect()
             });
             results?.into_iter().flatten().collect()
@@ -228,12 +192,12 @@ impl ArcologyParaBlockExecutor {
         Ok((results, conflicts))
     }
 
-    /// Supplies a private database and runs one scheduled sequence.
-    fn run_sequence<F, DB, Tx>(
+    /// Runs a sequence over the shared read-only fallback.
+    fn run_sequence<'db, F, Fallback, Tx>(
         factory: &F,
         config: &ParaBlockConfig<F>,
-        make_db: &(impl Fn() -> DB + Sync),
         sequence: JobSequence<Tx>,
+        fallback: &'db Fallback,
     ) -> Result<
         Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
         BlockExecutionError,
@@ -245,30 +209,11 @@ impl ArcologyParaBlockExecutor {
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
-        DB: StateDB,
+        Fallback: DatabaseRef + std::fmt::Debug,
         F::Receipt: Clone + Send,
-        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, DB, ReadRecorder>>,
+        Tx: Send + for<'a> ExecutableTx<F::Executor<'a, StateDb<&'db Fallback>, ReadRecorder>>,
     {
-        if sequence.jobs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut db = make_db();
-        if let Err(error) = Self::offset_nonces(&mut db, &sequence) {
-            return Err(BlockExecutionError::msg(format!(
-                "sequence initialization failed: {error}"
-            )));
-        }
-        JobSequence {
-            db,
-            jobs: sequence.jobs,
-            nonce_offsets: Vec::new(),
-        }
-        .run(
-            factory,
-            config.env.clone(),
-            config.ctx.clone(),
-            sequence.nonce_offsets,
-        )
+        sequence.run(factory, fallback, config.env.clone(), config.ctx.clone())
     }
 }
 

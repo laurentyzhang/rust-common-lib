@@ -1,11 +1,11 @@
 use alloy_evm::EvmInternals;
 use alloy_primitives::{Address, U256};
 
-use super::super::super::SlotStorage;
+use super::super::super::ApiStore;
 use crate::eu::CallHookError;
 
 /// Reads and writes slots through the current EVM journal.
-impl SlotStorage for EvmInternals<'_> {
+impl ApiStore for EvmInternals<'_> {
     type Error = CallHookError;
 
     fn read(&mut self, owner: Address, slot: U256) -> Result<U256, Self::Error> {
