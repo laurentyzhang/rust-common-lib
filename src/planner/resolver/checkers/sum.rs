@@ -5,21 +5,23 @@ use crate::{
         state::{Status, Tracked, value::CrdtValue},
     },
     eu::output::ExecutionOutput,
-    planner::resolver::Rejected,
-    planner::resolver::checkers::util::check_all,
+    planner::resolver::Violation,
+    planner::resolver::checkers::util::run_parallel,
     planner::scheduler::ID,
 };
 use std::collections::{BTreeSet, HashMap};
 
 pub struct SumChecker<K, T: Type> {
     pub(in crate::planner::resolver) entries:
-        HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>>,
+        BTreeSet<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
+    counts: HashMap<K, usize>,
 }
 
 impl<K, T: Type> SumChecker<K, T> {
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: BTreeSet::new(),
+            counts: HashMap::new(),
         }
     }
 
@@ -28,26 +30,24 @@ impl<K, T: Type> SumChecker<K, T> {
         K: Clone + Ord + std::hash::Hash,
     {
         for record in records {
-            self.entries
-                .entry(record.key.clone())
-                .or_default()
-                .insert(record);
+            *self.counts.entry(record.key.clone()).or_default() += 1;
+            self.entries.insert(record);
         }
     }
 
-    pub fn check_bounds(&mut self) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
+    pub fn check_bounds(&mut self) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
     where
-        K: Ord + Send + Sync,
+        K: Ord + std::hash::Hash + Send + Sync,
         T: Send,
         T::Magnitude: Send,
         CrdtValue<'static>: From<Scalar<T>>,
     {
-        check_all(&mut self.entries, Self::check_by_key)
+        run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
-    fn check_by_key(
-        records: BTreeSet<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
-    ) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
+    fn do_check(
+        records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
+    ) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
     where
         K: Ord,
         CrdtValue<'static>: From<Scalar<T>>,
@@ -62,13 +62,14 @@ impl<K, T: Type> SumChecker<K, T> {
         if first.data.current().delta().is_some() {
             contributors.push(first.id);
         }
-        let mut accumulated = first.data.into_current();
+        let mut summed = first.data.into_current();
 
         for record in records {
             let Some(delta) = record.data.current().delta() else {
                 continue;
             };
-            if let Err(error) = accumulated.add_delta(delta) {
+
+            if let Err(error) = summed.add_delta(delta) {
                 for &id in &contributors {
                     conflicts.insert((id.min(record.id), id.max(record.id)));
                 }

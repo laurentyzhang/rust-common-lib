@@ -189,7 +189,7 @@ impl ArcologyParaBlockExecutor {
         committer.stage(
             results
                 .iter()
-                .filter(|outcome| conflicts.committable.contains(&outcome.id.global))
+                .filter(|outcome| conflicts.committable.contains(&outcome.id))
                 .map(|outcome| outcome.id)
                 .collect(),
         );

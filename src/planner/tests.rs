@@ -69,7 +69,7 @@ fn detected_history_survives_generations_and_changes_scheduling() {
         let result = planner.resolve(conflicts).unwrap();
         assert_eq!(
             result
-                .conflicts
+                .pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
@@ -91,7 +91,7 @@ fn detected_history_survives_generations_and_changes_scheduling() {
         }
         let conflicts = planner.checker.check();
         let empty = planner.resolve(conflicts).unwrap();
-        assert!(empty.conflicts.is_empty());
+        assert!(empty.pairs.is_empty());
         assert!(empty.history.is_empty());
         drop(planner);
 
@@ -207,7 +207,7 @@ fn shared_reads_do_not_create_history() {
         .import(vec![record(1, 7, false), record(2, 7, false)]);
     let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
-    assert!(result.conflicts.is_empty());
+    assert!(result.pairs.is_empty());
     assert!(result.history.is_empty());
     assert!(planner.load_history(a).unwrap().is_empty());
     assert!(planner.load_history(b).unwrap().is_empty());
@@ -215,7 +215,7 @@ fn shared_reads_do_not_create_history() {
 
 #[test]
 fn numeric_conflicts_report_contributing_transactions() {
-    let mut detector = ConflictChecker::new();
+    let mut detector = ConflictDetector::new();
     let records = (1..=3)
         .map(|id| {
             let value = Scalar::<U256>::new(U256::ZERO, U256::from(5)).unwrap();
@@ -241,7 +241,7 @@ fn numeric_conflicts_report_contributing_transactions() {
     assert!(result.committable.is_empty());
     assert_eq!(
         result
-            .conflicts
+            .pairs
             .iter()
             .map(|(left, right)| (left.global, right.global))
             .collect::<BTreeSet<_>>(),

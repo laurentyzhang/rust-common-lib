@@ -7,10 +7,7 @@ use crate::{
     },
     eu::output::ExecutionOutput,
     planner::{
-        resolver::{
-            Checker, ConflictChecker,
-            reason::{AccessConflict, NumericError, Reason},
-        },
+        resolver::{AccessConflict, Checker, ConflictDetector, NumericError, Reason},
         scheduler::ID,
     },
 };
@@ -78,32 +75,44 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
         if reverse {
             records.reverse();
         }
-        let mut checker = ConflictChecker::new();
+        let mut checker = ConflictDetector::new();
         for record in records {
             checker.import(vec![record]);
         }
         let report = checker.check();
         assert!(report.committable.is_empty());
-        assert_eq!(report.transactions.len(), 6);
-        assert_eq!(report.sequence_gas[0].0.sequence, 1);
-        assert_eq!(report.sequence_gas[0].1, vec![30, 60, 90]);
-        assert_eq!(report.sequence_gas[1].0.sequence, 0);
-        assert_eq!(report.sequence_gas[1].1, vec![20, 40, 60]);
+        assert_eq!(report.job_info.len(), 6);
+        assert_eq!(report.sequence_gas[0][0].0.sequence, 1);
+        assert_eq!(
+            report.sequence_gas[0]
+                .iter()
+                .map(|(id, gas)| (id.global, *gas))
+                .collect::<Vec<_>>(),
+            vec![(4, 30), (5, 60), (6, 90)]
+        );
+        assert_eq!(report.sequence_gas[1][0].0.sequence, 0);
+        assert_eq!(
+            report.sequence_gas[1]
+                .iter()
+                .map(|(id, gas)| (id.global, *gas))
+                .collect::<Vec<_>>(),
+            vec![(1, 20), (2, 40), (3, 60)]
+        );
         assert_eq!(
             report
-                .conflicts
+                .pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(2, 4)])
         );
-        assert!(checker.check().transactions.is_empty());
+        assert!(checker.check().job_info.is_empty());
     }
 }
 
 #[test]
 fn reports_every_conflicting_pair() {
-    let mut checker = ConflictChecker::new();
+    let mut checker = ConflictDetector::new();
     checker.import(vec![
         record(1, 0, 0, 7, 1),
         record(2, 1, 0, 7, 10),
@@ -112,7 +121,7 @@ fn reports_every_conflicting_pair() {
     let report = checker.check();
     assert_eq!(
         report
-            .conflicts
+            .pairs
             .iter()
             .map(|(left, right)| (left.global, right.global))
             .collect::<BTreeSet<_>>(),
@@ -144,7 +153,7 @@ fn checks_numeric_bounds_across_multiple_imports() {
             }),
         });
     }
-    let mut checker = ConflictChecker::new();
+    let mut checker = ConflictDetector::new();
     for record in records {
         checker.import(vec![record]);
     }
@@ -162,7 +171,7 @@ fn checks_numeric_bounds_across_multiple_imports() {
 
 #[test]
 fn clears_previous_generation_metadata() {
-    let mut checker = ConflictChecker::new();
+    let mut checker = ConflictDetector::new();
     for generation in 0..2 {
         let mut records = vec![record(1, 0, 0, 1, 10), record(2, 1, 0, 2, 20)];
         for record in &mut records {
@@ -171,19 +180,14 @@ fn clears_previous_generation_metadata() {
         checker.import(records);
         let result = checker.check();
         assert!(result.committable.is_empty());
-        assert!(
-            result
-                .transactions
-                .values()
-                .all(|(id, _)| id.generation == generation)
-        );
+        assert!(result.job_info.keys().all(|id| id.generation == generation));
     }
     assert!(checker.check().committable.is_empty());
 }
 
 #[test]
 fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
-    let mut checker = ConflictChecker::new();
+    let mut checker = ConflictDetector::new();
     checker.import(vec![record(10, 0, 2, 10, 30), record(30, 0, 0, 30, 10)]);
     checker.import(vec![
         record(20, 0, 1, 20, 20),
@@ -191,16 +195,26 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
         record(40, 1, 0, 99, 15),
     ]);
     let report = checker.check();
-    assert_eq!(report.transactions.len(), 4);
+    assert_eq!(report.job_info.len(), 4);
     assert_eq!(report.violations[0].0.accumulated_gas, 30);
     assert_eq!(
-        report.transactions.keys().copied().collect::<Vec<_>>(),
-        vec![(0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 1, 0)]
+        report
+            .job_info
+            .iter()
+            .map(|(id, gas)| (id.global, *gas))
+            .collect::<Vec<_>>(),
+        vec![(10, 60), (20, 30), (30, 10), (40, 15)]
     );
-    assert_eq!(report.sequence_gas[0].1, vec![10, 30, 60]);
+    assert_eq!(
+        report.sequence_gas[0]
+            .iter()
+            .map(|(id, gas)| (id.global, *gas))
+            .collect::<Vec<_>>(),
+        vec![(30, 10), (20, 30), (10, 60)]
+    );
     assert!(
         report
-            .conflicts
+            .pairs
             .iter()
             .any(|(left, right)| (left.global, right.global) == (20, 40))
     );
@@ -225,7 +239,7 @@ fn detection_order_ignores_accumulated_gas() {
             .iter()
             .map(|record| record.id.global)
             .collect::<Vec<_>>(),
-        vec![3, 5, 2, 1, 4]
+        vec![4, 3, 5, 2, 1]
     );
     assert!(!records.insert(record(3, 0, 0, 1, 10)));
 }
@@ -264,7 +278,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         if reverse_import {
             records.reverse();
         }
-        let mut detector = ConflictChecker::new();
+        let mut detector = ConflictDetector::new();
         // Separate imports must accumulate into both owned stages.
         for record in records {
             detector.import(vec![record]);
@@ -291,13 +305,23 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
 
 #[test]
 fn conflict_result_builds_commit_and_reject_plans() {
-    let mut detector = ConflictChecker::new();
+    let mut detector = ConflictDetector::new();
     detector.import(combined_records());
 
     let mut result = detector.check();
-    result.committable.extend([5, 11]);
+    result.committable.extend(
+        result
+            .job_info
+            .keys()
+            .filter(|id| matches!(id.global, 5 | 11))
+            .copied(),
+    );
     assert_eq!(
-        result.committable.iter().copied().collect::<Vec<_>>(),
+        result
+            .committable
+            .iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
         vec![5, 11]
     );
 
@@ -309,6 +333,7 @@ fn conflict_result_builds_commit_and_reject_plans() {
     let reject_plan = result.reject_plan(42, 7);
     assert_eq!(reject_plan.block_id, 42);
     assert_eq!(reject_plan.generation, 7);
+    assert_eq!(reject_plan.rejected, vec![20, 30]);
     assert_eq!(
         reject_plan
             .violations
@@ -333,7 +358,7 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     second
         .add_delta(CrdtDelta::I256(DeltaOp::Add(U256::from(4))))
         .unwrap();
-    let mut detector = ConflictChecker::new();
+    let mut detector = ConflictDetector::new();
     detector.import(vec![transition(7, second)]);
     detector.import(vec![transition(7, first)]);
     let result = detector.check();
@@ -376,7 +401,7 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
 
 #[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
-    let mut detector = ConflictChecker::new();
+    let mut detector = ConflictDetector::new();
     assert!(detector.check().violations.is_empty());
 
     for _ in 0..2 {
@@ -413,7 +438,7 @@ fn numeric_reads_remain_visible_to_access_detection() {
         assert!(reader.get().is_some());
         let mut writer = Tracked::new_owned_existing(value, 2);
         writer.add_delta(delta).unwrap();
-        let mut detector = ConflictChecker::new();
+        let mut detector = ConflictDetector::new();
         detector.import(vec![transition(7, writer)]);
         detector.import(vec![transition(7, reader)]);
         let rejected = detector.check().violations;
@@ -478,7 +503,7 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
         first.add_delta(first_delta).unwrap();
         let mut second = Tracked::new_owned_existing(value, 2);
         second.add_delta(second_delta).unwrap();
-        let mut detector = ConflictChecker::new();
+        let mut detector = ConflictDetector::new();
         detector.import(vec![transition(7, second)]);
         detector.import(vec![transition(7, first)]);
         let rejected = detector.check().violations;

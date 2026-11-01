@@ -52,10 +52,9 @@ impl<K: Ord, T> PartialOrd for ExecutionOutput<K, T> {
 
 impl<K: Ord, T> Ord for ExecutionOutput<K, T> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.id
-            .generation
-            .cmp(&other.id.generation)
-            .then_with(|| self.key.cmp(&other.key))
+        self.key
+            .cmp(&other.key)
+            .then_with(|| self.id.generation.cmp(&other.id.generation))
             .then_with(|| self.gas_used.cmp(&other.gas_used))
             .then_with(|| self.id.global.cmp(&other.id.global))
     }

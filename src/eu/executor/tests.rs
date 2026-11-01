@@ -5,10 +5,7 @@ use crate::{
         state::{DeltaOp, Status, status::Tag, value::CrdtValue},
     },
     eu::{ApiAddress, Field, KeyCodec, ScalarAdapter, StatDbCommitter},
-    planner::resolver::{
-        ConflictChecker,
-        reason::{AccessConflict, NumericError, Reason},
-    },
+    planner::resolver::{AccessConflict, ConflictDetector, NumericError, Reason},
 };
 use alloy_evm::revm::{
     context_interface::result::{
@@ -158,7 +155,7 @@ fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
         .collect::<Vec<_>>();
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
-        &mut ConflictChecker::new(),
+        &mut ConflictDetector::new(),
         &mut StatDbCommitter::new(),
     );
     assert!(results.iter().all(|result| result.result_and_state.is_ok()));
@@ -172,12 +169,12 @@ fn scalar_creations_with_different_bounds_conflict() {
     ];
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
-        &mut ConflictChecker::new(),
+        &mut ConflictDetector::new(),
         &mut StatDbCommitter::new(),
     );
     assert!(results[0].result_and_state.is_ok());
     assert!(
-        matches!(&results[1].result_and_state, Err(JobError::Rejected(conflicts))
+        matches!(&results[1].result_and_state, Err(JobError::Violation(conflicts))
         if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::AccessConflict(AccessConflict::CreationConflict(_)))))
     );
 }
@@ -195,13 +192,13 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
         let mut accumulator = StatDbCommitter::with_state(scalar_state(original, original));
         ArcologyParaBlockExecutor::resolve_generation(
             &mut results,
-            &mut ConflictChecker::new(),
+            &mut ConflictDetector::new(),
             &mut accumulator,
         );
         assert!(results[0].result_and_state.is_ok());
         if rejected {
             assert!(
-                matches!(&results[1].result_and_state, Err(JobError::Rejected(conflicts))
+                matches!(&results[1].result_and_state, Err(JobError::Violation(conflicts))
                 if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(NumericError::AboveUpperLimit(_)))))
             );
         } else {
@@ -228,10 +225,10 @@ fn scalar_subtractions_are_checked_against_the_combined_lower_bound() {
     ];
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
-        &mut ConflictChecker::new(),
+        &mut ConflictDetector::new(),
         &mut StatDbCommitter::new(),
     );
-    assert!(results.iter().any(|result| matches!(&result.result_and_state, Err(JobError::Rejected(conflicts))
+    assert!(results.iter().any(|result| matches!(&result.result_and_state, Err(JobError::Violation(conflicts))
         if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(NumericError::BelowLowerLimit(_)))))));
     assert_eq!(
         results
@@ -275,14 +272,14 @@ fn rejected_jobs_report_all_conflicts_and_contribute_no_state_or_gas() {
             .present_value = U256::from(99);
     }
     let mut results = vec![writer, reader];
-    let mut resolver = ConflictChecker::new();
+    let mut resolver = ConflictDetector::new();
     let mut accumulator = StatDbCommitter::with_state(state);
     ArcologyParaBlockExecutor::resolve_generation(&mut results, &mut resolver, &mut accumulator);
     let results = ArcologyParaBlockExecutor::finish_block(results, &|receipt, gas| *receipt = gas);
 
     assert_eq!(results[0].id.global, 0);
     assert_eq!(results[0].receipt, Some(21_000));
-    let Err(JobError::Rejected(conflicts)) = &results[1].result_and_state else {
+    let Err(JobError::Violation(conflicts)) = &results[1].result_and_state else {
         panic!("conflicting writer must be returned as rejected");
     };
     assert_eq!(results[1].id.global, 1);
@@ -327,7 +324,7 @@ fn accepted_reverts_consume_gas_and_execution_errors_stay_distinct() {
     ];
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
-        &mut ConflictChecker::new(),
+        &mut ConflictDetector::new(),
         &mut StatDbCommitter::new(),
     );
     let results = ArcologyParaBlockExecutor::finish_block(results, &|receipt, gas| *receipt = gas);

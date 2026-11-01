@@ -1,27 +1,25 @@
-use super::util::check_all;
-use crate::planner::resolver::{
-    Rejected,
-    reason::{AccessConflict, Reason},
-};
+use super::util::run_parallel;
 use crate::crdt::state::{
     Tracked,
     status::{Status, Tag},
     value::CrdtValue,
 };
 use crate::eu::output::ExecutionOutput;
+use crate::planner::resolver::{AccessConflict, Reason, Violation};
 use crate::planner::scheduler::ID;
 use std::collections::{BTreeSet, HashMap};
 
 /// Checks access conflicts for both numeric and nonnumeric records.
 pub struct AccessChecker<K> {
-    pub(in crate::planner::resolver) entries:
-        HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>>,
+    pub(in crate::planner::resolver) entries: BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>,
+    counts: HashMap<K, usize>,
 }
 
 impl<K> AccessChecker<K> {
     pub fn new() -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: BTreeSet::new(),
+            counts: HashMap::new(),
         }
     }
 
@@ -30,38 +28,33 @@ impl<K> AccessChecker<K> {
         K: Clone + Ord + std::hash::Hash,
     {
         for transition in transitions {
-            self.entries
-                .entry(transition.key.clone())
-                .or_default()
-                .insert(transition);
+            *self.counts.entry(transition.key.clone()).or_default() += 1;
+            self.entries.insert(transition);
         }
     }
 
-    pub fn check(&mut self) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
+    pub fn check(&mut self) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
     where
-        K: Ord + Send + Sync,
+        K: Ord + std::hash::Hash + Send + Sync,
     {
-        check_all(&mut self.entries, Self::check_by_key)
+        run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
-    pub fn check_by_key(
-        records: BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>,
-    ) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
+    pub fn do_check(
+        mut records: Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
+    ) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
     where
         K: Ord,
     {
         let mut rejected = Vec::new();
         let mut conflicts = BTreeSet::new();
-        let mut records = records
-            .into_iter()
-            .filter(|record| {
-                let operations = &record.data.operations;
-                operations.reads.count() > 0
-                    || operations.existence_checks.count() > 0
-                    || operations.deltas.count() > 0
-                    || operations.removes.count() > 0
-            })
-            .collect::<Vec<_>>();
+        records.retain(|record| {
+            let operations = &record.data.operations;
+            operations.reads.count() > 0
+                || operations.existence_checks.count() > 0
+                || operations.deltas.count() > 0
+                || operations.removes.count() > 0
+        });
 
         // Report every conflicting pair so the resolver can select either sequence.
         while let Some(record) = records.pop() {

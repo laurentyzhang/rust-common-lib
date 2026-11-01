@@ -14,14 +14,14 @@ use alloy_evm::{
 use alloy_primitives::{Address, U256};
 
 use history::Field;
-use resolver::{ConflictChecker, ConflictResult};
+use resolver::{ConflictDetector, ConflictResult};
 use scheduler::{Generation, GreedyScheduler, Job, Scheduler, SchedulerConfig};
 
 /// Scheduling and conflict detection state for one generation.
 pub struct Planner<DB: Database, K> {
     pub db: DB,
     pub scheduler: GreedyScheduler,
-    pub checker: ConflictChecker<K>,
+    pub checker: ConflictDetector<K>,
     contracts: BTreeMap<u64, Option<Address>>, // Tx id to contract mapping
 }
 
@@ -31,7 +31,7 @@ impl<DB: Database, K> Planner<DB, K> {
         Self {
             db,
             scheduler: GreedyScheduler::with_config(config),
-            checker: ConflictChecker::new(),
+            checker: ConflictDetector::new(),
             contracts: BTreeMap::new(),
         }
     }
@@ -108,7 +108,7 @@ where
         mut result: ConflictResult<K>,
     ) -> Result<ConflictResult<K>, BlockExecutionError> {
         let mut peers = BTreeMap::<Address, BTreeSet<Address>>::new();
-        for &(left, right) in &result.conflicts {
+        for &(left, right) in &result.pairs {
             let left = self.contracts.get(&left.global).ok_or_else(|| {
                 BlockExecutionError::msg("conflicting transaction was not scheduled")
             })?;

@@ -1,6 +1,4 @@
-use super::Rejected;
-use crate::crdt::state::{Status, Tracked};
-use crate::eu::output::ExecutionOutput;
+use super::Violation;
 use crate::planner::scheduler::ID;
 use alloy_evm::revm::state::EvmState;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,21 +13,21 @@ pub struct RejectPlan<K> {
     pub block_id: u64,
     pub generation: u64,
     pub rejected: Vec<u64>,
-    pub violations: Vec<Rejected<K>>,
+    pub violations: Vec<Violation<K>>,
 }
 
 pub struct ConflictResult<K> {
-    /// One job per (generation, sequence, job), with its ID and accumulated gas.
-    pub transactions: BTreeMap<(u64, u64, u64), (ID, u64)>,
-    /// Ordered sequences with cumulative gas for each job.
-    pub sequence_gas: Vec<(ID, Vec<u64>)>,
-    /// Numeric records retained for validating a different sequence selection.
-    pub numeric: Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-    pub committable: BTreeSet<u64>,
+    /// Each job's ID mapped to its accumulated gas.
+    pub job_info: BTreeMap<ID, u64>,
+    /// Ordered sequences of job IDs paired with cumulative gas.
+    pub sequence_gas: Vec<Vec<(ID, u64)>>,
+
+    /// Committable job IDs.
+    pub committable: BTreeSet<ID>,
     /// Constraint violations reported before sequence selection.
-    pub violations: Vec<Rejected<K>>,
+    pub violations: Vec<Violation<K>>,
     /// Transaction pairs that caused access or aggregate numeric conflicts.
-    pub conflicts: BTreeSet<(ID, ID)>,
+    pub pairs: BTreeSet<(ID, ID)>,
     /// Conflict-history storage updates to merge with the block's execution state.
     pub history: EvmState,
 }
@@ -37,12 +35,11 @@ pub struct ConflictResult<K> {
 impl<K> Default for ConflictResult<K> {
     fn default() -> Self {
         Self {
-            transactions: BTreeMap::new(),
+            job_info: BTreeMap::new(),
             sequence_gas: Vec::new(),
-            numeric: Vec::new(),
             committable: BTreeSet::new(),
             violations: Vec::new(),
-            conflicts: BTreeSet::new(),
+            pairs: BTreeSet::new(),
             history: EvmState::default(),
         }
     }
@@ -53,7 +50,7 @@ impl<K> ConflictResult<K> {
         CommitPlan {
             block_id,
             generation,
-            accepted: self.committable.iter().copied().collect(),
+            accepted: self.committable.iter().map(|id| id.global).collect(),
         }
     }
 
@@ -62,10 +59,10 @@ impl<K> ConflictResult<K> {
             block_id,
             generation,
             rejected: self
-                .transactions
-                .values()
-                .filter(|(id, _)| !self.committable.contains(&id.global))
-                .map(|(id, _)| id.global)
+                .job_info
+                .keys()
+                .filter(|id| !self.committable.contains(*id))
+                .map(|id| id.global)
                 .collect(),
             violations: self.violations,
         }

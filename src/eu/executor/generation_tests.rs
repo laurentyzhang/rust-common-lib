@@ -1,6 +1,6 @@
 use super::*;
 use crate::eu::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StatDbCommitter, StateDb};
-use crate::planner::resolver::ConflictChecker;
+use crate::planner::resolver::ConflictDetector;
 use alloy_evm::{
     FromRecoveredTx, RecoveredTx,
     revm::{
@@ -213,7 +213,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             .num_threads(workers)
             .build()
             .unwrap();
-        let mut checker = ConflictChecker::new();
+        let mut checker = ConflictDetector::new();
         let mut committer = StatDbCommitter::with_state(state.clone());
         let generation = Generation {
             sequences: [1, 2]
@@ -246,7 +246,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(result.committable.is_empty());
         assert_eq!(
             result
-                .conflicts
+                .pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
@@ -292,7 +292,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert_eq!(outcomes.len(), 1);
         assert!(result.committable.is_empty());
         assert!(result.violations.is_empty());
-        assert!(result.conflicts.is_empty());
+        assert!(result.pairs.is_empty());
         assert_eq!(
             outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
                 .present_value(),
@@ -318,7 +318,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(resolutions[0].committable.is_empty());
         assert_eq!(
             resolutions[0]
-                .conflicts
+                .pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
