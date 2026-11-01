@@ -2,14 +2,15 @@ use super::super::sender::SenderNonceOffset;
 use super::Job;
 use alloy_evm::{
     EvmEnv, EvmFactory,
-    block::{BlockExecutionError, BlockExecutorFactory, ExecutableTx},
+    block::{BlockExecutorFactory, ExecutableTxParts},
     revm::{
-        DatabaseRef,
+        DatabaseCommit, DatabaseRef,
         state::{Account, EvmState},
     },
 };
 use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use alloy_primitives::Address;
+use std::io::Error;
 
 use crate::eu::{ArcologyEvmFactory, JobOutcome, ReadRecorder, StateDb};
 
@@ -43,50 +44,55 @@ impl<Tx> Default for JobSequence<Tx> {
 }
 
 impl<Tx> JobSequence<Tx> {
-    /// Executes jobs using local state over the supplied read-only fallback.
+    /// Executes each job in a fresh EVM, carrying completed changes forward locally.
+    /// Retains each job's result; errors leave the sequence state unchanged.
     pub fn run<F, DB>(
         self,
         factory: &F,
         fallback: DB,
         env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
         ctx: OpBlockExecutionCtx,
-    ) -> Result<
-        Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-        BlockExecutionError,
-    >
+    ) -> Result<Vec<JobOutcome<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>, Error>
     where
         F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>,
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         F::Receipt: Clone,
         DB: DatabaseRef + std::fmt::Debug,
-        Tx: for<'a> ExecutableTx<F::Executor<'a, StateDb<DB>, ReadRecorder>>,
+        Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let Some(first_id) = self.jobs.first().map(|job| job.id.global) else {
+        if self.jobs.is_empty() {
             return Ok(Vec::new());
-        };
+        }
 
-        let state = self.initialize_state(&fallback)?;
-        let db = StateDb::with_fallback(state, Some(fallback));
+        let initialized = self.initialize_state(&fallback)?;
 
-        let evm =
-            factory
-                .evm_factory()
-                .create_evm_with_inspector(db, env, ReadRecorder::new(first_id));
+        // Keep completed transaction changes local for subsequent jobs.
+        let mut seq_db = StateDb::with_fallback(initialized, Some(fallback));
 
-        let mut executor = factory.create_executor(evm, ctx);
         let mut results = Vec::with_capacity(self.jobs.len());
         for job in self.jobs {
-            results.push(job.run(&mut executor)?);
+            let result = {
+                let job_db = StateDb::with_fallback(EvmState::default(), Some(&seq_db));
+                let evm = factory.evm_factory().create_evm_with_inspector(
+                    job_db,
+                    env.clone(),
+                    ReadRecorder::new(job.id.global),
+                );
+                let mut executor = factory.create_executor(evm, ctx.clone());
+                job.run(&mut executor)
+            };
+
+            if let Ok(result_and_state) = &result.result_and_state {
+                seq_db.commit(result_and_state.state.clone());
+            }
+            results.push(result);
         }
         Ok(results)
     }
 
-    /// Initializes the local EVM state based on the nonce offsets.
-    /// To compensate for incorrect initial nonce values in parallel execution.
-    fn initialize_state<DB: DatabaseRef>(
-        &self,
-        fallback: &DB,
-    ) -> Result<EvmState, BlockExecutionError> {
+    /// Loads sender accounts from the fallback and advances their local nonces
+    /// by earlier same-sender transactions in this generation. Leaves the fallback unchanged.
+    fn initialize_state<DB: DatabaseRef>(&self, fallback: &DB) -> Result<EvmState, Error> {
         let mut state = EvmState::default();
         for entry in &self.nonce_offsets {
             if entry.offset == 0 {
@@ -95,15 +101,12 @@ impl<Tx> JobSequence<Tx> {
             let address = Address::from(entry.sender);
             let mut info = fallback
                 .basic_ref(address)
-                .map_err(|error| {
-                    BlockExecutionError::msg(format!("sequence initialization failed: {error}"))
-                })?
+                .map_err(Error::other)?
                 .unwrap_or_default();
-            info.nonce = info.nonce.checked_add(entry.offset).ok_or_else(|| {
-                BlockExecutionError::msg(
-                    "sequence initialization failed: sequence sender nonce overflow",
-                )
-            })?;
+            info.nonce = info
+                .nonce
+                .checked_add(entry.offset)
+                .ok_or_else(|| Error::other("sequence sender nonce overflow"))?;
             state.insert(address, Account::from(info).with_touched_mark());
         }
         Ok(state)

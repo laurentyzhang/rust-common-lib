@@ -110,6 +110,7 @@ impl ReadRecorder {
                     id: crate::planner::scheduler::ID::new(self.id),
                     key,
                     gas_used: 0,
+                    accumulated_gas: 0,
                     data: Tracked {
                         id: self.id,
                         value: ValueSnapshots {

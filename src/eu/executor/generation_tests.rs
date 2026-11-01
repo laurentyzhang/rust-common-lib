@@ -1,5 +1,6 @@
 use super::*;
-use crate::eu::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
+use crate::eu::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StatDbCommitter, StateDb};
+use crate::planner::resolver::ConflictChecker;
 use alloy_evm::{
     FromRecoveredTx, RecoveredTx,
     revm::{
@@ -48,6 +49,92 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 }
 
 #[test]
+fn sequence_continues_after_rejected_job_with_prior_state() {
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
+    );
+    let mut env: EvmEnv<OpSpecId> = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::REGOLITH;
+    env.block_env.timestamp = U256::from(1_700_000_000u64);
+    env.block_env.gas_limit = 200_000;
+    let contract = Address::repeat_byte(0x99);
+    let code = Bytecode::new_raw(Bytes::from_static(&[
+        0x60, 0x00, 0x54, 0x60, 0x01, 0x01, 0x60, 0x00, 0x55, 0x00,
+    ]));
+    let fallback = StateDb::new(EvmState::from_iter([(
+        contract,
+        Account::from(AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..Default::default()
+        }),
+    )]));
+    let caller = Address::repeat_byte(0x22);
+    let tx = OpTxEnvelope::from(TxDeposit {
+        from: caller,
+        to: TxKind::Call(contract),
+        gas_limit: 200_001,
+        ..Default::default()
+    });
+    let rejected = Job::new(
+        ID::new(2),
+        (
+            ArcologyTx::from_recovered_tx(&tx, caller),
+            Recovered { tx, signer: caller },
+        ),
+    );
+    let mut outcomes = JobSequence {
+        jobs: vec![job(1, contract), rejected, job(3, contract)],
+        nonce_offsets: Vec::new(),
+    }
+    .run(&factory, &fallback, env, OpBlockExecutionCtx::default())
+    .unwrap();
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .map(|outcome| outcome.id.global)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(outcomes[1].result_and_state.is_err());
+    assert!(outcomes[1].receipt.is_none());
+    assert!(outcomes[1].merge_records(outcomes[1].id).is_empty());
+    for (index, outcome) in outcomes
+        .iter()
+        .filter_map(|outcome| outcome.result_and_state.as_ref().ok())
+        .enumerate()
+    {
+        assert!(outcome.result.is_success());
+        assert_eq!(
+            outcome.state[&contract].storage[&U256::ZERO].present_value(),
+            U256::from(index + 1),
+        );
+    }
+    assert_eq!(
+        fallback.storage_ref(contract, U256::ZERO).unwrap(),
+        U256::ZERO
+    );
+    assert!(fallback.basic_ref(caller).unwrap().is_none());
+
+    let gas_used: u64 = outcomes
+        .iter()
+        .filter_map(|outcome| outcome.result_and_state.as_ref().ok())
+        .map(|executed| executed.result.tx_gas_used())
+        .sum();
+    outcomes.reverse();
+    let cumulative = std::cell::Cell::new(0);
+    let outcomes = ArcologyParaBlockExecutor::finish_block(outcomes, &|_, gas| cumulative.set(gas));
+    assert_eq!(outcomes[0].id.global, 1);
+    assert_eq!(outcomes[1].id.global, 2);
+    assert_eq!(outcomes[2].id.global, 3);
+    assert!(outcomes[1].result_and_state.is_err());
+    assert_eq!(cumulative.get(), gas_used);
+}
+
+#[test]
 fn sequence_nonce_offsets_are_local_and_checked() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -80,11 +167,9 @@ fn sequence_nonce_offsets_are_local_and_checked() {
         );
         if let Some(expected) = expected {
             let outcomes = result.unwrap();
-            assert!(outcomes[0].result_and_state.result.is_success());
-            assert_eq!(
-                outcomes[0].result_and_state.state[&caller].info.nonce,
-                expected
-            );
+            let executed = outcomes[0].result_and_state.as_ref().unwrap();
+            assert!(executed.result.is_success());
+            assert_eq!(executed.state[&caller].info.nonce, expected);
         } else {
             let error = result
                 .err()
@@ -144,23 +229,30 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &config,
             &pool,
             &persistent,
-            &mut committer,
             generation,
             &mut checker,
+            &mut committer,
         )
         .unwrap();
         assert_eq!(outcomes.len(), 2);
-        assert!(
-            outcomes
-                .iter()
-                .all(|outcome| outcome.result_and_state.result.is_success())
-        );
-        assert_eq!(result.committable, BTreeSet::from([1]));
-        assert_eq!(result.conflicts, BTreeSet::from([(1, 2)]));
+        assert!(outcomes.iter().all(|result| {
+            result
+                .result_and_state
+                .as_ref()
+                .unwrap()
+                .result
+                .is_success()
+        }));
+        assert!(result.committable.is_empty());
         assert_eq!(
-            committer.inner()[&contract].storage[&U256::ZERO].present_value(),
-            U256::from(1)
+            result
+                .conflicts
+                .iter()
+                .map(|(left, right)| (left.global, right.global))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([(1, 2)])
         );
+        assert_eq!(committer.inner(), &state);
         assert!(
             !committer
                 .inner()
@@ -168,14 +260,14 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         );
         assert!(
             result
-                .rejected
+                .violations
                 .iter()
                 .any(|(record, _)| record.id.global == 2
                     && record.key == Key::Storage(contract, U256::ZERO))
         );
         assert!(
             result
-                .rejected
+                .violations
                 .iter()
                 .all(|(record, _)| record.gas_used > 0)
         );
@@ -192,23 +284,21 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &config,
             &pool,
             &fallback,
-            &mut committer,
             generation,
             &mut checker,
+            &mut committer,
         )
         .unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(result.committable, BTreeSet::from([3]));
-        assert!(result.rejected.is_empty());
+        assert!(result.committable.is_empty());
+        assert!(result.violations.is_empty());
         assert!(result.conflicts.is_empty());
         assert_eq!(
-            outcomes[0].result_and_state.state[&contract].storage[&U256::ZERO].present_value(),
-            U256::from(2)
+            outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
+                .present_value(),
+            U256::from(1)
         );
-        assert_eq!(
-            committer.inner()[&contract].storage[&U256::ZERO].present_value(),
-            U256::from(2)
-        );
+        assert_eq!(committer.inner(), &state);
 
         let mut planner = Planner::new(StateDb::new(state.clone()), Default::default());
         let mut committer = StatDbCommitter::with_state(state.clone());
@@ -225,8 +315,15 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         .unwrap();
         assert_eq!(outcomes.len(), 2);
         assert_eq!(resolutions.len(), 1);
-        assert_eq!(resolutions[0].committable, BTreeSet::from([0]));
-        assert_eq!(resolutions[0].conflicts, BTreeSet::from([(0, 1)]));
+        assert!(resolutions[0].committable.is_empty());
+        assert_eq!(
+            resolutions[0]
+                .conflicts
+                .iter()
+                .map(|(left, right)| (left.global, right.global))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([(0, 1)])
+        );
         let count = crate::planner::history::Field::Count.slot(0);
         assert_eq!(
             resolutions[0].history[&contract].storage[&count].present_value(),

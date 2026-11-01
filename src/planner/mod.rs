@@ -109,10 +109,10 @@ where
     ) -> Result<ConflictResult<K>, BlockExecutionError> {
         let mut peers = BTreeMap::<Address, BTreeSet<Address>>::new();
         for &(left, right) in &result.conflicts {
-            let left = self.contracts.get(&left).ok_or_else(|| {
+            let left = self.contracts.get(&left.global).ok_or_else(|| {
                 BlockExecutionError::msg("conflicting transaction was not scheduled")
             })?;
-            let right = self.contracts.get(&right).ok_or_else(|| {
+            let right = self.contracts.get(&right.global).ok_or_else(|| {
                 BlockExecutionError::msg("conflicting transaction was not scheduled")
             })?;
             if let (Some(left), Some(right)) = (left, right) {

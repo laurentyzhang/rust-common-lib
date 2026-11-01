@@ -23,16 +23,21 @@ pub enum HaltReason {
     Custom(String),
 }
 
-/// The EVM output, receipt, and recorded state reads for one transaction.
+/// A job's ID, execution result or error, optional receipt, and recorded state reads.
 pub struct JobOutcome<R, H = HaltReason> {
     pub id: ID,
-    pub result_and_state: ResultAndState<H>,
-    pub receipt: R,
+    pub result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
+    pub receipt: Option<R>,
     pub reads: StateReads, // Combined from opcode inspection and API handlers.
 }
 
 impl<R, H> JobOutcome<R, H> {
-    pub fn new(id: ID, result_and_state: ResultAndState<H>, receipt: R, reads: StateReads) -> Self {
+    pub fn new(
+        id: ID,
+        result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
+        receipt: Option<R>,
+        reads: StateReads,
+    ) -> Self {
         Self {
             id,
             result_and_state,
@@ -41,18 +46,21 @@ impl<R, H> JobOutcome<R, H> {
         }
     }
     /// Merges inspector reads with state changes, keeping the state record for shared keys.
-    pub fn merge_records(&self, transaction_id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+    pub fn merge_records(&self, id: ID) -> Vec<(Key, Tracked<Status, Status>)> {
+        if self.result_and_state.is_err() {
+            return Vec::new();
+        }
         let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
         for read in &self.reads {
             let mut tracked = read.data.clone_with_states(ValueSnapshots {
                 original: read.data.original().clone(),
                 current: read.data.current().clone(),
             });
-            tracked.id = transaction_id;
+            tracked.id = id.global;
             unique_records.insert(read.key.clone(), tracked);
         }
 
-        for (key, mut write) in self.delta_records(transaction_id) {
+        for (key, mut write) in self.delta_records(id.global) {
             if let Some(read) = unique_records.get(&key) {
                 write.operations.reads = read.operations.reads;
             }
@@ -70,9 +78,12 @@ impl<R, H> JobOutcome<R, H> {
 
     /// Collects account records from the result state.
     fn account_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
-        let mut records = Vec::with_capacity(self.result_and_state.state.len());
+        let Ok(result_and_state) = &self.result_and_state else {
+            return Vec::new();
+        };
+        let mut records = Vec::with_capacity(result_and_state.state.len());
 
-        for (address, account) in &self.result_and_state.state {
+        for (address, account) in &result_and_state.state {
             let mut operations = Operations::default();
 
             let original = if account.is_loaded_as_not_existing() || account.is_created() {
@@ -112,9 +123,12 @@ impl<R, H> JobOutcome<R, H> {
 
     /// Collects storage records from the result state for access and bound checks.
     fn slot_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+        let Ok(result_and_state) = &self.result_and_state else {
+            return Vec::new();
+        };
         let mut records = Vec::new();
 
-        for (address, account) in &self.result_and_state.state {
+        for (address, account) in &result_and_state.state {
             for (slot_key, value) in &account.storage {
                 let mut operations = Operations::default();
 
@@ -180,10 +194,4 @@ impl<R, H> JobOutcome<R, H> {
 
         records
     }
-}
-
-/// A job result tagged with its stable global ID and scheduled location.
-pub struct JobResult<R, H = HaltReason> {
-    pub id: ID,
-    pub outcome: Result<JobOutcome<R, H>, BlockExecutionError>,
 }

@@ -4,13 +4,14 @@ use alloy_evm::revm::{DatabaseCommit, state::EvmState};
 use rayon::prelude::*;
 
 use super::StateDb;
+use crate::planner::scheduler::ID;
 use crate::store::traits::Committer;
 
 /// Buffers transaction states and commits accepted changes in transaction-ID order.
 #[derive(Debug, Default)]
 pub struct StatDbCommitter {
     state: StateDb,
-    buffered: BTreeMap<u64, StateDb>,
+    buffered: BTreeMap<ID, StateDb>,
 }
 
 impl StatDbCommitter {
@@ -34,12 +35,12 @@ impl StatDbCommitter {
     }
 }
 
-impl Committer<u64, EvmState> for StatDbCommitter {
-    fn buffer(&mut self, id: u64, state: EvmState) {
+impl Committer<ID, EvmState> for StatDbCommitter {
+    fn buffer(&mut self, id: ID, state: EvmState) {
         self.buffered.insert(id, StateDb::new(state));
     }
 
-    fn stage(&mut self, accepted: Vec<u64>) {
+    fn stage(&mut self, accepted: Vec<ID>) {
         let accepted = accepted.into_iter().collect::<HashSet<_>>();
         self.buffered.retain(|id, _| accepted.contains(id));
     }

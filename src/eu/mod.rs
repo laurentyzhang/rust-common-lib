@@ -16,7 +16,7 @@ pub use hooks::{
 #[doc(hidden)]
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
-pub use outcome::{HaltReason, JobOutcome, JobResult};
+pub use outcome::{HaltReason, JobOutcome};
 pub use slot::KeyCodec;
 pub(in crate::eu) use slot::{Field, ScalarAdapter};
 pub use state::key;

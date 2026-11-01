@@ -1,7 +1,7 @@
 use super::super::sender::Sender;
 use alloy_evm::{
     Evm,
-    block::{BlockExecutionError, BlockExecutor, ExecutableTx, StateDB, TxResult},
+    block::{BlockExecutor, ExecutableTx, StateDB, TxResult},
     revm::context_interface::Transaction,
 };
 use alloy_primitives::{Address, TxKind};
@@ -54,10 +54,7 @@ pub struct Job<Tx> {
 
 impl<Tx> Job<Tx> {
     /// Executes one transaction using the sequence's existing executor and database.
-    pub fn run<E, DB>(
-        self,
-        executor: &mut E,
-    ) -> Result<JobOutcome<E::Receipt, <E::Evm as Evm>::HaltReason>, BlockExecutionError>
+    pub fn run<E, DB>(self, executor: &mut E) -> JobOutcome<E::Receipt, <E::Evm as Evm>::HaltReason>
     where
         E: BlockExecutor,
         E::Evm: DerefMut<Target = ArcologyEvm<DB, ReadRecorder>>,
@@ -67,21 +64,23 @@ impl<Tx> Job<Tx> {
     {
         executor.evm_mut().reset_reads(self.id.global);
         let mut result_and_state = None;
-        executor.execute_transaction_with_result_closure(self.tx, |result| {
+        if let Err(error) = executor.execute_transaction_with_result_closure(self.tx, |result| {
             result_and_state = Some(result.result().clone());
-        })?;
+        }) {
+            return JobOutcome::new(self.id, Err(error), None, executor.evm_mut().drain_reads());
+        }
         let receipt = executor
             .receipts()
             .last()
             .cloned()
             .expect("a committed transaction has a receipt");
         let reads = executor.evm_mut().drain_reads();
-        Ok(JobOutcome::new(
+        JobOutcome::new(
             self.id,
-            result_and_state.expect("a successful execution has a result"),
-            receipt,
+            Ok(result_and_state.expect("a successful execution has a result")),
+            Some(receipt),
             reads,
-        ))
+        )
     }
 }
 

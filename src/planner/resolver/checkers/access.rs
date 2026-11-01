@@ -1,6 +1,7 @@
-use super::{
+use super::util::check_all;
+use crate::planner::resolver::{
+    Rejected,
     reason::{AccessConflict, Reason},
-    traits::{Checker, Rejected},
 };
 use crate::crdt::state::{
     Tracked,
@@ -8,11 +9,13 @@ use crate::crdt::state::{
     value::CrdtValue,
 };
 use crate::eu::output::ExecutionOutput;
+use crate::planner::scheduler::ID;
 use std::collections::{BTreeSet, HashMap};
 
 /// Checks access conflicts for both numeric and nonnumeric records.
 pub struct AccessChecker<K> {
-    pub(super) entries: HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>>,
+    pub(in crate::planner::resolver) entries:
+        HashMap<K, BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>>,
 }
 
 impl<K> AccessChecker<K> {
@@ -24,7 +27,7 @@ impl<K> AccessChecker<K> {
 
     pub fn import(&mut self, transitions: Vec<ExecutionOutput<K, Tracked<Status, Status>>>)
     where
-        K: Clone + Eq + std::hash::Hash,
+        K: Clone + Ord + std::hash::Hash,
     {
         for transition in transitions {
             self.entries
@@ -34,18 +37,19 @@ impl<K> AccessChecker<K> {
         }
     }
 
-    pub fn check_conflicts(&mut self) -> (Vec<Rejected<K>>, BTreeSet<(u64, u64)>)
+    pub fn check(&mut self) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
     where
-        K: Send + Sync,
+        K: Ord + Send + Sync,
     {
-        Self::check(&mut self.entries)
+        check_all(&mut self.entries, Self::check_by_key)
     }
-}
 
-impl<K> Checker<K> for AccessChecker<K> {
-    type Input = ExecutionOutput<K, Tracked<Status, Status>>;
-
-    fn check_by_key(records: BTreeSet<Self::Input>) -> (Vec<Rejected<K>>, BTreeSet<(u64, u64)>) {
+    pub fn check_by_key(
+        records: BTreeSet<ExecutionOutput<K, Tracked<Status, Status>>>,
+    ) -> (Vec<Rejected<K>>, BTreeSet<(ID, ID)>)
+    where
+        K: Ord,
+    {
         let mut rejected = Vec::new();
         let mut conflicts = BTreeSet::new();
         let mut records = records
@@ -59,44 +63,37 @@ impl<K> Checker<K> for AccessChecker<K> {
             })
             .collect::<Vec<_>>();
 
+        // Report every conflicting pair so the resolver can select either sequence.
         while let Some(record) = records.pop() {
+            let mut rejection = None;
             for first in &records {
                 if record.id.sequence == first.id.sequence {
                     continue;
                 }
-                if record.data.operations.reads.count() > 0
+                let result = if record.data.operations.reads.count() > 0
                     && record.data.operations.deltas.count() > 0
                     && first.data.operations.deltas.count() > 0
                 {
-                    conflicts.insert((
-                        first.id.global.min(record.id.global),
-                        first.id.global.max(record.id.global),
-                    ));
-                    rejected.push((
-                        record,
-                        Reason::AccessConflict(AccessConflict::ReadConflict(
-                            "Read conflict detected with earlier delta".to_string(),
-                        )),
-                    ));
-                    break;
-                }
-
-                let result = record
-                    .data
-                    .read_conflict_with(&first.data)
-                    .and_then(|_| record.data.creation_conflict_with(&first.data))
-                    .and_then(|_| record.data.delta_conflict_with(&first.data))
-                    .and_then(|_| record.data.existence_conflict_with(&first.data))
-                    .and_then(|_| record.data.remove_conflict_with(&first.data));
+                    Err(Reason::AccessConflict(AccessConflict::ReadConflict(
+                        "Read conflict detected with earlier delta".to_string(),
+                    )))
+                } else {
+                    record
+                        .data
+                        .read_conflict_with(&first.data)
+                        .and_then(|_| record.data.creation_conflict_with(&first.data))
+                        .and_then(|_| record.data.delta_conflict_with(&first.data))
+                        .and_then(|_| record.data.existence_conflict_with(&first.data))
+                        .and_then(|_| record.data.remove_conflict_with(&first.data))
+                };
 
                 if let Err(reason) = result {
-                    conflicts.insert((
-                        first.id.global.min(record.id.global),
-                        first.id.global.max(record.id.global),
-                    ));
-                    rejected.push((record, reason));
-                    break;
+                    conflicts.insert((first.id.min(record.id), first.id.max(record.id)));
+                    rejection.get_or_insert(reason);
                 }
+            }
+            if let Some(reason) = rejection {
+                rejected.push((record, reason));
             }
         }
         rejected.reverse();

@@ -6,7 +6,7 @@ use crate::{
     },
     eu::{StatDbCommitter, StateDb, output::ExecutionOutput},
     namespace::Namespace,
-    planner::scheduler::ID,
+    planner::{resolver::Checker, scheduler::ID},
     store::traits::Committer,
 };
 
@@ -38,6 +38,7 @@ fn record(id: u64, key: u64, remove: bool) -> ExecutionOutput<u64, Tracked<Statu
         },
         key,
         gas_used: 0,
+        accumulated_gas: 0,
         data: tracked.clone_with_states(snapshots),
     }
 }
@@ -64,10 +65,17 @@ fn detected_history_survives_generations_and_changes_scheduling() {
         planner
             .checker
             .import(vec![record(1, 7, true), record(2, 7, false)]);
-        let conflicts = planner.checker.check_conflicts();
+        let conflicts = planner.checker.check();
         let result = planner.resolve(conflicts).unwrap();
-        assert_eq!(result.conflicts, BTreeSet::from([(1, 2)]));
-        assert_eq!(result.committable, BTreeSet::from([1]));
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|(left, right)| (left.global, right.global))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([(1, 2)])
+        );
+        assert!(result.committable.is_empty());
         assert_eq!(
             planner.load_history(a).unwrap(),
             if round == 0 { vec![] } else { vec![b] }
@@ -81,14 +89,14 @@ fn detected_history_survives_generations_and_changes_scheduling() {
         } else {
             assert!(result.history.is_empty());
         }
-        let conflicts = planner.checker.check_conflicts();
+        let conflicts = planner.checker.check();
         let empty = planner.resolve(conflicts).unwrap();
         assert!(empty.conflicts.is_empty());
         assert!(empty.history.is_empty());
         drop(planner);
 
         let mut committer = StatDbCommitter::with_state(db.into_inner());
-        committer.buffer(0, result.history);
+        committer.buffer(ID::new(0), result.history);
         committer.flush();
         db = StateDb::new(committer.into_inner());
         let mut planner = Planner::<_, u64>::new(&mut db, config);
@@ -111,7 +119,7 @@ fn detected_history_survives_generations_and_changes_scheduling() {
     planner
         .checker
         .import(vec![record(1, 7, true), record(3, 7, false)]);
-    let conflicts = planner.checker.check_conflicts();
+    let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
     assert_eq!(planner.load_history(a).unwrap(), vec![b]);
     assert!(planner.load_history(c).unwrap().is_empty());
@@ -120,7 +128,7 @@ fn detected_history_survives_generations_and_changes_scheduling() {
     assert_eq!(count.present_value(), U256::from(2));
     drop(planner);
     let mut committer = StatDbCommitter::with_state(db.into_inner());
-    committer.buffer(0, result.history);
+    committer.buffer(ID::new(0), result.history);
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(planner.load_history(a).unwrap(), vec![b, c]);
@@ -144,11 +152,11 @@ fn self_conflicts_constrain_different_functions_of_the_same_contract() {
     planner
         .checker
         .import(vec![record(1, 7, true), record(2, 7, false)]);
-    let conflicts = planner.checker.check_conflicts();
+    let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
     assert!(planner.load_history(a).unwrap().is_empty());
     let mut committer = StatDbCommitter::with_state(planner.db.into_inner());
-    committer.buffer(0, result.history);
+    committer.buffer(ID::new(0), result.history);
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(planner.load_history(a).unwrap(), vec![a]);
@@ -169,10 +177,10 @@ fn resolve_returns_history_with_a_read_only_database() {
         .checker
         .import(vec![record(1, 7, true), record(2, 7, false)]);
 
-    let conflicts = planner.checker.check_conflicts();
+    let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
-    assert_eq!(result.committable, BTreeSet::from([1]));
-    assert_eq!(result.rejected.len(), 1);
+    assert!(result.committable.is_empty());
+    assert_eq!(result.violations.len(), 1);
     assert_eq!(result.history.len(), 2);
     for (contract, peer) in [(a, b), (b, a)] {
         assert_eq!(planner.db.basic(contract).unwrap(), None);
@@ -197,7 +205,7 @@ fn shared_reads_do_not_create_history() {
     planner
         .checker
         .import(vec![record(1, 7, false), record(2, 7, false)]);
-    let conflicts = planner.checker.check_conflicts();
+    let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
     assert!(result.conflicts.is_empty());
     assert!(result.history.is_empty());
@@ -223,14 +231,22 @@ fn numeric_conflicts_report_contributing_transactions() {
                 },
                 key: 7_u64,
                 gas_used: 0,
+                accumulated_gas: 0,
                 data: tracked.clone_with_states(snapshots),
             }
         })
         .collect();
     detector.import(records);
-    let result = detector.check_conflicts();
-    assert_eq!(result.committable, BTreeSet::from([1, 2]));
-    assert_eq!(result.conflicts, BTreeSet::from([(1, 3), (2, 3)]));
+    let result = detector.check();
+    assert!(result.committable.is_empty());
+    assert_eq!(
+        result
+            .conflicts
+            .iter()
+            .map(|(left, right)| (left.global, right.global))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([(1, 3), (2, 3)])
+    );
 }
 
 #[test]

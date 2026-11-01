@@ -2,7 +2,7 @@ use alloy_primitives::{Address, U256};
 
 use crate::store::{StoreCodec, StoreError};
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Key {
     Account(Address),
     Balance(Address),

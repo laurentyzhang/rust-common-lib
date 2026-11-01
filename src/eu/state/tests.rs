@@ -1,5 +1,6 @@
 use super::{AccountStorage, StatDbCommitter, StateDb};
 use crate::eu::{ArcologyEvmFactory, ArcologyTx, CallRouter, ReadRecorder, key::Key};
+use crate::planner::scheduler::ID;
 use crate::store::traits::Committer;
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
@@ -28,7 +29,7 @@ fn state(balance: u64, slots: &[(u64, u64)]) -> EvmState {
 fn commit_preserves_order_and_the_unpaired_fifth_state() {
     let mut accumulator = StatDbCommitter::with_state(state(0, &[(99, 99)]));
     for id in [5, 1, 4, 2, 3] {
-        accumulator.buffer(id, state(id, &[(0, id * 10), (id, id)]));
+        accumulator.buffer(ID::new(id), state(id, &[(0, id * 10), (id, id)]));
     }
 
     accumulator.flush();
@@ -54,7 +55,7 @@ fn pairwise_commit_preserves_creation_across_groups() {
         if id == 3 {
             incoming.get_mut(&Address::ZERO).unwrap().mark_created();
         }
-        accumulator.buffer(id, incoming);
+        accumulator.buffer(ID::new(id), incoming);
     }
 
     accumulator.flush();
@@ -76,17 +77,17 @@ fn pairwise_commit_preserves_creation_across_groups() {
 fn pairwise_commit_retains_slot_deletion_and_allows_a_later_write() {
     for rewrite in [false, true] {
         let mut accumulator = StatDbCommitter::with_state(state(0, &[(7, 7), (99, 99)]));
-        accumulator.buffer(1, state(1, &[(7, 11)]));
+        accumulator.buffer(ID::new(1), state(1, &[(7, 11)]));
         let mut deletion = state(2, &[(7, 0)]);
         deletion.get_mut(&Address::ZERO).unwrap().storage.insert(
             U256::from(7),
             EvmStorageSlot::new_changed(U256::from(11), U256::ZERO, TransactionId::ZERO),
         );
-        accumulator.buffer(2, deletion);
-        accumulator.buffer(3, EvmState::default());
-        accumulator.buffer(4, EvmState::default());
+        accumulator.buffer(ID::new(2), deletion);
+        accumulator.buffer(ID::new(3), EvmState::default());
+        accumulator.buffer(ID::new(4), EvmState::default());
         accumulator.buffer(
-            5,
+            ID::new(5),
             if rewrite {
                 state(5, &[(7, 23)])
             } else {
@@ -116,17 +117,17 @@ fn pairwise_commit_retains_slot_deletion_and_allows_a_later_write() {
 #[test]
 fn pairwise_commit_replaces_account_with_its_deletion_record() {
     let mut accumulator = StatDbCommitter::with_state(state(0, &[(99, 99)]));
-    accumulator.buffer(1, state(1, &[(1, 1)]));
-    accumulator.buffer(2, state(2, &[(2, 2)]));
+    accumulator.buffer(ID::new(1), state(1, &[(1, 1)]));
+    accumulator.buffer(ID::new(2), state(2, &[(2, 2)]));
     let mut deletion = state(0, &[(7, 0)]);
     deletion
         .get_mut(&Address::ZERO)
         .unwrap()
         .mark_selfdestruct();
     let expected = deletion.clone();
-    accumulator.buffer(3, deletion);
-    accumulator.buffer(4, EvmState::default());
-    accumulator.buffer(5, EvmState::default());
+    accumulator.buffer(ID::new(3), deletion);
+    accumulator.buffer(ID::new(4), EvmState::default());
+    accumulator.buffer(ID::new(5), EvmState::default());
 
     accumulator.flush();
     let cache = accumulator.into_inner();
@@ -142,13 +143,13 @@ fn recreation_replaces_an_earlier_account_deletion() {
         .get_mut(&Address::ZERO)
         .unwrap()
         .mark_selfdestruct();
-    accumulator.buffer(1, deletion);
+    accumulator.buffer(ID::new(1), deletion);
     let mut creation = state(2, &[(2, 2)]);
     creation.get_mut(&Address::ZERO).unwrap().mark_created();
-    accumulator.buffer(2, creation);
-    accumulator.buffer(3, state(3, &[(3, 3)]));
-    accumulator.buffer(4, state(4, &[(4, 4)]));
-    accumulator.buffer(5, state(5, &[(5, 5)]));
+    accumulator.buffer(ID::new(2), creation);
+    accumulator.buffer(ID::new(3), state(3, &[(3, 3)]));
+    accumulator.buffer(ID::new(4), state(4, &[(4, 4)]));
+    accumulator.buffer(ID::new(5), state(5, &[(5, 5)]));
 
     accumulator.flush();
     let cache = accumulator.into_inner();
@@ -168,11 +169,11 @@ fn recreation_replaces_an_earlier_account_deletion() {
 #[test]
 fn stage_filters_rejected_states_and_buffer_replaces_duplicate_ids() {
     let mut accumulator = StatDbCommitter::default();
-    accumulator.buffer(1, state(1, &[(1, 1)]));
-    accumulator.buffer(2, state(2, &[(2, 2)]));
-    accumulator.buffer(2, state(20, &[(2, 20)]));
-    accumulator.buffer(3, state(3, &[(3, 3)]));
-    accumulator.stage(vec![1, 2]);
+    accumulator.buffer(ID::new(1), state(1, &[(1, 1)]));
+    accumulator.buffer(ID::new(2), state(2, &[(2, 2)]));
+    accumulator.buffer(ID::new(2), state(20, &[(2, 20)]));
+    accumulator.buffer(ID::new(3), state(3, &[(3, 3)]));
+    accumulator.stage(vec![ID::new(1), ID::new(2)]);
 
     accumulator.flush();
     let cache = accumulator.into_inner();
@@ -196,10 +197,10 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
     assert_eq!(cache, original);
 
     let mut accumulator = StatDbCommitter::with_state(cache);
-    accumulator.buffer(1, state(1, &[(1, 1)]));
+    accumulator.buffer(ID::new(1), state(1, &[(1, 1)]));
     accumulator.flush();
     // A later batch with a lower ID must not replay states from the first batch.
-    accumulator.buffer(0, state(2, &[(2, 2)]));
+    accumulator.buffer(ID::new(0), state(2, &[(2, 2)]));
     accumulator.flush();
     let cache = accumulator.into_inner();
     let committed = cache.clone();
@@ -217,7 +218,7 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
 #[test]
 fn into_evm_state_returns_accumulated_state() {
     let mut accumulator = StatDbCommitter::with_state(state(1, &[(1, 10)]));
-    accumulator.buffer(2, state(2, &[(2, 20)]));
+    accumulator.buffer(ID::new(2), state(2, &[(2, 20)]));
 
     accumulator.flush();
     let cache = accumulator.into_inner();
@@ -229,10 +230,10 @@ fn into_evm_state_returns_accumulated_state() {
 fn into_inner_excludes_rejected_and_unflushed_states() {
     let initial = state(1, &[(1, 10)]);
     let mut accumulator = StatDbCommitter::with_state(initial.clone());
-    accumulator.buffer(2, state(2, &[(2, 20)]));
+    accumulator.buffer(ID::new(2), state(2, &[(2, 20)]));
     accumulator.stage(Vec::new());
     accumulator.flush();
-    accumulator.buffer(3, state(3, &[(3, 30)]));
+    accumulator.buffer(ID::new(3), state(3, &[(3, 30)]));
 
     assert_eq!(accumulator.into_inner(), initial);
 }
@@ -260,7 +261,7 @@ fn commit_writes_account_and_storage_to_accumulated_state() {
     changes.insert(address, account);
 
     let mut accumulator = StatDbCommitter::default();
-    accumulator.buffer(9, changes);
+    accumulator.buffer(ID::new(9), changes);
     accumulator.flush();
     let mut db = StateDb::new(accumulator.into_inner());
 
