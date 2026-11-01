@@ -34,34 +34,31 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
     fn import(&mut self, mut executed_jobs: Vec<ExecutionOutput<K, Tracked<Status, Status>>>) {
         let mut i256_records = Vec::new();
         let mut u256_records = Vec::new();
-        for result in &mut executed_jobs {
-            self.summary
-                .job_info
-                .entry(result.id)
-                .or_insert(result.gas_used);
+        for job in &mut executed_jobs {
+            self.summary.job_gas.entry(job.id).or_insert(job.gas_used);
             if !matches!(
-                &result.data.value.current,
+                &job.data.value.current,
                 Status::Value(CrdtValue::I256(_) | CrdtValue::U256(_))
             ) {
                 continue;
             }
 
             let Status::Value(value) =
-                std::mem::replace(&mut result.data.value.current, Status::Tag(Tag::Stripped))
+                std::mem::replace(&mut job.data.value.current, Status::Tag(Tag::Stripped))
             else {
                 unreachable!();
             };
 
             match value {
-                CrdtValue::I256(value) => i256_records.push(result.clone_with_data(
-                    result.data.clone_with_states(ValueSnapshots {
-                        original: result.data.value.original.clone(),
+                CrdtValue::I256(value) => i256_records.push(job.clone_with_data(
+                    job.data.clone_with_states(ValueSnapshots {
+                        original: job.data.value.original.clone(),
                         current: value.into_owned(),
                     }),
                 )),
-                CrdtValue::U256(value) => u256_records.push(result.clone_with_data(
-                    result.data.clone_with_states(ValueSnapshots {
-                        original: result.data.value.original.clone(),
+                CrdtValue::U256(value) => u256_records.push(job.clone_with_data(
+                    job.data.clone_with_states(ValueSnapshots {
+                        original: job.data.value.original.clone(),
                         current: value.into_owned(),
                     }),
                 )),
@@ -96,7 +93,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         self.summary.pairs = pairs;
 
         // Calculate prefix gas in scheduled job order, counting each job once.
-        let mut jobs = self.summary.job_info.iter_mut().collect::<Vec<_>>();
+        let mut jobs = self.summary.job_gas.iter_mut().collect::<Vec<_>>();
         jobs.sort_unstable_by_key(|(id, _)| (id.generation, id.sequence, id.job));
         for (id, gas) in jobs {
             if !self
@@ -115,7 +112,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             cumulative.push((*id, *gas));
         }
         for (record, _) in &mut self.summary.violations {
-            record.accumulated_gas = self.summary.job_info[&record.id];
+            record.accumulated_gas = self.summary.job_gas[&record.id];
         }
         self.summary.sequence_gas.sort_unstable_by(|left, right| {
             let (left, left_gas) = left.last().unwrap();

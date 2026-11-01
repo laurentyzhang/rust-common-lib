@@ -81,7 +81,7 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
         }
         let report = checker.check();
         assert!(report.committable.is_empty());
-        assert_eq!(report.job_info.len(), 6);
+        assert_eq!(report.job_gas.len(), 6);
         assert_eq!(report.sequence_gas[0][0].0.sequence, 1);
         assert_eq!(
             report.sequence_gas[0]
@@ -106,7 +106,7 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(2, 4)])
         );
-        assert!(checker.check().job_info.is_empty());
+        assert!(checker.check().job_gas.is_empty());
     }
 }
 
@@ -180,7 +180,7 @@ fn clears_previous_generation_metadata() {
         checker.import(records);
         let result = checker.check();
         assert!(result.committable.is_empty());
-        assert!(result.job_info.keys().all(|id| id.generation == generation));
+        assert!(result.job_gas.keys().all(|id| id.generation == generation));
     }
     assert!(checker.check().committable.is_empty());
 }
@@ -195,11 +195,11 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
         record(40, 1, 0, 99, 15),
     ]);
     let report = checker.check();
-    assert_eq!(report.job_info.len(), 4);
+    assert_eq!(report.job_gas.len(), 4);
     assert_eq!(report.violations[0].0.accumulated_gas, 30);
     assert_eq!(
         report
-            .job_info
+            .job_gas
             .iter()
             .map(|(id, gas)| (id.global, *gas))
             .collect::<Vec<_>>(),
@@ -311,7 +311,7 @@ fn conflict_result_builds_commit_and_reject_plans() {
     let mut result = detector.check();
     result.committable.extend(
         result
-            .job_info
+            .job_gas
             .keys()
             .filter(|id| matches!(id.global, 5 | 11))
             .copied(),

@@ -18,7 +18,7 @@ pub struct RejectPlan<K> {
 
 pub struct ConflictResult<K> {
     /// Each job's ID mapped to its accumulated gas.
-    pub job_info: BTreeMap<ID, u64>,
+    pub job_gas: BTreeMap<ID, u64>,
     /// Ordered sequences of job IDs paired with cumulative gas.
     pub sequence_gas: Vec<Vec<(ID, u64)>>,
 
@@ -35,7 +35,7 @@ pub struct ConflictResult<K> {
 impl<K> Default for ConflictResult<K> {
     fn default() -> Self {
         Self {
-            job_info: BTreeMap::new(),
+            job_gas: BTreeMap::new(),
             sequence_gas: Vec::new(),
             committable: BTreeSet::new(),
             violations: Vec::new(),
@@ -59,7 +59,7 @@ impl<K> ConflictResult<K> {
             block_id,
             generation,
             rejected: self
-                .job_info
+                .job_gas
                 .keys()
                 .filter(|id| !self.committable.contains(*id))
                 .map(|id| id.global)
