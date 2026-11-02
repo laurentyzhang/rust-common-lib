@@ -63,7 +63,7 @@ impl ArcologyParaBlockExecutor {
         cumulative
     }
     /// Executes a block: schedules the ordered transactions, runs the generations in turn
-    /// and returns ordered outcomes and each generation's conflict/history result.
+    /// and returns ordered outcomes and each generation's conflict/metadata result.
     pub fn execute_block<'db, F, PDB, Fallback, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,

@@ -49,6 +49,10 @@ impl GreedyScheduler {
             .conflict_peers
             .extend(peers);
     }
+
+    pub fn set_sequential_only(&mut self, callee: u64) {
+        self.profiles.entry(callee).or_default().sequential_only = true;
+    }
 }
 
 impl<Tx> Scheduler<Tx> for GreedyScheduler {

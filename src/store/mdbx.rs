@@ -136,11 +136,11 @@ mod tests {
 
     #[test]
     fn evm_key_and_raw_value_round_trip() {
-        use crate::eu::key::{Key, KeyCodec};
+        use crate::eu::key::{Key, SlotKeyCodec};
 
         let directory = tempfile::tempdir().unwrap();
         let mut mdbx: MdbxStore<Key, Vec<u8>, _, _> =
-            MdbxStore::open(directory.path(), KeyCodec, IdentityCodec).unwrap();
+            MdbxStore::open(directory.path(), SlotKeyCodec, IdentityCodec).unwrap();
         let key = Key::Account(alloy_primitives::Address::repeat_byte(0x11));
         let value = vec![42];
         mdbx.flush(vec![(key.clone(), value.clone())]).unwrap();

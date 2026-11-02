@@ -43,7 +43,7 @@ pub struct Job<Tx> {
     pub sender: Sender,
     pub nonce: u64,
     pub callee: Option<u64>,
-    /// Full destination address used for contract-level conflict history.
+    /// Full destination address used for contract metadata storage.
     pub contract: Option<Address>,
     /// Set by the scheduler in the generated execution plan.
     pub is_deferred: bool,

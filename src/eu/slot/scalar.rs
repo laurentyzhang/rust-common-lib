@@ -5,13 +5,13 @@ use alloy_primitives::{Address, U256};
 use super::super::state::ApiStore;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::eu::{CallHookError, KeyCodec};
+use crate::eu::{CallHookError, SlotKeyCodec};
 use crate::namespace::Namespace;
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]
 #[repr(u8)]
-pub enum Field {
+pub enum Property {
     Min = 0,
     Max = 1,
     Value = 2,
@@ -35,10 +35,10 @@ pub struct ScalarAdapter {
 impl ScalarAdapter {
     /// Checks if the given key corresponds to a delta field of a scalar.
     pub fn is_value_key(key: U256) -> bool {
-        match KeyCodec::decode(key) {
+        match SlotKeyCodec::decode(key) {
             Some((namespace, field, _)) => {
                 namespace == Namespace::Scalar
-                    && matches!(Field::from_repr(field), Some(Field::Value))
+                    && matches!(Property::from_repr(field), Some(Property::Value))
             }
             None => false,
         }
@@ -51,11 +51,11 @@ impl ScalarAdapter {
     /// The caller must validate the input key before calling this constructor.
     pub fn new(key: U256) -> Self {
         Self {
-            min: KeyCodec::with_field(key, Field::Min as u8),
-            max: KeyCodec::with_field(key, Field::Max as u8),
-            value: KeyCodec::with_field(key, Field::Value as u8),
-            pos_delta: KeyCodec::with_field(key, Field::PosDelta as u8),
-            neg_delta: KeyCodec::with_field(key, Field::NegDelta as u8),
+            min: SlotKeyCodec::with_field(key, Property::Min as u8),
+            max: SlotKeyCodec::with_field(key, Property::Max as u8),
+            value: SlotKeyCodec::with_field(key, Property::Value as u8),
+            pos_delta: SlotKeyCodec::with_field(key, Property::PosDelta as u8),
+            neg_delta: SlotKeyCodec::with_field(key, Property::NegDelta as u8),
         }
     }
 

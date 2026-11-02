@@ -1,13 +1,13 @@
 use super::super::state::ApiStore;
-use super::{Field, ScalarAdapter};
+use super::{Property, ScalarAdapter};
 use crate::crdt::{self, state::DeltaOp};
-use crate::eu::{ApiAddress, KeyCodec, StateDb};
+use crate::eu::{ApiAddress, SlotKeyCodec, StateDb};
 use alloy_primitives::{Address, I256, U256};
 
 #[test]
 fn u256_values_and_full_width_deltas_round_trip() {
     let owner = Address::ZERO;
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
     let mut storage = StateDb::default();
     for (value, delta) in [
@@ -43,7 +43,7 @@ fn u256_values_and_full_width_deltas_round_trip() {
 #[test]
 fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
     let owner = Address::ZERO;
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
     let mut storage = StateDb::default();
     for (value, delta) in [
@@ -82,7 +82,7 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
 #[test]
 fn typed_loads_accept_full_width_values_and_magnitudes() {
     let owner = Address::ZERO;
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
     let mut storage = StateDb::default();
     slots
@@ -124,7 +124,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
 #[test]
 fn split_deltas_round_trip_and_clear_the_opposite_slot() {
     let owner = Address::ZERO;
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
     let mut storage = StateDb::default();
     for (value, delta, expected) in [
@@ -170,7 +170,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
 #[test]
 fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     let owner = Address::ZERO;
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
     let mut storage = StateDb::default();
     let state = crdt::Scalar::<U256> {
@@ -212,8 +212,8 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     }
     for invalid in [
         U256::ZERO,
-        KeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO),
-        KeyCodec::encode(ApiAddress::Container, 3, Address::ZERO),
+        SlotKeyCodec::encode(ApiAddress::Scalar, 5, Address::ZERO),
+        SlotKeyCodec::encode(ApiAddress::Container, 3, Address::ZERO),
     ] {
         assert_eq!(
             ScalarAdapter::read_delta(&mut storage, owner, invalid),
@@ -224,7 +224,7 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
 
 #[test]
 fn invalid_pending_arithmetic_does_not_write_any_slots() {
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     for (value, delta) in [
         (U256::MAX, DeltaOp::Add(U256::from(1))),
         (U256::ZERO, DeltaOp::Sub(U256::from(1))),

@@ -9,6 +9,16 @@ pub struct ValueSnapshots<T0, T1> {
     pub(crate) current: T1,
 }
 
+impl<T0: Clone, T1: Clone> ValueSnapshots<T0, T1> {
+    /// Creates snapshots by cloning the original and current states.
+    pub fn from_refs(original: &T0, current: &T1) -> Self {
+        Self {
+            original: original.clone(),
+            current: current.clone(),
+        }
+    }
+}
+
 /// A pending update for a [`CrdtValue`]. `None` means there is no delta.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtDelta {

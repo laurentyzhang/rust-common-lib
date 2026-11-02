@@ -18,7 +18,7 @@ pub struct RejectPlan<K> {
 
 pub struct ConflictResult<K> {
     /// Each job's ID mapped to its accumulated gas.
-    pub job_gas: BTreeMap<ID, u64>,
+    pub gas_lookup: BTreeMap<ID, u64>,
     /// Ordered sequences of job IDs paired with cumulative gas.
     pub sequence_gas: Vec<Vec<(ID, u64)>>,
 
@@ -26,21 +26,21 @@ pub struct ConflictResult<K> {
     pub committable: BTreeSet<ID>,
     /// Constraint violations reported before sequence selection.
     pub violations: Vec<Violation<K>>,
-    /// Transaction pairs that caused access or aggregate numeric conflicts.
-    pub pairs: BTreeSet<(ID, ID)>,
-    /// Conflict-history storage updates to merge with the block's execution state.
-    pub history: EvmState,
+    /// Job pairs involved in access or aggregate numeric violations.
+    pub involved_pairs: BTreeSet<(ID, ID)>,
+    /// Contract metadata updates to merge with the block's execution state.
+    pub contract_meta: EvmState,
 }
 
 impl<K> Default for ConflictResult<K> {
     fn default() -> Self {
         Self {
-            job_gas: BTreeMap::new(),
+            gas_lookup: BTreeMap::new(),
             sequence_gas: Vec::new(),
             committable: BTreeSet::new(),
             violations: Vec::new(),
-            pairs: BTreeSet::new(),
-            history: EvmState::default(),
+            involved_pairs: BTreeSet::new(),
+            contract_meta: EvmState::default(),
         }
     }
 }
@@ -59,7 +59,7 @@ impl<K> ConflictResult<K> {
             block_id,
             generation,
             rejected: self
-                .job_gas
+                .gas_lookup
                 .keys()
                 .filter(|id| !self.committable.contains(*id))
                 .map(|id| id.global)

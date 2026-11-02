@@ -4,7 +4,7 @@ use crate::{
         Crdt,
         state::{DeltaOp, Status, status::Tag, value::CrdtValue},
     },
-    eu::{ApiAddress, Field, KeyCodec, ScalarAdapter, StatDbCommitter},
+    eu::{ApiAddress, Property, SlotKeyCodec, ScalarAdapter, StatDbCommitter},
     planner::resolver::{AccessConflict, ConflictDetector, NumericError, Reason},
 };
 use alloy_evm::revm::{
@@ -34,9 +34,9 @@ fn successful_job(id: u64, gas: u64, state: EvmState) -> JobOutcome<u64> {
 
 fn scalar_state(original: [u64; 5], current: [u64; 5]) -> EvmState {
     let mut account = Account::default().with_touched_mark();
-    let slots = ScalarAdapter::new(KeyCodec::encode(
+    let slots = ScalarAdapter::new(SlotKeyCodec::encode(
         ApiAddress::Scalar,
-        Field::Value as u8,
+        Property::Value as u8,
         Address::ZERO,
     ));
     for ((key, original), current) in [
@@ -66,9 +66,9 @@ fn scalar_state(original: [u64; 5], current: [u64; 5]) -> EvmState {
 fn scalar_exports_preserve_snapshots_and_combine_reads_without_stripping_numeric_data() {
     let original = [0, 100, 42, 5, 0];
     let current = [0, 100, 42, 0, 0];
-    let slots = ScalarAdapter::new(KeyCodec::encode(
+    let slots = ScalarAdapter::new(SlotKeyCodec::encode(
         ApiAddress::Scalar,
-        Field::Value as u8,
+        Property::Value as u8,
         Address::ZERO,
     ));
     let mut outcome = successful_job(7, 21_000, scalar_state(original, current));
@@ -130,7 +130,7 @@ fn scalar_exports_preserve_snapshots_and_combine_reads_without_stripping_numeric
 
 #[test]
 fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
-    let key = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
+    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
     let mut results = (0..2)
         .map(|id| {
             let mut job = successful_job(id, 21_000, scalar_state([0; 5], [0; 5]));
@@ -204,7 +204,7 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
         } else {
             assert!(results[1].result_and_state.is_ok());
         }
-        let delta = KeyCodec::encode(ApiAddress::Scalar, Field::PosDelta as u8, Address::ZERO);
+        let delta = SlotKeyCodec::encode(ApiAddress::Scalar, Property::PosDelta as u8, Address::ZERO);
         assert_eq!(
             accumulator.inner()[&Address::ZERO].storage[&delta].present_value(),
             U256::from(expected_delta)

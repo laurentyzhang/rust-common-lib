@@ -1,5 +1,5 @@
 use super::*;
-use crate::eu::{ApiAddress, Field, KeyCodec};
+use crate::eu::{ApiAddress, Property, SlotKeyCodec};
 use alloy_evm::{
     block::StateDB,
     revm::{
@@ -26,8 +26,8 @@ fn commit_applies_scalar_materialization_and_keeps_other_slots() {
     fn requires_state_db<T: StateDB>() {}
     requires_state_db::<StateDb>();
 
-    let value = KeyCodec::encode(ApiAddress::Scalar, Field::Value as u8, Address::ZERO);
-    let delta = KeyCodec::encode(ApiAddress::Scalar, Field::PosDelta as u8, Address::ZERO);
+    let value = SlotKeyCodec::encode(ApiAddress::Scalar, Property::Value as u8, Address::ZERO);
+    let delta = SlotKeyCodec::encode(ApiAddress::Scalar, Property::PosDelta as u8, Address::ZERO);
     let ordinary = U256::from(7);
     let mut db = StateDb::new(changes(&[
         (value, U256::ZERO, U256::from(42)),

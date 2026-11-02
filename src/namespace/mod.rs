@@ -12,5 +12,5 @@ pub enum Namespace {
     Scalar = 0x85,
     Runtime = 0xa0,
     Multiprocess = 0xb0,
-    Conflict = 0xc0,
+    Meta = 0xc0,
 }

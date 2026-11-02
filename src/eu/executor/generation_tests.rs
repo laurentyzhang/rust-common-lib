@@ -246,7 +246,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(result.committable.is_empty());
         assert_eq!(
             result
-                .pairs
+                .involved_pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
@@ -292,7 +292,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert_eq!(outcomes.len(), 1);
         assert!(result.committable.is_empty());
         assert!(result.violations.is_empty());
-        assert!(result.pairs.is_empty());
+        assert!(result.involved_pairs.is_empty());
         assert_eq!(
             outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
                 .present_value(),
@@ -318,15 +318,16 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(resolutions[0].committable.is_empty());
         assert_eq!(
             resolutions[0]
-                .pairs
+                .involved_pairs
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(0, 1)])
         );
-        let count = crate::planner::history::Field::Count.slot(0);
+        let callee = job(1, contract).callee.unwrap();
+        let count = crate::planner::meta::field::Property::ConflictCount.slot(contract, callee, 0);
         assert_eq!(
-            resolutions[0].history[&contract].storage[&count].present_value(),
+            resolutions[0].contract_meta[&contract].storage[&count].present_value(),
             U256::from(1)
         );
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);

@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_prefixes() {
-        let valid = NamespaceCodec::encode(Namespace::Conflict);
+        let valid = NamespaceCodec::encode(Namespace::Meta);
         assert_eq!(valid, [b'A', b'R', b'C', b'O', VERSION, 0xc0, 0]);
         for length in 0..PREFIX_LEN {
             assert_eq!(NamespaceCodec::decode(&valid[..length]), None);

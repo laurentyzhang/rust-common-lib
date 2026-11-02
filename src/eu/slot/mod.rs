@@ -4,5 +4,5 @@ mod scalar;
 #[cfg(test)]
 mod tests;
 
-pub use key_codec::KeyCodec;
-pub(in crate::eu) use scalar::{Field, ScalarAdapter};
+pub use key_codec::SlotKeyCodec;
+pub(in crate::eu) use scalar::{Property, ScalarAdapter};
