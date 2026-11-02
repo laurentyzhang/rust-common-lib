@@ -1,4 +1,7 @@
+mod codec;
 pub mod field;
+
+pub use codec::MetaKeyCodec;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,7 +41,10 @@ impl<DB: Database, K> Planner<DB, K> {
         for index in 0..count.div_ceil(4) {
             let value = self
                 .db
-                .storage(host, Property::ConflictIndex.slot(host, callee, index as u32))
+                .storage(
+                    host,
+                    Property::ConflictIndex.slot(host, callee, index as u32),
+                )
                 .map_err(BlockExecutionError::other)?;
             for peer in value
                 .to_be_bytes::<32>()

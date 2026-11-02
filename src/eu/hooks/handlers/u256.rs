@@ -1,8 +1,7 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
-use crate::eu::{CallHookError, Property, SlotKeyCodec, ReadRecorder, ScalarAdapter, key::Key};
-use crate::namespace::Namespace;
+use crate::eu::{CallHookError, ReadRecorder, ScalarAdapter, ScalarKeyCodec, key::Key};
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -108,8 +107,7 @@ impl U256Handler {
 impl CallHandler for U256Handler {
     /// Recognizes scalar API slots with a defined field ID.
     fn is_valid_slot(&self, slot: U256) -> bool {
-        matches!(SlotKeyCodec::decode(slot), Some((Namespace::Scalar, field, _))
-            if Property::from_repr(field).is_some())
+        ScalarKeyCodec::decode(slot).is_some()
     }
 
     fn call(

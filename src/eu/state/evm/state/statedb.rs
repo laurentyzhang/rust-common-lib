@@ -4,8 +4,7 @@ use alloy_evm::revm::state::{EvmStorage, EvmStorageSlot};
 use alloy_primitives::{U256, map::hash_map::Entry};
 use rayon::prelude::*;
 
-use crate::eu::{ApiAddress, Property, SlotKeyCodec};
-use crate::namespace::Namespace;
+use crate::eu::{ApiAddress, Property, ScalarKeyCodec};
 
 #[derive(Debug)]
 pub struct StateDb<DB = EmptyDB> {
@@ -100,8 +99,8 @@ impl<DB> StateDb<DB> {
 
     /// Dispatches CRDT delta merging by API type.
     fn handle_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
-        match SlotKeyCodec::decode(key) {
-            Some((Namespace::Scalar, field, _))
+        match ScalarKeyCodec::decode(key) {
+            Some((field, _))
                 if field == Property::PosDelta as u8 || field == Property::NegDelta as u8 =>
             {
                 // Apply only this state's change to the delta magnitude.

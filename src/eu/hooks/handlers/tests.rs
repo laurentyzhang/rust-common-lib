@@ -2,7 +2,7 @@ use super::{CallHandler, U256Handler, u256::IScalar};
 use crate::crdt::{self, state::DeltaOp};
 use crate::eu::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, SlotKeyCodec, ReadRecorder, ScalarAdapter, key::Key,
+    ExitStatus, ReadRecorder, ScalarAdapter, ScalarKeyCodec, key::Key,
 };
 use crate::namespace::codec::VERSION;
 use alloy_evm::{
@@ -49,11 +49,11 @@ fn invoke(
 }
 
 fn scalar_key(handle: Address) -> B256 {
-    SlotKeyCodec::encode(ApiAddress::Scalar, 2, handle).into()
+    ScalarKeyCodec::encode(2, handle).into()
 }
 
 fn slots(handle: Address) -> ScalarAdapter {
-    ScalarAdapter::new(SlotKeyCodec::encode(ApiAddress::Scalar, 2, handle))
+    ScalarAdapter::new(ScalarKeyCodec::encode(2, handle))
 }
 
 fn invoke_delta(
@@ -116,10 +116,12 @@ fn scalar_handler_recognizes_slots_through_the_trait() {
             assert!(handler.is_valid_slot(slot));
         }
         for field in 5..=u8::MAX {
-            assert!(!handler.is_valid_slot(SlotKeyCodec::encode(ApiAddress::Scalar, field, handle)));
+            assert!(!handler.is_valid_slot(ScalarKeyCodec::encode(field, handle)));
         }
         for api in ApiAddress::iter().filter(|api| *api != ApiAddress::Scalar) {
-            assert!(!handler.is_valid_slot(SlotKeyCodec::encode(api, 0, handle)));
+            let mut bytes = ScalarKeyCodec::encode(0, handle).to_be_bytes::<32>();
+            bytes[5] = api as u8;
+            assert!(!handler.is_valid_slot(U256::from_be_bytes(bytes)));
         }
 
         // Reject malformed namespace, version, and reserved bytes.
@@ -141,13 +143,15 @@ fn invalid_scalar_keys_revert_before_state_access() {
     router
         .register(ApiAddress::Scalar.address(), U256Handler)
         .unwrap();
+    let mut other_namespace = ScalarKeyCodec::encode(2, handle).to_be_bytes::<32>();
+    other_namespace[5] = ApiAddress::Container as u8;
     for key in [
         B256::ZERO,
         B256::from(U256::from(5)),
-        B256::from(SlotKeyCodec::encode(ApiAddress::Scalar, 6, handle)),
-        B256::from(SlotKeyCodec::encode(ApiAddress::Scalar, 5, handle)),
-        B256::from(SlotKeyCodec::encode(ApiAddress::Scalar, 255, handle)),
-        B256::from(SlotKeyCodec::encode(ApiAddress::Container, 2, handle)),
+        B256::from(ScalarKeyCodec::encode(6, handle)),
+        B256::from(ScalarKeyCodec::encode(5, handle)),
+        B256::from(ScalarKeyCodec::encode(255, handle)),
+        B256::from(U256::from_be_bytes(other_namespace)),
     ] {
         let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
         let block = BlockEnv::default();
@@ -526,7 +530,7 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = ScalarAdapter::new(SlotKeyCodec::encode(ApiAddress::Scalar, 2, handle));
+        let keys = ScalarAdapter::new(ScalarKeyCodec::encode(2, handle));
         assert_eq!(keys, slots(handle));
         keys.store(&mut internals, owner, &state).unwrap();
         assert_eq!(

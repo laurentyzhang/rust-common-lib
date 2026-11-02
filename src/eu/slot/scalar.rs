@@ -5,8 +5,7 @@ use alloy_primitives::{Address, U256};
 use super::super::state::ApiStore;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::eu::{CallHookError, SlotKeyCodec};
-use crate::namespace::Namespace;
+use crate::eu::{CallHookError, ScalarKeyCodec};
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]
@@ -33,15 +32,9 @@ pub struct ScalarAdapter {
 // Read individual fields using any recognized field key of the scalar instance.
 // Readers return None for invalid keys, backend failures, or values outside the requested type.
 impl ScalarAdapter {
-    /// Checks if the given key corresponds to a delta field of a scalar.
+    /// Recognizes a scalar's value property.
     pub fn is_value_key(key: U256) -> bool {
-        match SlotKeyCodec::decode(key) {
-            Some((namespace, field, _)) => {
-                namespace == Namespace::Scalar
-                    && matches!(Property::from_repr(field), Some(Property::Value))
-            }
-            None => false,
-        }
+        matches!(ScalarKeyCodec::decode(key), Some((property, _)) if property == Property::Value as u8)
     }
 }
 
@@ -51,11 +44,11 @@ impl ScalarAdapter {
     /// The caller must validate the input key before calling this constructor.
     pub fn new(key: U256) -> Self {
         Self {
-            min: SlotKeyCodec::with_field(key, Property::Min as u8),
-            max: SlotKeyCodec::with_field(key, Property::Max as u8),
-            value: SlotKeyCodec::with_field(key, Property::Value as u8),
-            pos_delta: SlotKeyCodec::with_field(key, Property::PosDelta as u8),
-            neg_delta: SlotKeyCodec::with_field(key, Property::NegDelta as u8),
+            min: ScalarKeyCodec::with_property(key, Property::Min as u8),
+            max: ScalarKeyCodec::with_property(key, Property::Max as u8),
+            value: ScalarKeyCodec::with_property(key, Property::Value as u8),
+            pos_delta: ScalarKeyCodec::with_property(key, Property::PosDelta as u8),
+            neg_delta: ScalarKeyCodec::with_property(key, Property::NegDelta as u8),
         }
     }
 

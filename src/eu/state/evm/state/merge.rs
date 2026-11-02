@@ -3,7 +3,7 @@ use alloy_primitives::{U256, map::hash_map::Entry};
 use rayon::prelude::*;
 
 use super::StateDb;
-use crate::eu::{ApiAddress, Property, SlotKeyCodec};
+use crate::eu::{Property, ScalarKeyCodec};
 use crate::namespace::Namespace;
 
 impl<DB> StateDb<DB> {}

@@ -157,7 +157,8 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             .1
             .is_empty()
     );
-    let count = &result.contract_meta[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
+    let count =
+        &result.contract_meta[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
     assert_eq!(count.original_value(), U256::from(1));
     assert_eq!(count.present_value(), U256::from(2));
     drop(planner);
@@ -324,23 +325,22 @@ fn numeric_conflicts_report_contributing_transactions() {
 
 #[test]
 fn contract_metadata_keys_encode_field_selector_index_and_host() {
-    use crate::eu::{ApiAddress, CallHandler, SlotKeyCodec, U256Handler};
+    use super::meta::MetaKeyCodec;
+    use crate::eu::{ApiAddress, CallHandler, U256Handler};
     let host = Address::repeat_byte(0x11);
     let function = callee(host, 0x12345678);
     let count = Property::ConflictCount.slot(host, function, 0);
     let entry = Property::ConflictIndex.slot(host, function, 42);
-    let (namespace, field, count_key) = SlotKeyCodec::decode(count).unwrap();
-    assert_eq!(namespace, Namespace::Meta);
+    let (field, selector, index, host_prefix) = MetaKeyCodec::decode(count).unwrap();
     assert_eq!(field, 1);
-    assert_eq!(&count_key[..4], &0x12345678_u32.to_be_bytes());
-    assert_eq!(&count_key[4..8], &[0; 4]);
-    assert_eq!(&count_key[8..], &host[..16]);
-    let (namespace, field, entry_key) = SlotKeyCodec::decode(entry).unwrap();
-    assert_eq!(namespace, Namespace::Meta);
+    assert_eq!(selector, 0x12345678_u32.to_be_bytes());
+    assert_eq!(index, 0);
+    assert_eq!(host_prefix, host[..16]);
+    let (field, selector, index, host_prefix) = MetaKeyCodec::decode(entry).unwrap();
     assert_eq!(field, 2);
-    assert_eq!(&entry_key[..4], &0x12345678_u32.to_be_bytes());
-    assert_eq!(&entry_key[4..8], &42_u32.to_be_bytes());
-    assert_eq!(&entry_key[8..], &host[..16]);
+    assert_eq!(selector, 0x12345678_u32.to_be_bytes());
+    assert_eq!(index, 42);
+    assert_eq!(host_prefix, host[..16]);
     assert_eq!(
         &count.to_be_bytes::<32>()[..7],
         &entry.to_be_bytes::<32>()[..7]
@@ -350,8 +350,8 @@ fn contract_metadata_keys_encode_field_selector_index_and_host() {
     assert_eq!(Property::DeferredIndex as u8, 4);
     let deferred = Property::DeferredIndex.slot(host, function, 42);
     assert_eq!(
-        SlotKeyCodec::decode(deferred).unwrap(),
-        (Namespace::Meta, 4, entry_key)
+        MetaKeyCodec::decode(deferred).unwrap(),
+        (4, selector, index, host_prefix)
     );
     assert!(!ApiAddress::is_storage_key(count));
     assert!(!U256Handler.is_valid_slot(count));

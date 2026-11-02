@@ -17,7 +17,7 @@ pub use hooks::{
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use outcome::{HaltReason, JobOutcome};
-pub use slot::SlotKeyCodec;
+pub use slot::ScalarKeyCodec;
 pub(in crate::eu) use slot::{Property, ScalarAdapter};
 pub use state::key;
 pub use state::{StatDbCommitter, StateDb};

@@ -1,11 +1,11 @@
 use super::*;
-use crate::eu::{ApiAddress, Property, SlotKeyCodec};
+use crate::eu::{Property, ScalarKeyCodec};
 use alloy_evm::revm::state::{Account, EvmStorageSlot};
 use alloy_primitives::{Address, U256};
 
 #[test]
 fn flush_combines_only_accepted_deltas_and_clears_the_buffer() {
-    let key = SlotKeyCodec::encode(ApiAddress::Scalar, Property::PosDelta as u8, Address::ZERO);
+    let key = ScalarKeyCodec::encode(Property::PosDelta as u8, Address::ZERO);
     let changes = |original: u64, present: u64| {
         let mut account = Account::default();
         account.mark_touch();
