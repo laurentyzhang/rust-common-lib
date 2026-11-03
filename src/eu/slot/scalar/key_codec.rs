@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, U256};
 
-use super::scalar::Property;
+use super::{Property, ScalarKind};
 use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 
 /// Layout: [namespace prefix:7][property:1][instance key:24].
@@ -8,15 +8,15 @@ pub struct ScalarKeyCodec;
 
 impl ScalarKeyCodec {
     /// Uses a zero-padded address as the instance key.
-    pub fn encode(property: u8, handle: Address) -> U256 {
+    pub fn encode(namespace: Namespace, property: u8, handle: Address) -> U256 {
         let mut instance = [0; 24];
         instance[4..].copy_from_slice(handle.as_slice());
-        Self::encode_key(property, instance)
+        Self::encode_key(namespace, property, instance)
     }
 
-    pub fn encode_key(property: u8, instance: [u8; 24]) -> U256 {
+    pub fn encode_key(namespace: Namespace, property: u8, instance: [u8; 24]) -> U256 {
         let mut bytes = [0; 32];
-        bytes[..PREFIX_LEN].copy_from_slice(&NamespaceCodec::encode(Namespace::Scalar));
+        bytes[..PREFIX_LEN].copy_from_slice(&NamespaceCodec::encode(namespace));
         bytes[PREFIX_LEN] = property;
         bytes[PREFIX_LEN + 1..].copy_from_slice(&instance);
         U256::from_be_bytes(bytes)
@@ -29,14 +29,12 @@ impl ScalarKeyCodec {
     }
 
     /// Rejects other namespaces and undefined scalar properties.
-    pub fn decode(key: U256) -> Option<(u8, [u8; 24])> {
+    pub fn decode(key: U256) -> Option<(ScalarKind, u8, [u8; 24])> {
         let bytes = key.to_be_bytes::<32>();
         let (namespace, payload) = NamespaceCodec::decode(&bytes)?;
-        if namespace != Namespace::Scalar {
-            return None;
-        }
+        let kind = ScalarKind::try_from(namespace).ok()?;
         let (&property, instance) = payload.split_first()?;
         Property::from_repr(property)?;
-        Some((property, instance.try_into().ok()?))
+        Some((kind, property, instance.try_into().ok()?))
     }
 }

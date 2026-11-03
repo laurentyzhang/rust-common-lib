@@ -63,6 +63,7 @@ impl<Tx> Job<Tx> {
         Tx: ExecutableTx<E>,
     {
         executor.evm_mut().reset_reads(self.id.global);
+        executor.evm_mut().set_deferred(self.is_deferred);
         let mut result_and_state = None;
         if let Err(error) = executor.execute_transaction_with_result_closure(self.tx, |result| {
             result_and_state = Some(result.result().clone());

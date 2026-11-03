@@ -36,6 +36,8 @@ pub struct CallInput<'a> {
     pub input: &'a [u8],
     pub gas_limit: u64,
     pub scheme: CallScheme,
+    /// Whether the current job is executing its deferred phase.
+    pub is_deferred: bool,
 }
 
 /// Routes reserved-address calls to Arcology runtime handlers.
@@ -123,6 +125,7 @@ pub fn dispatch_precompile(
     router: &CallRouter,
     mut input: PrecompileInput<'_>,
     api_reads: &mut ReadRecorder,
+    is_deferred: bool,
 ) -> PrecompileResult {
     let scheme = if input.is_static_call() {
         CallScheme::StaticCall
@@ -140,6 +143,7 @@ pub fn dispatch_precompile(
         input: input.data,
         gas_limit: input.gas,
         scheme,
+        is_deferred,
     };
 
     match router.dispatch(&hook_input, &mut input.internals, api_reads) {

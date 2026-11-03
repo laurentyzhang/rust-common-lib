@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, U256};
 
-use super::field::Property;
+use super::property::Property;
 use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 
 /// Layout: [namespace prefix:7][selector:4][property:1][slot index:4][host prefix:16].

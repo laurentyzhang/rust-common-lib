@@ -1,21 +1,32 @@
-use super::{CallHandler, U256Handler, u256::IScalar};
-use crate::crdt::{self, state::DeltaOp};
+use super::{CallHandler, I256Handler, II256, IRuntime, IU256, RuntimeHandler, U256Handler};
+use crate::crdt::{
+    self, Scalar,
+    state::{CrdtValue, DeltaOp, Status},
+};
 use crate::eu::state::ApiStore;
 use crate::eu::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    ExitStatus, ReadRecorder, ScalarAdapter, ScalarKeyCodec, key::Key,
+    ExitStatus, JobOutcome, ReadRecorder, ScalarAdapter, ScalarKeyCodec, StatDbCommitter, StateDb,
+    key::Key,
 };
+use crate::namespace::Namespace;
 use crate::namespace::codec::VERSION;
+use crate::planner::{
+    Planner,
+    meta::property::Property,
+    scheduler::{ID, Job},
+};
+use crate::store::traits::Committer;
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory, EvmInternals,
     revm::{
         Journal,
         context::{BlockEnv, CfgEnv, JournalTr, TxEnv},
         database::{EmptyDB, InMemoryDB},
-        state::{AccountInfo, Bytecode},
+        state::{Account, AccountInfo, Bytecode},
     },
 };
-use alloy_primitives::{Address, B256, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, I256, KECCAK256_EMPTY, TxKind, U256};
 use alloy_sol_types::{SolCall, SolValue};
 
 fn invoke(
@@ -30,9 +41,10 @@ fn invoke(
     let tx = TxEnv::default();
     let data = call.abi_encode();
     let input = CallInput {
+        is_deferred: false,
         caller: owner,
-        target: ApiAddress::Scalar.address(),
-        code_address: ApiAddress::Scalar.address(),
+        target: ApiAddress::U256.address(),
+        code_address: ApiAddress::U256.address(),
         value,
         input: &data,
         gas_limit: 500_000,
@@ -41,7 +53,7 @@ fn invoke(
     let mut internals = EvmInternals::new(journal, &block, &cfg, &tx);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     router
         .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
@@ -50,11 +62,11 @@ fn invoke(
 }
 
 fn scalar_key(handle: Address) -> B256 {
-    ScalarKeyCodec::encode(2, handle).into()
+    ScalarKeyCodec::encode(Namespace::U256, 2, handle).into()
 }
 
 fn slots(handle: Address) -> ScalarAdapter {
-    ScalarAdapter::new(ScalarKeyCodec::encode(2, handle))
+    ScalarAdapter::new(ScalarKeyCodec::encode(Namespace::U256, 2, handle))
 }
 
 fn invoke_delta(
@@ -69,7 +81,7 @@ fn invoke_delta(
         DeltaOp::Add(delta) => invoke(
             journal,
             owner,
-            &IScalar::addCall {
+            &IU256::addCall {
                 key: scalar_key(handle),
                 delta,
             },
@@ -79,7 +91,7 @@ fn invoke_delta(
         DeltaOp::Sub(delta) => invoke(
             journal,
             owner,
-            &IScalar::subCall {
+            &IU256::subCall {
                 key: scalar_key(handle),
                 delta,
             },
@@ -117,10 +129,10 @@ fn scalar_handler_recognizes_slots_through_the_trait() {
             assert!(handler.is_valid_slot(slot));
         }
         for field in 5..=u8::MAX {
-            assert!(!handler.is_valid_slot(ScalarKeyCodec::encode(field, handle)));
+            assert!(!handler.is_valid_slot(ScalarKeyCodec::encode(Namespace::U256, field, handle)));
         }
-        for api in ApiAddress::iter().filter(|api| *api != ApiAddress::Scalar) {
-            let mut bytes = ScalarKeyCodec::encode(0, handle).to_be_bytes::<32>();
+        for api in ApiAddress::iter().filter(|api| *api != ApiAddress::U256) {
+            let mut bytes = ScalarKeyCodec::encode(Namespace::U256, 0, handle).to_be_bytes::<32>();
             bytes[5] = api as u8;
             assert!(!handler.is_valid_slot(U256::from_be_bytes(bytes)));
         }
@@ -142,16 +154,17 @@ fn invalid_scalar_keys_revert_before_state_access() {
     let handle = Address::with_last_byte(1);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
-    let mut other_namespace = ScalarKeyCodec::encode(2, handle).to_be_bytes::<32>();
-    other_namespace[5] = ApiAddress::Container as u8;
+    let mut other_namespace =
+        ScalarKeyCodec::encode(Namespace::U256, 2, handle).to_be_bytes::<32>();
+    other_namespace[5] = ApiAddress::Set as u8;
     for key in [
         B256::ZERO,
         B256::from(U256::from(5)),
-        B256::from(ScalarKeyCodec::encode(6, handle)),
-        B256::from(ScalarKeyCodec::encode(5, handle)),
-        B256::from(ScalarKeyCodec::encode(255, handle)),
+        B256::from(ScalarKeyCodec::encode(Namespace::U256, 6, handle)),
+        B256::from(ScalarKeyCodec::encode(Namespace::U256, 5, handle)),
+        B256::from(ScalarKeyCodec::encode(Namespace::U256, 255, handle)),
         B256::from(U256::from_be_bytes(other_namespace)),
     ] {
         let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
@@ -162,28 +175,29 @@ fn invalid_scalar_keys_revert_before_state_access() {
         {
             let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
             for data in [
-                IScalar::initCall {
+                IU256::initCall {
                     key,
                     min: U256::ZERO,
                     max: U256::from(100),
                 }
                 .abi_encode(),
-                IScalar::addCall {
+                IU256::addCall {
                     key,
                     delta: U256::from(1),
                 }
                 .abi_encode(),
-                IScalar::subCall {
+                IU256::subCall {
                     key,
                     delta: U256::from(1),
                 }
                 .abi_encode(),
-                IScalar::getCall { key }.abi_encode(),
+                IU256::getCall { key }.abi_encode(),
             ] {
                 let input = CallInput {
+                    is_deferred: false,
                     caller: owner,
-                    target: ApiAddress::Scalar.address(),
-                    code_address: ApiAddress::Scalar.address(),
+                    target: ApiAddress::U256.address(),
+                    code_address: ApiAddress::U256.address(),
                     value: U256::ZERO,
                     input: &data,
                     gas_limit: 500_000,
@@ -209,7 +223,7 @@ fn scalar_calls_preserve_all_24_instance_key_bytes() {
     second[8] = 1;
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     for (key, delta) in [(first, U256::from(11)), (second, U256::from(22))] {
-        let init = IScalar::initCall {
+        let init = IU256::initCall {
             key,
             min: U256::ZERO,
             max: U256::from(100),
@@ -218,7 +232,7 @@ fn scalar_calls_preserve_all_24_instance_key_bytes() {
             invoke(&mut journal, owner, &init, CallScheme::Call, U256::ZERO).status,
             ExitStatus::Return
         );
-        let add = IScalar::addCall { key, delta };
+        let add = IU256::addCall { key, delta };
         assert_eq!(
             invoke(&mut journal, owner, &add, CallScheme::Call, U256::ZERO).status,
             ExitStatus::Return
@@ -228,7 +242,7 @@ fn scalar_calls_preserve_all_24_instance_key_bytes() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::getCall { key },
+            &IU256::getCall { key },
             CallScheme::StaticCall,
             U256::ZERO,
         );
@@ -249,16 +263,16 @@ fn only_get_records_the_value_and_delta_observation() {
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let mut recorder = ReadRecorder::new(55);
-    let get = IScalar::getCall {
+    let get = IU256::getCall {
         key: scalar_key(handle),
     }
     .abi_encode();
     for (index, (data, scheme)) in [
         (
-            IScalar::initCall {
+            IU256::initCall {
                 key: scalar_key(handle),
                 min: U256::ZERO,
                 max: U256::from(100),
@@ -267,7 +281,7 @@ fn only_get_records_the_value_and_delta_observation() {
             CallScheme::Call,
         ),
         (
-            IScalar::addCall {
+            IU256::addCall {
                 key: scalar_key(handle),
                 delta: U256::from(12),
             }
@@ -275,7 +289,7 @@ fn only_get_records_the_value_and_delta_observation() {
             CallScheme::Call,
         ),
         (
-            IScalar::subCall {
+            IU256::subCall {
                 key: scalar_key(handle),
                 delta: U256::from(5),
             }
@@ -289,9 +303,10 @@ fn only_get_records_the_value_and_delta_observation() {
     .enumerate()
     {
         let input = CallInput {
+            is_deferred: false,
             caller: owner,
-            target: ApiAddress::Scalar.address(),
-            code_address: ApiAddress::Scalar.address(),
+            target: ApiAddress::U256.address(),
+            code_address: ApiAddress::U256.address(),
             value: U256::ZERO,
             input: &data,
             gas_limit: 500_000,
@@ -323,7 +338,7 @@ fn only_get_records_the_value_and_delta_observation() {
             .find(|read| read.key == Key::Storage(owner, *slot))
             .unwrap();
         assert_eq!(read.id.global, 55);
-        assert!(read.data.operations.reads.count() >= 2);
+        assert_eq!(read.data.operations.reads.count(), 2);
     }
 }
 
@@ -334,7 +349,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     let second = Address::with_last_byte(2);
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut left = factory.create_evm_with_inspector(
@@ -355,8 +370,8 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
             assert!(
                 evm.transact(ArcologyTx::from(TxEnv {
                     caller: owner,
-                    kind: TxKind::Call(ApiAddress::Scalar.address()),
-                    data: IScalar::getCall {
+                    kind: TxKind::Call(ApiAddress::U256.address()),
+                    data: IU256::getCall {
                         key: scalar_key(handle)
                     }
                     .abi_encode()
@@ -385,15 +400,15 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
                 .unwrap();
             assert_eq!(read.id.global, id);
             assert_eq!(read.data.id, id);
-            assert!(read.data.operations.reads.count() > 0);
+            assert_eq!(read.data.operations.reads.count(), 1);
         }
         assert!(evm.drain_reads().is_empty());
     }
     left.reset_reads(99);
     left.transact(ArcologyTx::from(TxEnv {
         caller: owner,
-        kind: TxKind::Call(ApiAddress::Scalar.address()),
-        data: IScalar::getCall {
+        kind: TxKind::Call(ApiAddress::U256.address()),
+        data: IU256::getCall {
             key: scalar_key(second),
         }
         .abi_encode()
@@ -427,7 +442,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
     let slot = slots(handle).value;
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     for exit in [0xf3, 0xfd] {
@@ -460,7 +475,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .transact(ArcologyTx::from(TxEnv {
                 caller: Address::repeat_byte(0x11),
                 kind: TxKind::Call(owner),
-                data: IScalar::getCall {
+                data: IU256::getCall {
                     key: scalar_key(handle),
                 }
                 .abi_encode()
@@ -496,7 +511,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .iter()
             .find(|read| read.key == Key::Storage(owner, slot))
             .unwrap();
-        assert!(value_read.data.operations.reads.count() >= 2);
+        assert_eq!(value_read.data.operations.reads.count(), 2);
         let delta_read = storage
             .iter()
             .find(|read| read.key == Key::Storage(owner, slots(handle).pos_delta))
@@ -528,7 +543,7 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = ScalarAdapter::new(ScalarKeyCodec::encode(2, handle));
+        let keys = ScalarAdapter::new(ScalarKeyCodec::encode(Namespace::U256, 2, handle));
         assert_eq!(keys, slots(handle));
         keys.store(&mut internals, owner, &state).unwrap();
         assert_eq!(
@@ -542,7 +557,7 @@ fn scalar_store_and_load_round_trip() {
 fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
     let mut journal = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
-    let call = IScalar::initCall {
+    let call = IU256::initCall {
         key: scalar_key(Address::with_last_byte(1)),
         min: U256::ZERO,
         max: U256::from(100),
@@ -653,7 +668,7 @@ fn scalar_store_rejects_invalid_pending_arithmetic_before_writing() {
 fn initializes_five_fields_and_returns_the_supplied_key() {
     let mut journal = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
-    let call = IScalar::initCall {
+    let call = IU256::initCall {
         key: scalar_key(Address::repeat_byte(0x33)),
         min: U256::from(10),
         max: U256::from(100),
@@ -695,7 +710,7 @@ fn caller_and_handle_namespaces_are_independent() {
     let first = Address::with_last_byte(1);
     let second = Address::with_last_byte(2);
     for (owner, handle, min) in [(alice, first, 10), (alice, second, 20), (bob, first, 30)] {
-        let call = IScalar::initCall {
+        let call = IU256::initCall {
             key: scalar_key(handle),
             min: U256::from(min),
             max: U256::from(100),
@@ -718,7 +733,7 @@ fn invalid_initialization_leaves_the_journal_unchanged() {
     let mut journal = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
     for (min, max) in [(20, 10), (1, 0)] {
-        let call = IScalar::initCall {
+        let call = IU256::initCall {
             key: scalar_key(Address::with_last_byte(1)),
             min: U256::from(min),
             max: U256::from(max),
@@ -728,7 +743,7 @@ fn invalid_initialization_leaves_the_journal_unchanged() {
             ExitStatus::Revert
         );
     }
-    let call = IScalar::initCall {
+    let call = IU256::initCall {
         key: scalar_key(Address::with_last_byte(1)),
         min: U256::ZERO,
         max: U256::from(100),
@@ -750,7 +765,7 @@ fn invalid_initialization_leaves_the_journal_unchanged() {
 fn initialization_reverts_with_the_journal_checkpoint() {
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
-    let call = IScalar::initCall {
+    let call = IU256::initCall {
         key: scalar_key(Address::with_last_byte(1)),
         min: U256::from(10),
         max: U256::from(100),
@@ -769,7 +784,7 @@ fn add_and_sub_keep_deltas_pending_across_get_calls() {
     let mut journal = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
     let handle = Address::with_last_byte(1);
-    let init = IScalar::initCall {
+    let init = IU256::initCall {
         key: scalar_key(handle),
         min: U256::from(10),
         max: U256::from(100),
@@ -797,7 +812,7 @@ fn add_and_sub_keep_deltas_pending_across_get_calls() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::getCall {
+            &IU256::getCall {
                 key: scalar_key(handle),
             },
             CallScheme::StaticCall,
@@ -819,7 +834,7 @@ fn get_preserves_pending_deltas_for_later_updates() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::initCall {
+        &IU256::initCall {
             key: scalar_key(handle),
             min: U256::ZERO,
             max: U256::from(100),
@@ -854,7 +869,7 @@ fn get_preserves_pending_deltas_for_later_updates() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::addCall {
+        &IU256::addCall {
             key: scalar_key(handle),
             delta: U256::from(60),
         },
@@ -869,7 +884,7 @@ fn get_preserves_pending_deltas_for_later_updates() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(handle),
         },
         CallScheme::StaticCall,
@@ -890,7 +905,7 @@ fn get_preserves_pending_deltas_for_later_updates() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::subCall {
+        &IU256::subCall {
             key: scalar_key(handle),
             delta: U256::from(10),
         },
@@ -908,7 +923,7 @@ fn get_preserves_pending_deltas_for_later_updates() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(handle),
         },
         CallScheme::StaticCall,
@@ -932,7 +947,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::initCall {
+        &IU256::initCall {
             key: scalar_key(handle),
             min: U256::ZERO,
             max: U256::MAX,
@@ -944,7 +959,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::addCall {
+            &IU256::addCall {
                 key: scalar_key(handle),
                 delta,
             },
@@ -964,7 +979,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(handle),
         },
         CallScheme::StaticCall,
@@ -978,7 +993,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::subCall {
+            &IU256::subCall {
                 key: scalar_key(handle),
                 delta,
             },
@@ -998,7 +1013,7 @@ fn accumulated_pending_deltas_span_the_full_uint256_range() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(handle),
         },
         CallScheme::StaticCall,
@@ -1058,7 +1073,7 @@ fn invalid_deltas_leave_scalar_storage_unchanged() {
         invoke(
             &mut journal,
             owner,
-            &IScalar::initCall {
+            &IU256::initCall {
                 key: scalar_key(handle),
                 min,
                 max,
@@ -1091,7 +1106,7 @@ fn add_and_sub_support_full_uint256_magnitudes() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::initCall {
+        &IU256::initCall {
             key: scalar_key(handle),
             min: U256::ZERO,
             max: U256::MAX,
@@ -1116,7 +1131,7 @@ fn add_and_sub_support_full_uint256_magnitudes() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::getCall {
+            &IU256::getCall {
                 key: scalar_key(handle),
             },
             CallScheme::StaticCall,
@@ -1170,7 +1185,7 @@ fn add_keeps_callers_and_handles_independent() {
         invoke(
             &mut journal,
             owner,
-            &IScalar::initCall {
+            &IU256::initCall {
                 key: scalar_key(handle),
                 min: U256::ZERO,
                 max: U256::from(100),
@@ -1181,7 +1196,7 @@ fn add_keeps_callers_and_handles_independent() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::addCall {
+            &IU256::addCall {
                 key: scalar_key(handle),
                 delta: U256::from(delta),
             },
@@ -1194,7 +1209,7 @@ fn add_keeps_callers_and_handles_independent() {
         let output = invoke(
             &mut journal,
             owner,
-            &IScalar::getCall {
+            &IU256::getCall {
                 key: scalar_key(handle),
             },
             CallScheme::StaticCall,
@@ -1215,7 +1230,7 @@ fn add_reverts_with_the_journal_checkpoint() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::initCall {
+        &IU256::initCall {
             key: scalar_key(handle),
             min: U256::ZERO,
             max: U256::from(100),
@@ -1227,7 +1242,7 @@ fn add_reverts_with_the_journal_checkpoint() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::addCall {
+        &IU256::addCall {
             key: scalar_key(handle),
             delta: U256::from(50),
         },
@@ -1238,7 +1253,7 @@ fn add_reverts_with_the_journal_checkpoint() {
     invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(handle),
         },
         CallScheme::StaticCall,
@@ -1268,11 +1283,11 @@ fn add_reverts_with_the_journal_checkpoint() {
 #[test]
 fn evm_sub_returns_true_and_exports_only_the_pending_delta() {
     assert_eq!(
-        IScalar::addCall::SELECTOR,
+        IU256::addCall::SELECTOR,
         alloy_primitives::keccak256("add(bytes32,uint256)")[..4]
     );
     assert_eq!(
-        IScalar::subCall::SELECTOR,
+        IU256::subCall::SELECTOR,
         alloy_primitives::keccak256("sub(bytes32,uint256)")[..4]
     );
     let owner = Address::repeat_byte(0x11);
@@ -1284,15 +1299,15 @@ fn evm_sub_returns_true_and_exports_only_the_pending_delta() {
         .unwrap();
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(db, EvmEnv::default());
     let result = evm
         .transact(ArcologyTx::from(TxEnv {
             caller: owner,
-            kind: TxKind::Call(ApiAddress::Scalar.address()),
-            data: IScalar::subCall {
+            kind: TxKind::Call(ApiAddress::U256.address()),
+            data: IU256::subCall {
                 key: scalar_key(handle),
                 delta: U256::from(2),
             }
@@ -1345,7 +1360,7 @@ fn get_returns_caller_scoped_journal_values_for_call_and_staticcall() {
             let output = invoke(
                 &mut journal,
                 owner,
-                &IScalar::getCall {
+                &IU256::getCall {
                     key: scalar_key(handle),
                 },
                 scheme,
@@ -1369,7 +1384,7 @@ fn get_returns_zero_without_touching_an_uninitialized_scalar() {
     let output = invoke(
         &mut journal,
         owner,
-        &IScalar::getCall {
+        &IU256::getCall {
             key: scalar_key(Address::with_last_byte(1)),
         },
         CallScheme::StaticCall,
@@ -1388,8 +1403,8 @@ fn get_returns_zero_without_touching_an_uninitialized_scalar() {
 fn get_rejects_invalid_call_contexts_without_loading_state() {
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
-    let api = ApiAddress::Scalar.address();
-    let data = IScalar::getCall {
+    let api = ApiAddress::U256.address();
+    let data = IU256::getCall {
         key: scalar_key(Address::with_last_byte(1)),
     }
     .abi_encode();
@@ -1404,6 +1419,7 @@ fn get_rejects_invalid_call_contexts_without_loading_state() {
         (CallScheme::StaticCall, U256::ZERO, owner),
     ] {
         let input = CallInput {
+            is_deferred: false,
             caller: owner,
             target,
             code_address: api,
@@ -1427,7 +1443,7 @@ fn get_rejects_invalid_call_contexts_without_loading_state() {
 #[test]
 fn evm_get_returns_the_callers_stored_scalar_value() {
     assert_eq!(
-        IScalar::getCall::SELECTOR,
+        IU256::getCall::SELECTOR,
         alloy_primitives::keccak256("get(bytes32)")[..4]
     );
     let owner = Address::repeat_byte(0x11);
@@ -1439,15 +1455,15 @@ fn evm_get_returns_the_callers_stored_scalar_value() {
         .unwrap();
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(db, EvmEnv::default());
     let result = evm
         .transact(ArcologyTx::from(TxEnv {
             caller: owner,
-            kind: TxKind::Call(ApiAddress::Scalar.address()),
-            data: IScalar::getCall {
+            kind: TxKind::Call(ApiAddress::U256.address()),
+            data: IU256::getCall {
                 key: scalar_key(handle),
             }
             .abi_encode()
@@ -1467,17 +1483,17 @@ fn evm_get_returns_the_callers_stored_scalar_value() {
 #[test]
 fn evm_exports_the_fields_under_the_caller_account() {
     assert_eq!(
-        IScalar::initCall::SELECTOR,
+        IU256::initCall::SELECTOR,
         alloy_primitives::keccak256("init(bytes32,uint256,uint256)")[..4]
     );
     let mut router = CallRouter::new();
     router
-        .register(ApiAddress::Scalar.address(), U256Handler)
+        .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
     let mut evm = factory.create_evm(EmptyDB::default(), EvmEnv::default());
     let owner = Address::repeat_byte(0x11);
-    let call = IScalar::initCall {
+    let call = IU256::initCall {
         key: scalar_key(Address::with_last_byte(7)),
         min: U256::ZERO,
         max: U256::from(100),
@@ -1485,7 +1501,7 @@ fn evm_exports_the_fields_under_the_caller_account() {
     let result = evm
         .transact(ArcologyTx::from(TxEnv {
             caller: owner,
-            kind: TxKind::Call(ApiAddress::Scalar.address()),
+            kind: TxKind::Call(ApiAddress::U256.address()),
             data: call.abi_encode().into(),
             gas_limit: 500_000,
             gas_price: 0,
@@ -1509,4 +1525,677 @@ fn evm_exports_the_fields_under_the_caller_account() {
         .map(|key| result.state[&owner].storage[&key].present_value()),
         [call.min, call.max, U256::ZERO, U256::ZERO, U256::ZERO]
     );
+}
+
+fn invoke_i256(
+    journal: &mut Journal<EmptyDB>,
+    owner: Address,
+    call: &impl SolCall,
+    scheme: CallScheme,
+) -> CallOutput {
+    let block = BlockEnv::default();
+    let cfg: CfgEnv = CfgEnv::default();
+    let tx = TxEnv::default();
+    let data = call.abi_encode();
+    let input = CallInput {
+        is_deferred: false,
+        caller: owner,
+        target: ApiAddress::I256.address(),
+        code_address: ApiAddress::I256.address(),
+        value: U256::ZERO,
+        input: &data,
+        gas_limit: 500_000,
+        scheme,
+    };
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::I256.address(), I256Handler)
+        .unwrap();
+    let mut internals = EvmInternals::new(journal, &block, &cfg, &tx);
+    router
+        .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
+        .unwrap()
+        .unwrap()
+}
+
+#[test]
+fn signed_deltas_cross_zero_without_materializing() {
+    let owner = Address::repeat_byte(0x11);
+    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = ScalarAdapter::new(key.into());
+    let mut journal = Journal::new(EmptyDB::default());
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::initCall {
+                key,
+                min: I256::unchecked_from(-100),
+                max: I256::unchecked_from(100)
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Return
+    );
+    for (delta, expected) in [
+        (DeltaOp::Sub(U256::from(30)), -30),
+        (DeltaOp::Add(U256::from(50)), 20),
+    ] {
+        let output = match delta {
+            DeltaOp::Add(delta) => invoke_i256(
+                &mut journal,
+                owner,
+                &II256::addCall { key, delta },
+                CallScheme::Call,
+            ),
+            DeltaOp::Sub(delta) => invoke_i256(
+                &mut journal,
+                owner,
+                &II256::subCall { key, delta },
+                CallScheme::Call,
+            ),
+        };
+        assert_eq!(output.status, ExitStatus::Return);
+        let output = invoke_i256(
+            &mut journal,
+            owner,
+            &II256::getCall { key },
+            CallScheme::StaticCall,
+        );
+        assert_eq!(
+            I256::abi_decode_validate(&output.output).unwrap(),
+            I256::unchecked_from(expected)
+        );
+        assert_eq!(journal.sload(owner, slots.value).unwrap().data, U256::ZERO);
+    }
+    assert_eq!(
+        journal.sload(owner, slots.pos_delta).unwrap().data,
+        U256::from(20)
+    );
+    assert_eq!(
+        journal.sload(owner, slots.neg_delta).unwrap().data,
+        U256::ZERO
+    );
+}
+
+#[test]
+fn signed_arithmetic_supports_full_width_magnitudes_and_rejects_overflow() {
+    let owner = Address::repeat_byte(0x11);
+    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = ScalarAdapter::new(key.into());
+    let mut journal = Journal::new(EmptyDB::default());
+    let block = BlockEnv::default();
+    let cfg: CfgEnv = CfgEnv::default();
+    let tx = TxEnv::default();
+    slots
+        .store(
+            &mut EvmInternals::new(&mut journal, &block, &cfg, &tx),
+            owner,
+            &Scalar::<I256> {
+                value: I256::MIN,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::addCall {
+                key,
+                delta: U256::MAX
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Return
+    );
+    let output = invoke_i256(
+        &mut journal,
+        owner,
+        &II256::getCall { key },
+        CallScheme::StaticCall,
+    );
+    assert_eq!(
+        I256::abi_decode_validate(&output.output).unwrap(),
+        I256::MAX
+    );
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::addCall {
+                key,
+                delta: U256::from(1)
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Revert
+    );
+    assert_eq!(
+        journal.sload(owner, slots.pos_delta).unwrap().data,
+        U256::MAX
+    );
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::subCall {
+                key,
+                delta: U256::MAX
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Return
+    );
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::subCall {
+                key,
+                delta: U256::from(1)
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Revert
+    );
+    assert_eq!(
+        journal.sload(owner, slots.value).unwrap().data,
+        I256::MIN.into_raw()
+    );
+    assert_eq!(
+        journal.sload(owner, slots.pos_delta).unwrap().data,
+        U256::ZERO
+    );
+}
+
+#[test]
+fn signed_calls_reject_wrong_keys_bounds_and_call_modes() {
+    let owner = Address::repeat_byte(0x11);
+    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    for scheme in [CallScheme::StaticCall, CallScheme::CallCodeOrDelegateCall] {
+        let mut journal = Journal::new(EmptyDB::default());
+        assert_eq!(
+            invoke_i256(
+                &mut journal,
+                owner,
+                &II256::initCall {
+                    key,
+                    min: I256::MIN,
+                    max: I256::MAX
+                },
+                scheme
+            )
+            .status,
+            ExitStatus::Revert
+        );
+        assert!(journal.evm_state().is_empty());
+    }
+    let mut journal = Journal::new(EmptyDB::default());
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::initCall {
+                key,
+                min: I256::MAX,
+                max: I256::MIN
+            },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Revert
+    );
+    let unsigned: B256 = ScalarKeyCodec::encode(Namespace::U256, 2, Address::ZERO).into();
+    assert_eq!(
+        invoke_i256(
+            &mut journal,
+            owner,
+            &II256::getCall { key: unsigned },
+            CallScheme::Call
+        )
+        .status,
+        ExitStatus::Revert
+    );
+    assert!(journal.evm_state().is_empty());
+    assert!(!U256Handler.is_valid_slot(key.into()));
+    assert!(!I256Handler.is_valid_slot(unsigned.into()));
+    assert_eq!(II256::getCall::SELECTOR, IU256::getCall::SELECTOR);
+}
+
+#[test]
+fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
+    let owner = Address::repeat_byte(0x11);
+    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = ScalarAdapter::new(key.into());
+    let mut db = InMemoryDB::default();
+    for (slot, value) in [
+        (slots.min, I256::MIN.into_raw()),
+        (slots.max, I256::MAX.into_raw()),
+    ] {
+        db.insert_account_storage(owner, slot, value).unwrap();
+    }
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::I256.address(), I256Handler)
+        .unwrap();
+    let factory = ArcologyEvmFactory::try_new(router).unwrap();
+    let mut evm = factory.create_evm_with_inspector(db, EvmEnv::default(), ReadRecorder::new(7));
+    let result = evm
+        .transact(ArcologyTx::from(TxEnv {
+            caller: owner,
+            kind: TxKind::Call(ApiAddress::I256.address()),
+            data: II256::subCall {
+                key,
+                delta: U256::from(20),
+            }
+            .abi_encode()
+            .into(),
+            gas_limit: 500_000,
+            gas_price: 0,
+            ..Default::default()
+        }))
+        .unwrap();
+    assert!(result.result.is_success());
+    let outcome = JobOutcome::<(), _>::new(ID::new(7), Ok(result), None, evm.drain_reads());
+    let records = outcome.merge_records(outcome.id);
+    let record = &records
+        .iter()
+        .find(|(key, _)| *key == Key::Storage(owner, slots.value))
+        .unwrap()
+        .1;
+    let Status::Value(CrdtValue::I256(scalar)) = record.current() else {
+        panic!("expected a signed scalar");
+    };
+    assert_eq!(
+        (scalar.min, scalar.max, scalar.value),
+        (I256::MIN, I256::MAX, I256::ZERO)
+    );
+    assert_eq!(scalar.delta, Some(DeltaOp::Sub(U256::from(20))));
+
+    let mut journal = Journal::new(EmptyDB::default());
+    let checkpoint = journal.checkpoint();
+    invoke_i256(
+        &mut journal,
+        owner,
+        &II256::initCall {
+            key,
+            min: I256::MIN,
+            max: I256::MAX,
+        },
+        CallScheme::Call,
+    );
+    invoke_i256(
+        &mut journal,
+        owner,
+        &II256::subCall {
+            key,
+            delta: U256::from(20),
+        },
+        CallScheme::Call,
+    );
+    journal.checkpoint_revert(checkpoint);
+    assert_eq!(
+        journal.sload(owner, slots.neg_delta).unwrap().data,
+        U256::ZERO
+    );
+}
+
+fn factory() -> ArcologyEvmFactory {
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::Runtime.address(), RuntimeHandler)
+        .unwrap();
+    ArcologyEvmFactory::try_new(router).unwrap()
+}
+
+fn deferral_slot(host: Address, selector: [u8; 4]) -> U256 {
+    let mut callee = [0; 8];
+    callee[..4].copy_from_slice(&host[..4]);
+    callee[4..].copy_from_slice(&selector);
+    Property::DeferredGas.slot(host, u64::from_le_bytes(callee), 0)
+}
+
+fn invoke_runtime(
+    journal: &mut Journal<EmptyDB>,
+    owner: Address,
+    data: &[u8],
+    scheme: CallScheme,
+) -> CallOutput {
+    let input = CallInput {
+        caller: owner,
+        target: ApiAddress::Runtime.address(),
+        code_address: ApiAddress::Runtime.address(),
+        value: U256::ZERO,
+        input: data,
+        gas_limit: 500_000,
+        scheme,
+        is_deferred: false,
+    };
+    let block = BlockEnv::default();
+    let cfg: CfgEnv = CfgEnv::default();
+    let tx = TxEnv::default();
+    factory()
+        .router()
+        .dispatch(
+            &input,
+            &mut EvmInternals::new(journal, &block, &cfg, &tx),
+            &mut ReadRecorder::new(0),
+        )
+        .unwrap()
+        .unwrap()
+}
+
+fn constructor(selector: [u8; 4], gas: u64, revert: bool) -> Bytes {
+    let data = IRuntime::setDeferralCall {
+        selector: selector.into(),
+        prepaidGas: gas,
+    }
+    .abi_encode();
+    // Copy the configuration call into memory, invoke_runtime Runtime, then finish deployment.
+    let mut code = vec![
+        0x60,
+        data.len() as u8,
+        0x61,
+        0,
+        0,
+        0x60,
+        0,
+        0x39,
+        0x60,
+        0,
+        0x60,
+        0,
+        0x60,
+        data.len() as u8,
+        0x60,
+        0,
+        0x60,
+        0,
+        0x60,
+        0xa0,
+        0x62,
+        0x07,
+        0xa1,
+        0x20,
+        0xf1,
+        0x50,
+    ];
+    if revert {
+        code.extend_from_slice(&[0x60, 0, 0x60, 0, 0xfd]);
+    } else {
+        code.extend_from_slice(&[0x60, 0, 0x60, 0, 0x53, 0x60, 1, 0x60, 0, 0xf3]);
+    }
+    let offset = code.len() as u16;
+    code[3..5].copy_from_slice(&offset.to_be_bytes());
+    code.extend(data);
+    code.into()
+}
+
+#[test]
+fn constructor_configuration_persists_and_drives_scheduling() {
+    let selector = [0x12, 0x34, 0x56, 0x78];
+    let factory = factory();
+    let mut evm = factory.create_evm(InMemoryDB::default(), EvmEnv::default());
+    let result = evm
+        .transact(ArcologyTx::from(TxEnv {
+            caller: Address::repeat_byte(0x11),
+            kind: TxKind::Create,
+            data: constructor(selector, 123_456, false),
+            gas_limit: 1_000_000,
+            gas_price: 0,
+            ..Default::default()
+        }))
+        .unwrap();
+    assert!(result.result.is_success());
+    let host = result.result.created_address().unwrap();
+    let slot = deferral_slot(host, selector);
+    assert_eq!(
+        result.state[&host].storage[&slot].present_value(),
+        U256::from(123_456)
+    );
+    assert_ne!(result.state[&host].info.code_hash, KECCAK256_EMPTY);
+    let id = ID::new(7);
+    let mut rejected = StatDbCommitter::new();
+    rejected.buffer(id, result.state.clone());
+    rejected.stage(Vec::new());
+    rejected.flush();
+    assert!(rejected.inner().is_empty());
+
+    let mut accepted = StatDbCommitter::new();
+    accepted.buffer(id, result.state);
+    accepted.stage(vec![id]);
+    accepted.flush();
+    let db = StateDb::new(accepted.into_inner());
+    let mut planner = Planner::<_, u64>::new(db, Default::default());
+    for (gas, expected) in [(123_456, true), (0, false)] {
+        planner.db.write(host, slot, U256::from(gas)).unwrap();
+        let scheduled = planner
+            .plan([Job::new(
+                ID::new(7),
+                (
+                    TxEnv {
+                        caller: Address::repeat_byte(0x22),
+                        kind: TxKind::Call(host),
+                        data: selector.to_vec().into(),
+                        ..Default::default()
+                    },
+                    (),
+                ),
+            )])
+            .unwrap();
+        assert_eq!(scheduled[0].sequences[0].jobs[0].is_deferred, expected);
+    }
+}
+
+#[test]
+fn configuration_is_owned_by_the_child_in_create_and_create2() {
+    let parent = Address::repeat_byte(0x33);
+    let selector = [1, 2, 3, 4];
+    for create2 in [false, true] {
+        let child = constructor(selector, u64::MAX, false);
+        let mut code = vec![0x61, 0, 0, 0x61, 0, 0, 0x60, 0, 0x39];
+        code[1..3].copy_from_slice(&(child.len() as u16).to_be_bytes());
+        if create2 {
+            code.extend_from_slice(&[0x60, 0x42]);
+        }
+        code.push(0x61);
+        code.extend_from_slice(&(child.len() as u16).to_be_bytes());
+        code.extend_from_slice(&[
+            0x60,
+            0,
+            0x60,
+            0,
+            if create2 { 0xf5 } else { 0xf0 },
+            0x60,
+            0,
+            0x52,
+            0x60,
+            32,
+            0x60,
+            0,
+            0xf3,
+        ]);
+        let offset = code.len() as u16;
+        code[4..6].copy_from_slice(&offset.to_be_bytes());
+        code.extend_from_slice(&child);
+        let code = Bytecode::new_raw(code.into());
+        let mut db = InMemoryDB::default();
+        db.insert_account_info(
+            parent,
+            AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code),
+                ..Default::default()
+            },
+        );
+        let factory = factory();
+        let mut evm = factory.create_evm(db, EvmEnv::default());
+        let result = evm
+            .transact(ArcologyTx::from(TxEnv {
+                caller: Address::repeat_byte(0x11),
+                kind: TxKind::Call(parent),
+                gas_limit: 1_000_000,
+                gas_price: 0,
+                ..Default::default()
+            }))
+            .unwrap();
+        assert!(result.result.is_success());
+        let child = Address::from_word(B256::from_slice(result.result.output().unwrap()));
+        assert_ne!(child, Address::ZERO);
+        assert_eq!(
+            result.state[&child].storage[&deferral_slot(child, selector)].present_value(),
+            U256::from(u64::MAX)
+        );
+        assert!(
+            !result.state[&parent]
+                .storage
+                .contains_key(&deferral_slot(parent, selector))
+        );
+    }
+}
+
+#[test]
+fn reverting_deployment_removes_deferral_configuration() {
+    let factory = factory();
+    let mut evm = factory.create_evm(InMemoryDB::default(), EvmEnv::default());
+    let result = evm
+        .transact(ArcologyTx::from(TxEnv {
+            caller: Address::repeat_byte(0x11),
+            kind: TxKind::Create,
+            data: constructor([1, 2, 3, 4], 123, true),
+            gas_limit: 1_000_000,
+            gas_price: 0,
+            ..Default::default()
+        }))
+        .unwrap();
+    assert!(!result.result.is_success());
+    assert!(result.state.values().all(|account| {
+        account
+            .storage
+            .values()
+            .all(|slot| slot.present_value().is_zero() && !slot.is_changed())
+    }));
+}
+
+#[test]
+fn registration_rejects_eoas_deployed_code_and_indirect_or_static_calls() {
+    let owner = Address::repeat_byte(0x11);
+    let data = IRuntime::setDeferralCall {
+        selector: [1, 2, 3, 4].into(),
+        prepaidGas: 123,
+    }
+    .abi_encode();
+    for (local, deployed, scheme) in [
+        (false, false, CallScheme::Call),
+        (true, true, CallScheme::Call),
+        (true, false, CallScheme::StaticCall),
+        (true, false, CallScheme::CallCodeOrDelegateCall),
+    ] {
+        let mut journal = Journal::new(EmptyDB::default());
+        let mut account = Account::default().with_created_mark();
+        if local {
+            account.mark_created_locally();
+        }
+        if deployed {
+            let code = Bytecode::new_raw(Bytes::from_static(&[0]));
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
+        }
+        journal.evm_state_mut().insert(owner, account);
+        assert_eq!(
+            invoke_runtime(&mut journal, owner, &data, scheme).status,
+            ExitStatus::Revert
+        );
+        assert!(journal.evm_state()[&owner].storage.is_empty());
+    }
+}
+
+#[test]
+fn function_settings_are_independent_and_malformed_calls_do_not_write() {
+    let owner = Address::repeat_byte(0x11);
+    let mut journal = Journal::new(EmptyDB::default());
+    let mut account = Account::default();
+    account.mark_created_locally();
+    journal.evm_state_mut().insert(owner, account);
+    for (selector, gas) in [([1, 2, 3, 4], 123), ([5, 6, 7, 8], 456), ([1, 2, 3, 4], 0)] {
+        let data = IRuntime::setDeferralCall {
+            selector: selector.into(),
+            prepaidGas: gas,
+        }
+        .abi_encode();
+        assert_eq!(
+            invoke_runtime(&mut journal, owner, &data, CallScheme::Call).status,
+            ExitStatus::Return
+        );
+    }
+    assert_eq!(
+        journal.evm_state()[&owner].storage[&deferral_slot(owner, [1, 2, 3, 4])].present_value(),
+        U256::ZERO
+    );
+    assert_eq!(
+        journal.evm_state()[&owner].storage[&deferral_slot(owner, [5, 6, 7, 8])].present_value(),
+        U256::from(456)
+    );
+    for data in [
+        vec![],
+        vec![0xff; 4],
+        IRuntime::setDeferralCall::SELECTOR.to_vec(),
+    ] {
+        assert_eq!(
+            invoke_runtime(&mut journal, owner, &data, CallScheme::Call).status,
+            ExitStatus::Revert
+        );
+    }
+    assert_eq!(journal.evm_state()[&owner].storage.len(), 2);
+}
+
+#[test]
+fn execution_phase_is_evm_local_and_cleared_after_each_transaction() {
+    let owner = Address::repeat_byte(0x11);
+    let nested = Address::repeat_byte(0x22);
+    let code = Bytecode::new_raw(Bytes::from_static(&[
+        0x36, 0x60, 0, 0x60, 0, 0x37, 0x60, 32, 0x60, 0, 0x36, 0x60, 0, 0x60, 0xa0, 0x61, 0xff,
+        0xff, 0xfa, 0x50, 0x60, 32, 0x60, 0, 0xf3,
+    ]));
+    let mut db = InMemoryDB::default();
+    db.insert_account_info(
+        nested,
+        AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..Default::default()
+        },
+    );
+    let factory = factory();
+    let mut left = factory.create_evm(db, EvmEnv::default());
+    let mut right = factory.create_evm(InMemoryDB::default(), EvmEnv::default());
+    left.set_deferred(true);
+    for (use_left, target, expected) in [
+        (false, ApiAddress::Runtime.address(), false),
+        (true, nested, true),
+        (true, ApiAddress::Runtime.address(), false),
+    ] {
+        let evm = if use_left { &mut left } else { &mut right };
+        let result = evm
+            .transact(ArcologyTx::from(TxEnv {
+                caller: owner,
+                kind: TxKind::Call(target),
+                data: IRuntime::isDeferredCall {}.abi_encode().into(),
+                gas_limit: 500_000,
+                gas_price: 0,
+                ..Default::default()
+            }))
+            .unwrap();
+        assert!(result.result.is_success());
+        assert_eq!(
+            bool::abi_decode_validate(result.result.output().unwrap()).unwrap(),
+            expected
+        );
+    }
 }

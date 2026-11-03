@@ -8,9 +8,9 @@ use alloy_primitives::{Address, U256};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumIter, FromRepr)]
 #[repr(u8)]
 pub enum ApiAddress {
-    Io = Namespace::Io as u8,
-    Container = Namespace::Container as u8,
-    Scalar = Namespace::Scalar as u8,
+    Set = Namespace::Set as u8,
+    U256 = Namespace::U256 as u8,
+    I256 = Namespace::I256 as u8,
     Runtime = Namespace::Runtime as u8,
     Multiprocess = Namespace::Multiprocess as u8,
 }

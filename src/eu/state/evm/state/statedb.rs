@@ -100,7 +100,7 @@ impl<DB> StateDb<DB> {
     /// Dispatches CRDT delta merging by API type.
     fn handle_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
         match ScalarKeyCodec::decode(key) {
-            Some((field, _))
+            Some((_, field, _))
                 if field == Property::PosDelta as u8 || field == Property::NegDelta as u8 =>
             {
                 // Apply only this state's change to the delta magnitude.

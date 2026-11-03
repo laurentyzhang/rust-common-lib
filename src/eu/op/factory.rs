@@ -24,7 +24,10 @@ use alloy_evm::{
         precompile::{PrecompileId, Precompiles},
     },
 };
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use alloy_primitives::{Address, Bytes};
 
@@ -37,6 +40,14 @@ pub struct ArcologyEvm<DB: Database, I> {
     // Keep the backend implementation private while exposing Alloy's standard Evm interface.
     base_evm: BaseEvm<DB, I>,
     api_reads: Rc<RefCell<ReadRecorder>>,
+    is_deferred: Rc<Cell<bool>>,
+}
+
+impl<DB: Database, I> ArcologyEvm<DB, I> {
+    /// Sets the execution phase for the next transaction.
+    pub fn set_deferred(&mut self, is_deferred: bool) {
+        self.is_deferred.set(is_deferred);
+    }
 }
 
 impl<DB: Database> ArcologyEvm<DB, ReadRecorder> {
@@ -86,7 +97,9 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.api_reads.borrow_mut().clear();
-        self.base_evm.transact_raw(tx)
+        let result = self.base_evm.transact_raw(tx);
+        self.is_deferred.set(false);
+        result
     }
 
     fn transact_system_call(
@@ -96,6 +109,7 @@ where
         data: Bytes,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         self.api_reads.borrow_mut().clear();
+        self.is_deferred.set(false);
         self.base_evm.transact_system_call(caller, contract, data)
     }
 
@@ -185,6 +199,7 @@ impl ArcologyEvmFactory {
         &self,
         precompiles: &mut PrecompilesMap,
         api_reads: &Rc<RefCell<ReadRecorder>>,
+        is_deferred: &Rc<Cell<bool>>,
     ) -> Result<(), PrecompileCollisionError> {
         // This receives the map after the backend factory has populated it.
         Self::ensure_no_collisions(&self.router, &precompiles)?;
@@ -193,9 +208,15 @@ impl ArcologyEvmFactory {
         let hooks = self.router.handlers.keys().copied().map(|address| {
             let router = self.router.clone();
             let api_reads = Rc::clone(api_reads);
+            let is_deferred = Rc::clone(is_deferred);
             let id = PrecompileId::custom(format!("arcology-{address:?}"));
             let hook = DynPrecompile::new_stateful(id, move |input| {
-                dispatch_precompile(&router, input, &mut api_reads.borrow_mut())
+                dispatch_precompile(
+                    &router,
+                    input,
+                    &mut api_reads.borrow_mut(),
+                    is_deferred.get(),
+                )
             });
             (address, hook)
         });
@@ -205,17 +226,18 @@ impl ArcologyEvmFactory {
         Ok(())
     }
 
-    fn inject_into<DB, I>(
-        &self,
-        base_evm: &mut BaseEvm<DB, I>,
-        api_reads: &Rc<RefCell<ReadRecorder>>,
-    ) where
+    fn inject_into<DB, I>(&self, evm: &mut ArcologyEvm<DB, I>)
+    where
         DB: Database,
         I: Inspector<<BaseFactory as EvmFactory>::Context<DB>>,
     {
         // try_new establishes this invariant; checking again protects the actual per-EVM map.
-        self.try_inject_precompiles(base_evm.precompiles_mut(), api_reads)
-            .expect("Arcology precompile address collides with an OP precompile");
+        self.try_inject_precompiles(
+            evm.base_evm.precompiles_mut(),
+            &evm.api_reads,
+            &evm.is_deferred,
+        )
+        .expect("Arcology precompile address collides with an OP precompile");
     }
 }
 
@@ -234,18 +256,13 @@ impl EvmFactory for ArcologyEvmFactory {
         db: DB,
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
     ) -> Self::Evm<DB, NoOpInspector> {
-        // 1. Let OP construct the context, handlers, and native precompiles.
-        let mut base_evm = self.base_evm_factory.create_evm(db, input);
-
-        // 2. Add Arcology handlers without replacing anything OP registered.
-        let api_reads = Rc::new(RefCell::new(ReadRecorder::new(0)));
-        self.inject_into(&mut base_evm, &api_reads);
-
-        // 3. Hide the OP EVM behind Arcology's wrapper.
-        ArcologyEvm {
-            base_evm,
-            api_reads,
-        }
+        let mut evm = ArcologyEvm {
+            base_evm: self.base_evm_factory.create_evm(db, input),
+            api_reads: Rc::new(RefCell::new(ReadRecorder::new(0))),
+            is_deferred: Rc::new(Cell::new(false)),
+        };
+        self.inject_into(&mut evm);
+        evm
     }
 
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
@@ -254,16 +271,15 @@ impl EvmFactory for ArcologyEvmFactory {
         input: EvmEnv<Self::Spec, Self::BlockEnv>,
         inspector: I,
     ) -> Self::Evm<DB, I> {
-        // The inspected path follows the same OP-first construction order.
-        let mut base_evm = self
-            .base_evm_factory
-            .create_evm_with_inspector(db, input, inspector);
-        let api_reads = Rc::new(RefCell::new(ReadRecorder::new(0)));
-        self.inject_into(&mut base_evm, &api_reads);
-        ArcologyEvm {
-            base_evm,
-            api_reads,
-        }
+        let mut evm = ArcologyEvm {
+            base_evm: self
+                .base_evm_factory
+                .create_evm_with_inspector(db, input, inspector),
+            api_reads: Rc::new(RefCell::new(ReadRecorder::new(0))),
+            is_deferred: Rc::new(Cell::new(false)),
+        };
+        self.inject_into(&mut evm);
+        evm
     }
 }
 

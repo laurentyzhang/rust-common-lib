@@ -6,7 +6,7 @@ use op_revm::OpHaltReason as EvmHaltReason;
 
 use super::{StateReads, key::Key};
 use crate::crdt::Scalar;
-use crate::eu::ScalarAdapter;
+use crate::eu::{Property, ScalarAdapter, ScalarKeyCodec, ScalarKind};
 use crate::{
     crdt::state::{
         DeltaOp, Tracked,
@@ -16,6 +16,7 @@ use crate::{
     },
     planner::scheduler::ID,
 };
+use alloy_primitives::I256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HaltReason {
@@ -138,7 +139,9 @@ impl<R, H> JobOutcome<R, H> {
                     Tag::Stripped
                 };
 
-                let current = if ScalarAdapter::is_value_key(*slot_key) {
+                let current = if let Some((kind, property, _)) = ScalarKeyCodec::decode(*slot_key)
+                    && property == Property::Value as u8
+                {
                     operations.deltas.increment();
                     let slots = ScalarAdapter::new(*slot_key);
                     let [min, max, base, positive, negative] = [
@@ -155,21 +158,28 @@ impl<R, H> JobOutcome<R, H> {
                             .map(|slot| slot.present_value())
                             .unwrap_or_default()
                     });
-                    Status::Value(
+                    let delta = match positive.cmp(&negative) {
+                        std::cmp::Ordering::Greater => Some(DeltaOp::Add(positive - negative)),
+                        std::cmp::Ordering::Less => Some(DeltaOp::Sub(negative - positive)),
+                        std::cmp::Ordering::Equal => None,
+                    };
+                    Status::Value(if kind == ScalarKind::I256 {
+                        Scalar {
+                            min: I256::from_raw(min),
+                            max: I256::from_raw(max),
+                            value: I256::from_raw(base),
+                            delta,
+                        }
+                        .into()
+                    } else {
                         Scalar {
                             min,
                             max,
                             value: base,
-                            delta: match positive.cmp(&negative) {
-                                std::cmp::Ordering::Greater => {
-                                    Some(DeltaOp::Add(positive - negative))
-                                }
-                                std::cmp::Ordering::Less => Some(DeltaOp::Sub(negative - positive)),
-                                std::cmp::Ordering::Equal => None,
-                            },
+                            delta,
                         }
-                        .into(),
-                    )
+                        .into()
+                    })
                 } else if value.present_value().is_zero() {
                     operations.removes.increment();
                     Status::Tag(Tag::Deleted)

@@ -21,6 +21,64 @@ struct Recovered {
     signer: Address,
 }
 
+#[test]
+fn scheduled_jobs_expose_their_own_deferred_phase() {
+    use crate::eu::{ApiAddress, IRuntime, RuntimeHandler};
+    use alloy_sol_types::{SolCall, SolValue};
+
+    let mut router = CallRouter::new();
+    router
+        .register(ApiAddress::Runtime.address(), RuntimeHandler)
+        .unwrap();
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(router).unwrap(),
+    );
+    let mut env: EvmEnv<OpSpecId> = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::REGOLITH;
+    env.block_env.timestamp = U256::from(1_700_000_000u64);
+    env.block_env.gas_limit = 200_000;
+    let contract = Address::repeat_byte(0x99);
+    let mut code = vec![0x63];
+    code.extend_from_slice(&IRuntime::isDeferredCall::SELECTOR);
+    code.extend_from_slice(&[
+        0x60, 0xe0, 0x1b, 0x60, 0, 0x52, 0x60, 32, 0x60, 0, 0x60, 4, 0x60, 0, 0x60, 0xa0, 0x61,
+        0xff, 0xff, 0xfa, 0x50, 0x60, 32, 0x60, 0, 0xf3,
+    ]);
+    let code = Bytecode::new_raw(code.into());
+    let fallback = StateDb::new(EvmState::from_iter([(
+        contract,
+        Account::from(AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code),
+            ..Default::default()
+        }),
+    )]));
+    let jobs = [(1, true), (2, false)]
+        .into_iter()
+        .map(|(id, is_deferred)| {
+            let mut job = job(id, contract);
+            job.is_deferred = is_deferred;
+            job
+        })
+        .collect();
+    let outcomes = JobSequence {
+        jobs,
+        nonce_offsets: Vec::new(),
+    }
+    .run(&factory, &fallback, env, OpBlockExecutionCtx::default())
+    .unwrap();
+    for (outcome, expected) in outcomes.iter().zip([true, false]) {
+        let executed = outcome.result_and_state.as_ref().unwrap();
+        assert!(executed.result.is_success());
+        assert_eq!(
+            bool::abi_decode_validate(executed.result.output().unwrap()).unwrap(),
+            expected
+        );
+    }
+}
+
 impl RecoveredTx<OpTxEnvelope> for Recovered {
     fn tx(&self) -> &OpTxEnvelope {
         &self.tx
@@ -328,7 +386,8 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             BTreeSet::from([(0, 1)])
         );
         let callee = job(1, contract).callee.unwrap();
-        let count = crate::planner::meta::field::Property::ConflictCount.slot(contract, callee, 0);
+        let count =
+            crate::planner::meta::property::Property::ConflictCount.slot(contract, callee, 0);
         assert_eq!(
             resolutions[0].conflict_meta.1[&contract].storage[&count].present_value(),
             U256::from(1)

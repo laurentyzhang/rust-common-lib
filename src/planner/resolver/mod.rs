@@ -1,6 +1,7 @@
 pub mod checkers;
 pub mod commit_plan;
 pub mod detector;
+mod metadata;
 
 pub use commit_plan::{CONFLICT_META_ID, CommitPlan, ConflictResult, RejectPlan};
 pub use detector::ConflictDetector;

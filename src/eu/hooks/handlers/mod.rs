@@ -1,9 +1,13 @@
+mod i256;
+mod runtime;
 mod u256;
 
 #[cfg(test)]
 mod tests;
 
-pub use u256::U256Handler;
+pub use i256::{I256Handler, II256};
+pub use runtime::{IRuntime, RuntimeHandler};
+pub use u256::{IU256, U256Handler};
 
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;

@@ -11,14 +11,14 @@ pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, Reg
 pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
 pub use hooks::{
     ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus,
-    U256Handler, dispatch_precompile,
+    I256Handler, II256, IRuntime, IU256, RuntimeHandler, U256Handler, dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use outcome::{HaltReason, JobOutcome};
-pub use slot::ScalarKeyCodec;
 pub(in crate::eu) use slot::{Property, ScalarAdapter};
+pub use slot::{ScalarKeyCodec, ScalarKind};
 pub use state::key;
 pub use state::{StatDbCommitter, StateDb};
 pub use tracking::{ReadRecorder, StateReads, recorder};

@@ -53,6 +53,10 @@ impl GreedyScheduler {
     pub fn set_sequential_only(&mut self, callee: u64) {
         self.profiles.entry(callee).or_default().sequential_only = true;
     }
+
+    pub fn set_defer(&mut self, callee: u64, deferrable: bool) {
+        self.profiles.entry(callee).or_default().deferrable = deferrable;
+    }
 }
 
 impl<Tx> Scheduler<Tx> for GreedyScheduler {

@@ -16,6 +16,8 @@ pub enum Property {
     DeferredCount = 3,
     /// Up to four packed deferred peers at this slot index.
     DeferredIndex = 4,
+    /// Required prepaid gas for this function; zero disables deferral.
+    DeferredGas = 5,
 }
 
 // Key: [ARCO:4][version:1][namespace:1][reserved:1][selector:4][property:1][slot index:4][host prefix:16].

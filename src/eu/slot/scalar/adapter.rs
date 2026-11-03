@@ -2,9 +2,9 @@
 
 use alloy_primitives::{Address, U256};
 
-use super::super::state::ApiStore;
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
+use crate::eu::state::ApiStore;
 use crate::eu::{CallHookError, ScalarKeyCodec};
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
@@ -27,15 +27,6 @@ pub struct ScalarAdapter {
     pub value: U256,
     pub pos_delta: U256,
     pub neg_delta: U256,
-}
-
-// Read individual fields using any recognized field key of the scalar instance.
-// Readers return None for invalid keys, backend failures, or values outside the requested type.
-impl ScalarAdapter {
-    /// Recognizes a scalar's value property.
-    pub fn is_value_key(key: U256) -> bool {
-        matches!(ScalarKeyCodec::decode(key), Some((property, _)) if property == Property::Value as u8)
-    }
 }
 
 // Construct a slot layout and transfer whole scalar states through a backend.

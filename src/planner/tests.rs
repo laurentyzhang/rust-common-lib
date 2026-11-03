@@ -7,7 +7,7 @@ use crate::{
     eu::{StatDbCommitter, StateDb, output::ExecutionOutput},
     namespace::Namespace,
     planner::{
-        meta::field::Property,
+        meta::property::Property,
         resolver::{CONFLICT_META_ID, Checker, ConflictResult},
         scheduler::ID,
     },
@@ -434,10 +434,7 @@ fn contract_metadata_keys_encode_field_selector_index_and_host() {
     assert!(!U256Handler.is_valid_slot(count));
     assert!(!U256Handler.is_valid_slot(entry));
     assert!(ApiAddress::try_from(Namespace::Meta).is_err());
-    assert_eq!(
-        ApiAddress::try_from(Namespace::Scalar),
-        Ok(ApiAddress::Scalar)
-    );
+    assert_eq!(ApiAddress::try_from(Namespace::U256), Ok(ApiAddress::U256));
 }
 
 #[test]
