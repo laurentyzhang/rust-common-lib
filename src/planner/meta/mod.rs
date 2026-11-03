@@ -14,7 +14,10 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, U256};
 
-use super::{Planner, resolver::ConflictResult};
+use super::{
+    Planner,
+    resolver::{CONFLICT_META_ID, ConflictResult},
+};
 use field::Property;
 
 impl<DB: Database, K> Planner<DB, K> {
@@ -57,7 +60,7 @@ impl<DB: Database, K> Planner<DB, K> {
         Ok((false, peers))
     }
 
-    /// Builds contract metadata updates from the detected function pairs.
+    /// Builds the conflict metadata job under the reserved maximum ID.
     pub fn resolve(
         &mut self,
         mut result: ConflictResult<K>,
@@ -133,7 +136,10 @@ impl<DB: Database, K> Planner<DB, K> {
                 ),
             );
         }
-        result.contract_meta = updates;
+        if !updates.is_empty() {
+            result.committable.insert(CONFLICT_META_ID);
+        }
+        result.conflict_meta = (CONFLICT_META_ID, updates);
         Ok(result)
     }
 }

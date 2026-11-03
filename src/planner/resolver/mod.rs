@@ -2,7 +2,7 @@ pub mod checkers;
 pub mod commit_plan;
 pub mod detector;
 
-pub use commit_plan::{CommitPlan, ConflictResult, RejectPlan};
+pub use commit_plan::{CONFLICT_META_ID, CommitPlan, ConflictResult, RejectPlan};
 pub use detector::ConflictDetector;
 
 use crate::crdt::state::{Status, Tracked};

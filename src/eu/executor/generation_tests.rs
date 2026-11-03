@@ -1,6 +1,6 @@
 use super::*;
 use crate::eu::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StatDbCommitter, StateDb};
-use crate::planner::resolver::ConflictDetector;
+use crate::planner::resolver::{CONFLICT_META_ID, ConflictDetector};
 use alloy_evm::{
     FromRecoveredTx, RecoveredTx,
     revm::{
@@ -315,7 +315,10 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         .unwrap();
         assert_eq!(outcomes.len(), 2);
         assert_eq!(resolutions.len(), 1);
-        assert!(resolutions[0].committable.is_empty());
+        assert_eq!(
+            resolutions[0].committable,
+            BTreeSet::from([CONFLICT_META_ID])
+        );
         assert_eq!(
             resolutions[0]
                 .involved_pairs
@@ -327,7 +330,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         let callee = job(1, contract).callee.unwrap();
         let count = crate::planner::meta::field::Property::ConflictCount.slot(contract, callee, 0);
         assert_eq!(
-            resolutions[0].contract_meta[&contract].storage[&count].present_value(),
+            resolutions[0].conflict_meta.1[&contract].storage[&count].present_value(),
             U256::from(1)
         );
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);

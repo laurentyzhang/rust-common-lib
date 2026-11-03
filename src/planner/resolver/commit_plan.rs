@@ -3,6 +3,9 @@ use crate::planner::scheduler::ID;
 use alloy_evm::revm::state::EvmState;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Reserved job ID for discovered conflict metadata.
+pub const CONFLICT_META_ID: ID = ID::new(u64::MAX);
+
 pub struct CommitPlan {
     pub block_id: u64,
     pub generation: u64,
@@ -28,8 +31,8 @@ pub struct ConflictResult<K> {
     pub violations: Vec<Violation<K>>,
     /// Job pairs involved in access or aggregate numeric violations.
     pub involved_pairs: BTreeSet<(ID, ID)>,
-    /// Contract metadata updates to merge with the block's execution state.
-    pub contract_meta: EvmState,
+    /// Conflict metadata job ID and storage updates.
+    pub conflict_meta: (ID, EvmState),
 }
 
 impl<K> Default for ConflictResult<K> {
@@ -40,7 +43,7 @@ impl<K> Default for ConflictResult<K> {
             committable: BTreeSet::new(),
             violations: Vec::new(),
             involved_pairs: BTreeSet::new(),
-            contract_meta: EvmState::default(),
+            conflict_meta: (CONFLICT_META_ID, EvmState::default()),
         }
     }
 }

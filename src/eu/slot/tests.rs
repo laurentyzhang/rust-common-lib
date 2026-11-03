@@ -1,7 +1,7 @@
 use super::super::state::ApiStore;
 use super::{Property, ScalarAdapter};
 use crate::crdt::{self, state::DeltaOp};
-use crate::eu::{ApiAddress, ScalarKeyCodec, StateDb};
+use crate::eu::{ScalarKeyCodec, StateDb};
 use alloy_primitives::{Address, I256, U256};
 
 #[test]
@@ -24,18 +24,6 @@ fn u256_values_and_full_width_deltas_round_trip() {
         assert_eq!(
             slots.load::<U256, _>(&mut storage, owner).unwrap(),
             (state, slots)
-        );
-        assert_eq!(
-            ScalarAdapter::read_min::<U256, _>(&mut storage, owner, key),
-            Some(U256::ZERO)
-        );
-        assert_eq!(
-            ScalarAdapter::read_max::<U256, _>(&mut storage, owner, key),
-            Some(U256::MAX)
-        );
-        assert_eq!(
-            ScalarAdapter::read_value::<U256, _>(&mut storage, owner, key),
-            Some(value)
         );
     }
 }
@@ -64,18 +52,6 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
             slots.load::<I256, _>(&mut storage, owner).unwrap(),
             (state, slots)
         );
-        assert_eq!(
-            ScalarAdapter::read_min::<I256, _>(&mut storage, owner, key),
-            Some(I256::MIN)
-        );
-        assert_eq!(
-            ScalarAdapter::read_max::<I256, _>(&mut storage, owner, key),
-            Some(I256::MAX)
-        );
-        assert_eq!(
-            ScalarAdapter::read_value::<I256, _>(&mut storage, owner, key),
-            Some(value)
-        );
     }
 }
 
@@ -93,10 +69,6 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
         slots.load::<U256, _>(&mut storage, owner).unwrap().0.value,
         U256::MAX
     );
-    assert_eq!(
-        ScalarAdapter::read_value::<U256, _>(&mut storage, owner, key),
-        Some(U256::MAX)
-    );
 
     slots
         .store(&mut storage, owner, &crdt::Scalar::<I256>::default())
@@ -106,10 +78,6 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
         assert_eq!(
             slots.load::<I256, _>(&mut storage, owner).unwrap().0.value,
             value
-        );
-        assert_eq!(
-            ScalarAdapter::read_value::<I256, _>(&mut storage, owner, key),
-            Some(value)
         );
     }
 
@@ -157,8 +125,11 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
         };
         slots.store(&mut storage, owner, &state).unwrap();
         assert_eq!(
-            ScalarAdapter::read_delta(&mut storage, owner, key),
-            Some(expected)
+            (
+                storage.read(owner, slots.pos_delta).unwrap(),
+                storage.read(owner, slots.neg_delta).unwrap(),
+            ),
+            expected
         );
         assert_eq!(
             slots.load::<U256, _>(&mut storage, owner).unwrap(),
@@ -168,7 +139,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
 }
 
 #[test]
-fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
+fn load_combines_magnitudes_without_changing_storage() {
     let owner = Address::ZERO;
     let key = ScalarKeyCodec::encode(Property::Value as u8, Address::ZERO);
     let slots = ScalarAdapter::new(key);
@@ -193,34 +164,12 @@ fn load_combines_both_magnitudes_and_read_delta_preserves_them() {
     ] {
         storage.write(owner, slots.pos_delta, pos).unwrap();
         storage.write(owner, slots.neg_delta, neg).unwrap();
-        for field_key in [
-            slots.min,
-            slots.max,
-            slots.value,
-            slots.pos_delta,
-            slots.neg_delta,
-        ] {
-            assert_eq!(
-                ScalarAdapter::read_delta(&mut storage, owner, field_key),
-                Some((pos, neg))
-            );
-        }
         assert_eq!(
             slots.load::<U256, _>(&mut storage, owner).unwrap().0.delta,
             expected
         );
-    }
-    let mut other_namespace = ScalarKeyCodec::encode(3, Address::ZERO).to_be_bytes::<32>();
-    other_namespace[5] = ApiAddress::Container as u8;
-    for invalid in [
-        U256::ZERO,
-        ScalarKeyCodec::encode(5, Address::ZERO),
-        U256::from_be_bytes(other_namespace),
-    ] {
-        assert_eq!(
-            ScalarAdapter::read_delta(&mut storage, owner, invalid),
-            None
-        );
+        assert_eq!(storage.read(owner, slots.pos_delta).unwrap(), pos);
+        assert_eq!(storage.read(owner, slots.neg_delta).unwrap(), neg);
     }
 }
 

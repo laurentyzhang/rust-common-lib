@@ -8,7 +8,7 @@ use crate::{
     namespace::Namespace,
     planner::{
         meta::field::Property,
-        resolver::{Checker, ConflictResult},
+        resolver::{CONFLICT_META_ID, Checker, ConflictResult},
         scheduler::ID,
     },
     store::traits::Committer,
@@ -88,7 +88,15 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(1, 2)])
         );
-        assert!(result.committable.is_empty());
+        assert_eq!(result.conflict_meta.0, CONFLICT_META_ID);
+        assert_eq!(
+            result.committable,
+            if round == 0 {
+                BTreeSet::from([CONFLICT_META_ID])
+            } else {
+                BTreeSet::new()
+            }
+        );
         assert_eq!(
             planner.load_conflicts(a, callee(a, 10)).unwrap().1,
             if round == 0 {
@@ -105,15 +113,17 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
                 BTreeSet::from([callee(a, 10)])
             }
         );
-        assert_eq!(result.contract_meta.len(), if round == 0 { 2 } else { 0 });
+        assert_eq!(result.conflict_meta.1.len(), if round == 0 { 2 } else { 0 });
         let conflicts = planner.checker.check();
         let empty = planner.resolve(conflicts).unwrap();
         assert!(empty.involved_pairs.is_empty());
-        assert!(empty.contract_meta.is_empty());
+        assert!(empty.conflict_meta.1.is_empty());
+        assert!(empty.committable.is_empty());
         drop(planner);
 
         let mut committer = StatDbCommitter::with_state(db.into_inner());
-        committer.buffer(ID::new(0), result.contract_meta);
+        committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
+        committer.stage(result.committable.into_iter().collect());
         committer.flush();
         db = StateDb::new(committer.into_inner());
         let mut planner = Planner::<_, u64>::new(&mut db, config);
@@ -158,13 +168,14 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             .is_empty()
     );
     let count =
-        &result.contract_meta[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
+        &result.conflict_meta.1[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
     assert_eq!(count.original_value(), U256::from(1));
     assert_eq!(count.present_value(), U256::from(2));
     drop(planner);
 
     let mut committer = StatDbCommitter::with_state(db.into_inner());
-    committer.buffer(ID::new(0), result.contract_meta);
+    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
+    committer.stage(result.committable.into_iter().collect());
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
@@ -205,7 +216,8 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
     );
 
     let mut committer = StatDbCommitter::with_state(planner.db.into_inner());
-    committer.buffer(ID::new(0), result.contract_meta);
+    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
+    committer.stage(result.committable.into_iter().collect());
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
@@ -238,14 +250,14 @@ fn resolve_returns_metadata_with_a_read_only_database() {
         .import(vec![record(1, 7, true), record(2, 7, false)]);
     let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
-    assert!(result.committable.is_empty());
+    assert_eq!(result.committable, BTreeSet::from([CONFLICT_META_ID]));
     assert_eq!(result.violations.len(), 1);
-    assert_eq!(result.contract_meta.len(), 2);
+    assert_eq!(result.conflict_meta.1.len(), 2);
     for (contract, selector, peer) in [(a, 10, callee(b, 20)), (b, 20, callee(a, 10))] {
         let host = callee(contract, selector);
         assert_eq!(planner.db.basic(contract).unwrap(), None);
         assert!(planner.load_conflicts(contract, host).unwrap().1.is_empty());
-        let account = &result.contract_meta[&contract];
+        let account = &result.conflict_meta.1[&contract];
         assert!(account.is_touched());
         let count = &account.storage[&Property::ConflictCount.slot(contract, host, 0)];
         assert_eq!(count.original_value(), U256::ZERO);
@@ -256,6 +268,71 @@ fn resolve_returns_metadata_with_a_read_only_database() {
         bytes[..8].copy_from_slice(&peer.to_le_bytes());
         assert_eq!(entry.present_value(), U256::from_be_bytes(bytes));
     }
+}
+
+#[test]
+fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
+    let a = Address::repeat_byte(0x11);
+    let b = Address::repeat_byte(0x22);
+    let mut planner = Planner::<_, u64>::new(StateDb::default(), SchedulerConfig::default());
+    planner
+        .plan([job(1, a, 10), job(2, b, 20), job(3, a, 11)])
+        .unwrap();
+    planner.checker.import(vec![
+        record(1, 7, true),
+        record(2, 7, false),
+        record(3, 9, false),
+    ]);
+    let mut conflicts = planner.checker.check();
+    let accepted_id = *conflicts
+        .gas_lookup
+        .keys()
+        .find(|id| id.global == 3)
+        .unwrap();
+    conflicts.committable.insert(accepted_id);
+    let mut result = planner.resolve(conflicts).unwrap();
+    let meta_id = result.conflict_meta.0;
+    assert_eq!(meta_id, CONFLICT_META_ID);
+    assert_eq!(meta_id.global, u64::MAX);
+    assert_eq!(result.commit_plan(42, 0).accepted, vec![3, u64::MAX]);
+    assert!(!result.gas_lookup.contains_key(&meta_id));
+    assert!(
+        result
+            .sequence_gas
+            .iter()
+            .flatten()
+            .all(|(id, _)| *id != meta_id)
+    );
+
+    let deferred = Property::DeferredCount.slot(a, callee(a, 11), 0);
+    let mut accepted = Account::default().with_touched_mark();
+    accepted.storage.insert(
+        deferred,
+        EvmStorageSlot::new_changed(U256::ZERO, U256::from(2), Default::default()),
+    );
+    let mut rejected = Account::default().with_touched_mark();
+    rejected.storage.insert(
+        U256::from(7),
+        EvmStorageSlot::new_changed(U256::ZERO, U256::from(99), Default::default()),
+    );
+    let mut committer = StatDbCommitter::new();
+    committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
+    committer.buffer(ID::new(1), EvmState::from_iter([(a, rejected)]));
+    committer.buffer(meta_id, std::mem::take(&mut result.conflict_meta.1));
+    committer.stage(result.committable.iter().copied().collect());
+    committer.flush();
+
+    let mut db = StateDb::new(committer.into_inner());
+    assert_eq!(db.storage(a, deferred).unwrap(), U256::from(2));
+    assert_eq!(db.storage(a, U256::from(7)).unwrap(), U256::ZERO);
+    for (host, function) in [(a, callee(a, 10)), (b, callee(b, 20))] {
+        assert_eq!(
+            db.storage(host, Property::ConflictCount.slot(host, function, 0))
+                .unwrap(),
+            U256::from(1)
+        );
+    }
+    assert_eq!(result.reject_plan(42, 0).rejected, vec![1, 2]);
 }
 
 #[test]
@@ -270,7 +347,7 @@ fn shared_reads_do_not_create_contract_metadata() {
     let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
     assert!(result.involved_pairs.is_empty());
-    assert!(result.contract_meta.is_empty());
+    assert!(result.conflict_meta.1.is_empty());
     assert!(
         planner
             .load_conflicts(a, callee(a, 10))
@@ -375,7 +452,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     result.involved_pairs = (20..23).map(|id| (ID::new(1), ID::new(id))).collect();
     let result = planner.resolve(result).unwrap();
     let mut committer = StatDbCommitter::with_state(planner.db.into_inner());
-    committer.buffer(ID::new(0), result.contract_meta);
+    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
+    committer.stage(result.committable.into_iter().collect());
     committer.flush();
 
     let mut planner = Planner::<_, u64>::new(
@@ -389,10 +467,10 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     result.involved_pairs = (20..26).map(|id| (ID::new(1), ID::new(id))).collect();
     let result = planner.resolve(result).unwrap();
     let function = callee(a, 10);
-    let count = &result.contract_meta[&a].storage[&Property::ConflictCount.slot(a, function, 0)];
+    let count = &result.conflict_meta.1[&a].storage[&Property::ConflictCount.slot(a, function, 0)];
     assert_eq!(count.original_value(), U256::from(3));
     assert_eq!(count.present_value(), U256::from(6));
-    let first = &result.contract_meta[&a].storage[&Property::ConflictIndex.slot(a, function, 0)];
+    let first = &result.conflict_meta.1[&a].storage[&Property::ConflictIndex.slot(a, function, 0)];
     let mut expected = [0; 32];
     for (index, selector) in (20..23).enumerate() {
         expected[index * 8..index * 8 + 8].copy_from_slice(&callee(b, selector).to_le_bytes());
@@ -400,7 +478,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     assert_eq!(first.original_value(), U256::from_be_bytes(expected));
     expected[24..].copy_from_slice(&callee(b, 23).to_le_bytes());
     assert_eq!(first.present_value(), U256::from_be_bytes(expected));
-    let second = &result.contract_meta[&a].storage[&Property::ConflictIndex.slot(a, function, 1)];
+    let second = &result.conflict_meta.1[&a].storage[&Property::ConflictIndex.slot(a, function, 1)];
     assert_eq!(second.original_value(), U256::ZERO);
     let mut expected = [0; 32];
     expected[..8].copy_from_slice(&callee(b, 24).to_le_bytes());
@@ -408,7 +486,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     assert_eq!(second.present_value(), U256::from_be_bytes(expected));
 
     let mut committer = StatDbCommitter::with_state(planner.db.into_inner());
-    committer.buffer(ID::new(0), result.contract_meta);
+    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
+    committer.stage(result.committable.into_iter().collect());
     committer.flush();
     let mut planner = Planner::<_, u64>::new(
         StateDb::new(committer.into_inner()),
@@ -466,6 +545,6 @@ fn max_conflict_count_means_sequential_only() {
     planner.plan([job(1, a, 10), job(2, b, 20)]).unwrap();
     result.involved_pairs.insert((ID::new(1), ID::new(2)));
     let result = planner.resolve(result).unwrap();
-    assert!(!result.contract_meta.contains_key(&a));
+    assert!(!result.conflict_meta.1.contains_key(&a));
     assert_eq!(planner.db.storage(a, slot).unwrap(), U256::MAX);
 }
