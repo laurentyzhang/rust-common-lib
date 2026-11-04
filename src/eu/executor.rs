@@ -43,13 +43,13 @@ impl ArcologyParaBlockExecutor {
         // Please note that the results are sorted by the original transaction index.
         // So the execution order is NOT necessarily the same as the original order.
         results.sort_by_key(|result| result.id);
-        Self::accumulate_gas(&mut results, set_cumulative);
+        Self::accumulate(&mut results, set_cumulative);
         results
     }
 
     /// Writes the running gas total into each executed transaction's receipt, in the given order,
     /// and returns the total.
-    pub fn accumulate_gas<Receipt, HaltReason>(
+    pub fn accumulate<Receipt, HaltReason>(
         results: &mut [JobOutcome<Receipt, HaltReason>],
         set_cumulative: &impl Fn(&mut Receipt, u64),
     ) -> u64 {

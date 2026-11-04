@@ -80,23 +80,23 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
             checker.import(vec![record]);
         }
         let report = checker.check();
-        assert!(report.committable.is_empty());
+        assert_eq!(report.commit_plan(0, 0).accepted, vec![1, 4, 5, 6]);
         assert_eq!(report.gas_lookup.len(), 6);
-        assert_eq!(report.sequence_gas[0][0].0.sequence, 1);
+        assert_eq!(report.cumulative_gas[0][0].0.sequence, 0);
         assert_eq!(
-            report.sequence_gas[0]
-                .iter()
-                .map(|(id, gas)| (id.global, *gas))
-                .collect::<Vec<_>>(),
-            vec![(4, 30), (5, 60), (6, 90)]
-        );
-        assert_eq!(report.sequence_gas[1][0].0.sequence, 0);
-        assert_eq!(
-            report.sequence_gas[1]
+            report.cumulative_gas[0]
                 .iter()
                 .map(|(id, gas)| (id.global, *gas))
                 .collect::<Vec<_>>(),
             vec![(1, 20), (2, 40), (3, 60)]
+        );
+        assert_eq!(report.cumulative_gas[1][0].0.sequence, 1);
+        assert_eq!(
+            report.cumulative_gas[1]
+                .iter()
+                .map(|(id, gas)| (id.global, *gas))
+                .collect::<Vec<_>>(),
+            vec![(4, 30), (5, 60), (6, 90)]
         );
         assert_eq!(
             report
@@ -127,7 +127,7 @@ fn reports_every_conflicting_pair() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([(1, 2), (1, 3), (2, 3)])
     );
-    assert!(report.committable.is_empty());
+    assert_eq!(report.commit_plan(0, 0).accepted, vec![2]);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn checks_numeric_bounds_across_multiple_imports() {
         checker.import(vec![record]);
     }
     let result = checker.check();
-    assert!(result.committable.is_empty());
+    assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2]);
     assert_eq!(
         result
             .violations
@@ -179,12 +179,12 @@ fn clears_previous_generation_metadata() {
         }
         checker.import(records);
         let result = checker.check();
-        assert!(result.committable.is_empty());
+        assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2]);
         assert!(
             result
                 .gas_lookup
                 .keys()
-                .all(|id| id.generation == generation)
+                .all(|key| key.0.generation == generation)
         );
     }
     assert!(checker.check().committable.is_empty());
@@ -206,12 +206,12 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
         report
             .gas_lookup
             .iter()
-            .map(|(id, gas)| (id.global, *gas))
+            .map(|(key, gas)| (key.0.global, *gas))
             .collect::<Vec<_>>(),
-        vec![(10, 60), (20, 30), (30, 10), (40, 15)]
+        vec![(30, 10), (20, 30), (10, 60), (40, 15)]
     );
     assert_eq!(
-        report.sequence_gas[0]
+        report.cumulative_gas[0]
             .iter()
             .map(|(id, gas)| (id.global, *gas))
             .collect::<Vec<_>>(),
@@ -223,7 +223,7 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
             .iter()
             .any(|(left, right)| (left.global, right.global) == (20, 40))
     );
-    assert!(report.committable.is_empty());
+    assert_eq!(report.commit_plan(0, 0).accepted, vec![10, 20, 30]);
 }
 
 #[test]
@@ -313,14 +313,7 @@ fn conflict_result_builds_commit_and_reject_plans() {
     let mut detector = ConflictDetector::new();
     detector.import(combined_records());
 
-    let mut result = detector.check();
-    result.committable.extend(
-        result
-            .gas_lookup
-            .keys()
-            .filter(|id| matches!(id.global, 5 | 11))
-            .copied(),
-    );
+    let result = detector.check();
     assert_eq!(
         result
             .committable
@@ -397,7 +390,7 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     }));
 
     let commit_plan = result.commit_plan(42, 7);
-    assert!(commit_plan.accepted.is_empty());
+    assert_eq!(commit_plan.accepted, vec![1]);
     let reject_plan = result.reject_plan(42, 7);
     assert_eq!(reject_plan.violations.len(), 2);
     assert!(
@@ -534,5 +527,77 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
                 Reason::NumericError(NumericError::Overflow(_))
             ));
         }
+    }
+}
+
+#[test]
+fn accepts_conflict_free_jobs_across_imports() {
+    let mut checker = ConflictDetector::new();
+    checker.import(vec![record(1, 0, 0, 10, 5)]);
+    checker.import(vec![
+        record(2, 0, 1, 20, 7),
+        record(2, 0, 1, 21, 7),
+        record(3, 1, 0, 30, 9),
+    ]);
+    let result = checker.check();
+    assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2, 3]);
+    assert!(result.violations.is_empty());
+    assert!(result.reject_plan(0, 0).rejected.is_empty());
+    assert!(checker.check().committable.is_empty());
+}
+
+#[test]
+fn keeps_expensive_suffixes_and_separates_generations() {
+    for reverse in [false, true] {
+        let mut later_generation = record(70, 0, 2, 70, 1);
+        later_generation.id.generation = 1;
+        let mut records = vec![
+            record(50, 0, 0, 50, 5),
+            record(5, 0, 1, 7, 30),
+            record(1, 0, 2, 1, 1),
+            record(90, 0, 3, 8, 40),
+            record(100, 1, 0, 7, 20),
+            record(101, 2, 0, 8, 10),
+            later_generation,
+        ];
+        if reverse {
+            records.reverse();
+        }
+        let mut checker = ConflictDetector::new();
+        checker.import(records);
+        let result = checker.check();
+        assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 5, 50, 70, 90]);
+        assert_eq!(result.reject_plan(0, 0).rejected, vec![100, 101]);
+    }
+}
+
+#[test]
+fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
+    for reverse in [false, true] {
+        let mut records = vec![
+            record(1, 0, 0, 7, 5),
+            record(1, 0, 0, 8, 5),
+            record(2, 1, 0, 7, 10),
+            record(3, 2, 0, 8, 20),
+        ];
+        if reverse {
+            records.reverse();
+        }
+        let mut checker = ConflictDetector::new();
+        for record in records {
+            checker.import(vec![record]);
+        }
+        let result = checker.check();
+        assert_eq!(result.commit_plan(0, 0).accepted, vec![2, 3]);
+        assert_eq!(
+            result
+                .involved_pairs
+                .iter()
+                .map(|(a, b)| (a.global, b.global))
+                .collect::<Vec<_>>(),
+            vec![(1, 2), (1, 3)]
+        );
+        assert_eq!(result.reject_plan(0, 0).rejected, vec![1]);
+        assert!(checker.check().committable.is_empty());
     }
 }

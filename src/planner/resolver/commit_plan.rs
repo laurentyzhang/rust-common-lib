@@ -1,5 +1,5 @@
 use super::Violation;
-use crate::planner::scheduler::ID;
+use crate::planner::scheduler::{ID, ScheduleKey};
 use alloy_evm::revm::state::EvmState;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,10 +20,10 @@ pub struct RejectPlan<K> {
 }
 
 pub struct ConflictResult<K> {
-    /// Each job's ID mapped to its accumulated gas.
-    pub gas_lookup: BTreeMap<ID, u64>,
+    /// Accumulated gas keyed by scheduled job order.
+    pub gas_lookup: BTreeMap<ScheduleKey, u64>,
     /// Ordered sequences of job IDs paired with cumulative gas.
-    pub sequence_gas: Vec<Vec<(ID, u64)>>,
+    pub cumulative_gas: Vec<Vec<(ID, u64)>>,
 
     /// Committable job IDs.
     pub committable: BTreeSet<ID>,
@@ -39,7 +39,7 @@ impl<K> Default for ConflictResult<K> {
     fn default() -> Self {
         Self {
             gas_lookup: BTreeMap::new(),
-            sequence_gas: Vec::new(),
+            cumulative_gas: Vec::new(),
             committable: BTreeSet::new(),
             violations: Vec::new(),
             involved_pairs: BTreeSet::new(),
@@ -58,15 +58,18 @@ impl<K> ConflictResult<K> {
     }
 
     pub fn reject_plan(self, block_id: u64, generation: u64) -> RejectPlan<K> {
+        let mut rejected = self
+            .gas_lookup
+            .keys()
+            .map(|key| key.0)
+            .filter(|id| !self.committable.contains(id))
+            .map(|id| id.global)
+            .collect::<Vec<_>>();
+        rejected.sort_unstable();
         RejectPlan {
             block_id,
             generation,
-            rejected: self
-                .gas_lookup
-                .keys()
-                .filter(|id| !self.committable.contains(*id))
-                .map(|id| id.global)
-                .collect(),
+            rejected,
             violations: self.violations,
         }
     }

@@ -9,7 +9,7 @@ use crate::{
     planner::{
         meta::property::Property,
         resolver::{CONFLICT_META_ID, Checker, ConflictResult},
-        scheduler::ID,
+        scheduler::{ID, ScheduleKey},
     },
     store::traits::Committer,
 };
@@ -92,9 +92,9 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
         assert_eq!(
             result.committable,
             if round == 0 {
-                BTreeSet::from([CONFLICT_META_ID])
+                BTreeSet::from([record(1, 7, true).id, CONFLICT_META_ID])
             } else {
-                BTreeSet::new()
+                BTreeSet::from([record(1, 7, true).id])
             }
         );
         assert_eq!(
@@ -250,7 +250,10 @@ fn resolve_returns_metadata_with_a_read_only_database() {
         .import(vec![record(1, 7, true), record(2, 7, false)]);
     let conflicts = planner.checker.check();
     let result = planner.resolve(conflicts).unwrap();
-    assert_eq!(result.committable, BTreeSet::from([CONFLICT_META_ID]));
+    assert_eq!(
+        result.committable,
+        BTreeSet::from([record(1, 7, true).id, CONFLICT_META_ID])
+    );
     assert_eq!(result.violations.len(), 1);
     assert_eq!(result.conflict_meta.1.len(), 2);
     for (contract, selector, peer) in [(a, 10, callee(b, 20)), (b, 20, callee(a, 10))] {
@@ -283,22 +286,22 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
         record(2, 7, false),
         record(3, 9, false),
     ]);
-    let mut conflicts = planner.checker.check();
-    let accepted_id = *conflicts
+    let conflicts = planner.checker.check();
+    let accepted_id = conflicts
         .gas_lookup
         .keys()
-        .find(|id| id.global == 3)
-        .unwrap();
-    conflicts.committable.insert(accepted_id);
+        .find(|key| key.0.global == 3)
+        .unwrap()
+        .0;
     let mut result = planner.resolve(conflicts).unwrap();
     let meta_id = result.conflict_meta.0;
     assert_eq!(meta_id, CONFLICT_META_ID);
     assert_eq!(meta_id.global, u64::MAX);
-    assert_eq!(result.commit_plan(42, 0).accepted, vec![3, u64::MAX]);
-    assert!(!result.gas_lookup.contains_key(&meta_id));
+    assert_eq!(result.commit_plan(42, 0).accepted, vec![1, 3, u64::MAX]);
+    assert!(!result.gas_lookup.contains_key(&ScheduleKey(meta_id)));
     assert!(
         result
-            .sequence_gas
+            .cumulative_gas
             .iter()
             .flatten()
             .all(|(id, _)| *id != meta_id)
@@ -317,7 +320,7 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
     );
     let mut committer = StatDbCommitter::new();
     committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
-    committer.buffer(ID::new(1), EvmState::from_iter([(a, rejected)]));
+    committer.buffer(record(2, 7, false).id, EvmState::from_iter([(a, rejected)]));
     committer.buffer(meta_id, std::mem::take(&mut result.conflict_meta.1));
     committer.stage(result.committable.iter().copied().collect());
     committer.flush();
@@ -332,7 +335,7 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
             U256::from(1)
         );
     }
-    assert_eq!(result.reject_plan(42, 0).rejected, vec![1, 2]);
+    assert_eq!(result.reject_plan(42, 0).rejected, vec![2]);
 }
 
 #[test]
@@ -389,7 +392,7 @@ fn numeric_conflicts_report_contributing_transactions() {
         .collect();
     detector.import(records);
     let result = detector.check();
-    assert!(result.committable.is_empty());
+    assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2]);
     assert_eq!(
         result
             .involved_pairs

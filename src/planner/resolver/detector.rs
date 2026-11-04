@@ -1,7 +1,8 @@
 use super::{
-    Checker,
+    Checker, Reason,
     checkers::{access::AccessChecker, sum::SumChecker},
     commit_plan::ConflictResult,
+    selection,
 };
 use crate::crdt::state::{
     Tracked,
@@ -9,6 +10,7 @@ use crate::crdt::state::{
     value::{CrdtValue, ValueSnapshots},
 };
 use crate::eu::output::ExecutionOutput;
+use crate::planner::scheduler::{ID, ScheduleKey};
 use alloy_primitives::{I256, U256};
 
 /// Coordinates access and numeric conflict checks and combines their results.
@@ -28,6 +30,33 @@ impl<K> ConflictDetector<K> {
             summary: ConflictResult::default(),
         }
     }
+
+    fn accumulate(&mut self) -> Vec<Vec<(ID, u64)>> {
+        // Group jobs by their scheduled sequence.
+        let mut sequences = Vec::<Vec<(ID, u64)>>::new();
+        let mut previous = None;
+        for (key, gas) in &self.summary.gas_lookup {
+            let id = key.0;
+            let sequence = (id.generation, id.sequence);
+            if previous != Some(sequence) {
+                sequences.push(Vec::new());
+                previous = Some(sequence);
+            }
+            sequences.last_mut().unwrap().push((id, *gas));
+        }
+
+        // Accumulate each sequence's gas and update the lookup in the same order.
+        let mut gas_values = self.summary.gas_lookup.values_mut();
+        for sequence in &mut sequences {
+            let mut cumulative = 0;
+            for ((_, gas), lookup_gas) in sequence.iter_mut().zip(&mut gas_values) {
+                cumulative += *gas;
+                *gas = cumulative;
+                *lookup_gas = cumulative;
+            }
+        }
+        sequences
+    }
 }
 
 impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDetector<K> {
@@ -37,7 +66,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         for job in &executed_jobs {
             self.summary
                 .gas_lookup
-                .entry(job.id)
+                .entry(ScheduleKey(job.id))
                 .or_insert(job.gas_used); // Insert gas used for this job if not already present.
 
             match &job.data.value.current {
@@ -61,7 +90,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
 
     /// Checks all records accumulated by imports, consuming the current batch.
     fn check(&mut self) -> ConflictResult<K> {
-        let ((mut rejected, mut pairs), ((i256, i256_pairs), (u256, u256_pairs))) = rayon::join(
+        let ((mut rejected, pairs), ((i256, i256_pairs), (u256, u256_pairs))) = rayon::join(
             || self.access_checker.check(),
             || {
                 rayon::join(
@@ -71,46 +100,34 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             },
         );
 
-        pairs.extend(i256_pairs.into_iter().chain(u256_pairs));
         rejected.extend(i256.into_iter().chain(u256));
-        rejected.sort_unstable_by_key(|(record, _)| record.id.global);
         self.summary.violations = rejected;
-        self.summary.involved_pairs = pairs;
+        self.summary
+            .violations
+            .sort_unstable_by_key(|(record, _)| record.id.global);
+        self.summary.involved_pairs = pairs
+            .iter()
+            .copied()
+            .chain(i256_pairs)
+            .chain(u256_pairs)
+            .collect();
 
-        // Calculate gas in scheduled job order, counting each job once.
-        let mut jobs_gas = self.summary.gas_lookup.iter_mut().collect::<Vec<_>>();
-        jobs_gas.sort_unstable_by_key(|(id, _)| (id.generation, id.sequence, id.job));
-        for (id, gas) in jobs_gas {
-            if !self
-                .summary
-                .sequence_gas
-                .last()
-                .and_then(|sequence| sequence.last())
-                .is_some_and(|(previous, _)| {
-                    (previous.generation, previous.sequence) == (id.generation, id.sequence)
-                })
-            {
-                self.summary.sequence_gas.push(Vec::new());
-            }
-
-            // Update the cumulative gas for the current sequence.
-            let seq_mut = self.summary.sequence_gas.last_mut().unwrap();
-            *gas += seq_mut.last().map_or(0, |(_, gas)| *gas);
-            seq_mut.push((*id, *gas));
-        }
+        self.summary.cumulative_gas = self.accumulate();
 
         for (record, _) in &mut self.summary.violations {
-            record.accumulated_gas = self.summary.gas_lookup[&record.id];
+            record.accumulated_gas = self.summary.gas_lookup[&ScheduleKey(record.id)];
         }
 
-        self.summary.sequence_gas.sort_unstable_by(|left, right| {
-            let (left, left_gas) = left.last().unwrap();
-            let (right, right_gas) = right.last().unwrap();
-            left.generation
-                .cmp(&right.generation)
-                .then_with(|| right_gas.cmp(left_gas))
-                .then_with(|| left.sequence.cmp(&right.sequence))
-        });
+        self.summary.committable = selection::select(
+            &self.summary.cumulative_gas,
+            &pairs,
+            self.summary
+                .violations
+                .iter()
+                .filter_map(|(record, reason)| {
+                    matches!(reason, Reason::NumericError(_)).then_some(record.id)
+                }),
+        );
         std::mem::take(&mut self.summary)
     }
 }

@@ -301,7 +301,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .result
                 .is_success()
         }));
-        assert!(result.committable.is_empty());
+        assert_eq!(result.committable, BTreeSet::from([outcomes[0].id]));
         assert_eq!(
             result
                 .involved_pairs
@@ -310,7 +310,10 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(1, 2)])
         );
-        assert_eq!(committer.inner(), &state);
+        assert_eq!(
+            committer.inner()[&contract].storage[&U256::ZERO].present_value(),
+            U256::from(1)
+        );
         assert!(
             !committer
                 .inner()
@@ -348,15 +351,18 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         )
         .unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert!(result.committable.is_empty());
+        assert_eq!(result.committable, BTreeSet::from([outcomes[0].id]));
         assert!(result.violations.is_empty());
         assert!(result.involved_pairs.is_empty());
         assert_eq!(
             outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
                 .present_value(),
-            U256::from(1)
+            U256::from(2)
         );
-        assert_eq!(committer.inner(), &state);
+        assert_eq!(
+            committer.inner()[&contract].storage[&U256::ZERO].present_value(),
+            U256::from(2)
+        );
 
         let mut planner = Planner::new(StateDb::new(state.clone()), Default::default());
         let mut committer = StatDbCommitter::with_state(state.clone());
@@ -375,7 +381,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert_eq!(resolutions.len(), 1);
         assert_eq!(
             resolutions[0].committable,
-            BTreeSet::from([CONFLICT_META_ID])
+            BTreeSet::from([outcomes[0].id, CONFLICT_META_ID])
         );
         assert_eq!(
             resolutions[0]
@@ -395,6 +401,75 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
         assert_eq!(
             persistent.storage_ref(contract, U256::ZERO).unwrap(),
+            U256::ZERO
+        );
+    }
+}
+
+#[test]
+fn commits_all_conflict_free_parallel_jobs() {
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
+    );
+    let mut env = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::BEDROCK;
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 1, 0x60, 0, 0x55, 0]));
+    let contracts = [Address::repeat_byte(0x88), Address::repeat_byte(0x99)];
+    let state = EvmState::from_iter(contracts.map(|contract| {
+        (
+            contract,
+            Account::from(AccountInfo {
+                code_hash: code.hash_slow(),
+                code: Some(code.clone()),
+                ..Default::default()
+            }),
+        )
+    }));
+    let fallback = StateDb::new(state.clone());
+    let mut committer = StatDbCommitter::with_state(state);
+    let mut checker = ConflictDetector::new();
+    let generation = Generation {
+        sequences: contracts
+            .into_iter()
+            .enumerate()
+            .map(|(index, contract)| JobSequence {
+                jobs: vec![job(index as u64 + 1, contract)],
+                nonce_offsets: Vec::new(),
+            })
+            .collect(),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let (outcomes, result) = ArcologyParaBlockExecutor::run_generation(
+        &factory,
+        &config,
+        &pool,
+        &fallback,
+        generation,
+        &mut checker,
+        &mut committer,
+    )
+    .unwrap();
+    assert!(result.violations.is_empty());
+    assert_eq!(
+        result.committable,
+        outcomes.iter().map(|outcome| outcome.id).collect()
+    );
+    for contract in contracts {
+        assert_eq!(
+            committer.inner()[&contract].storage[&U256::ZERO].present_value(),
+            U256::from(1)
+        );
+        assert_eq!(
+            fallback.storage_ref(contract, U256::ZERO).unwrap(),
             U256::ZERO
         );
     }

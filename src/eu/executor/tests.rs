@@ -212,7 +212,7 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
             U256::from(expected_delta)
         );
         assert_eq!(
-            ArcologyParaBlockExecutor::accumulate_gas(&mut results, &|receipt, gas| *receipt = gas),
+            ArcologyParaBlockExecutor::accumulate(&mut results, &|receipt, gas| *receipt = gas),
             expected_gas
         );
     }
@@ -301,7 +301,7 @@ fn rejected_jobs_report_all_conflicts_and_contribute_no_state_or_gas() {
     }
     let mut results = results;
     assert_eq!(
-        ArcologyParaBlockExecutor::accumulate_gas(&mut results, &|receipt, gas| *receipt = gas),
+        ArcologyParaBlockExecutor::accumulate(&mut results, &|receipt, gas| *receipt = gas),
         21_000
     );
 }

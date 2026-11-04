@@ -1,4 +1,4 @@
-use super::scheduler::Scheduler;
+use super::config::Scheduler;
 use super::workload::{Generation, Job, JobSequence};
 
 /// Passes jobs through in one generation with each job in its own sequence.

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::config::SchedulerConfig;
 use super::job_resolver::{ExecutionMode, ResolvedJob};
-use super::scheduler::SchedulerConfig;
 use super::sender::Sender;
 use super::workload::{Generation, Job, JobSequence};
 

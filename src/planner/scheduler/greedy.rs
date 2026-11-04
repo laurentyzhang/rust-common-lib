@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::config::{Scheduler, SchedulerConfig};
 use super::draft::DraftPlan;
 use super::job_resolver::JobResolver;
-use super::scheduler::{Scheduler, SchedulerConfig};
 use super::sender_batcher::SenderBatcher;
 use super::store::CalleeProfile;
 use super::workload::{Generation, Job};
