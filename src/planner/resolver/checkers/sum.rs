@@ -2,10 +2,10 @@ use crate::crdt::{Scalar, Type};
 use crate::{
     crdt::{
         Crdt,
-        state::{Status, Tracked, value::CrdtValue},
+        state::{Status, Tracked},
     },
-    eu::output::ExecutionOutput,
-    planner::resolver::Violation,
+    execution::output::ExecutionOutput,
+    planner::resolver::Diagnostic,
     planner::resolver::checkers::util::run_parallel,
     planner::scheduler::ID,
 };
@@ -35,28 +35,26 @@ impl<K, T: Type> SumChecker<K, T> {
         }
     }
 
-    pub fn check_bounds(&mut self) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
+    pub fn check_bounds(&mut self) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
     where
         K: Ord + std::hash::Hash + Send + Sync,
         T: Send,
         T::Magnitude: Send,
-        CrdtValue<'static>: From<Scalar<T>>,
     {
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
     fn do_check(
         records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
-    ) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
+    ) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
     where
         K: Ord,
-        CrdtValue<'static>: From<Scalar<T>>,
     {
-        let mut rejected = Vec::new();
+        let mut diagnostics = Vec::new();
         let mut conflicts = BTreeSet::new();
         let mut records = records.into_iter();
         let Some(first) = records.next() else {
-            return (rejected, conflicts);
+            return (diagnostics, conflicts);
         };
         let mut contributors = Vec::new();
         if first.data.current().delta().is_some() {
@@ -73,15 +71,11 @@ impl<K, T: Type> SumChecker<K, T> {
                 for &id in &contributors {
                     conflicts.insert((id.min(record.id), id.max(record.id)));
                 }
-                rejected.push((
-                    record
-                        .map_data(|data| data.map_current(|current| Status::Value(current.into()))),
-                    error.into(),
-                ));
+                diagnostics.push((record.id, record.key, contributors.clone(), error.into()));
             } else {
                 contributors.push(record.id);
             }
         }
-        (rejected, conflicts)
+        (diagnostics, conflicts)
     }
 }

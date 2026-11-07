@@ -1,7 +1,6 @@
 use super::{
-    Checker, Reason,
+    Checker, CommitVerdict, ConflictResult, Reason, Rejection,
     checkers::{access::AccessChecker, sum::SumChecker},
-    commit_plan::ConflictResult,
     selection,
 };
 use crate::crdt::state::{
@@ -9,9 +8,10 @@ use crate::crdt::state::{
     status::Status,
     value::{CrdtValue, ValueSnapshots},
 };
-use crate::eu::output::ExecutionOutput;
+use crate::execution::output::ExecutionOutput;
 use crate::planner::scheduler::{ID, ScheduleKey};
 use alloy_primitives::{I256, U256};
+use std::collections::BTreeMap;
 
 /// Coordinates access and numeric conflict checks and combines their results.
 pub struct ConflictDetector<K> {
@@ -37,7 +37,7 @@ impl<K> ConflictDetector<K> {
         let mut previous = None;
         for (key, gas) in &self.summary.gas_lookup {
             let id = key.0;
-            let sequence = (id.generation, id.sequence);
+            let sequence = (id.block, id.generation, id.sequence);
             if previous != Some(sequence) {
                 sequences.push(Vec::new());
                 previous = Some(sequence);
@@ -90,7 +90,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
 
     /// Checks all records accumulated by imports, consuming the current batch.
     fn check(&mut self) -> ConflictResult<K> {
-        let ((mut rejected, pairs), ((i256, i256_pairs), (u256, u256_pairs))) = rayon::join(
+        let ((mut diagnostics, pairs), ((i256, i256_pairs), (u256, u256_pairs))) = rayon::join(
             || self.access_checker.check(),
             || {
                 rayon::join(
@@ -100,11 +100,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             },
         );
 
-        rejected.extend(i256.into_iter().chain(u256));
-        self.summary.violations = rejected;
-        self.summary
-            .violations
-            .sort_unstable_by_key(|(record, _)| record.id.global);
+        diagnostics.extend(i256.into_iter().chain(u256));
         self.summary.involved_pairs = pairs
             .iter()
             .copied()
@@ -114,20 +110,55 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
 
         self.summary.cumulative_gas = self.accumulate();
 
-        for (record, _) in &mut self.summary.violations {
-            record.accumulated_gas = self.summary.gas_lookup[&ScheduleKey(record.id)];
-        }
-
-        self.summary.committable = selection::select(
+        let accepted = selection::select(
             &self.summary.cumulative_gas,
             &pairs,
-            self.summary
-                .violations
-                .iter()
-                .filter_map(|(record, reason)| {
-                    matches!(reason, Reason::NumericError(_)).then_some(record.id)
-                }),
+            diagnostics.iter().filter_map(|(id, _, _, reason)| {
+                matches!(reason, Reason::NumericError(_)).then_some(*id)
+            }),
         );
+
+        // The first rejected job explains the discarded suffix of its sequence.
+        let mut verdicts = BTreeMap::new();
+        for sequence in &self.summary.cumulative_gas {
+            let mut dependency = None;
+            for &(id, _) in sequence {
+                let rejection = if accepted.contains(&id) {
+                    None
+                } else if let Some(cause) = dependency {
+                    Some(Rejection::Dependency(cause))
+                } else {
+                    dependency = Some(id);
+                    Some(Rejection::Conflict {
+                        peers: Vec::new(),
+                        reasons: Vec::new(),
+                    })
+                };
+                verdicts.insert(id, CommitVerdict { id, rejection });
+            }
+        }
+
+        for (id, key, related, reason) in diagnostics {
+            let Some(Rejection::Conflict { peers, reasons }) =
+                &mut verdicts.get_mut(&id).unwrap().rejection
+            else {
+                continue;
+            };
+            peers.extend(related);
+            if !reasons.iter().any(|(existing_key, existing_reason)| {
+                existing_key == &key && existing_reason == &reason
+            }) {
+                reasons.push((key, reason));
+            }
+        }
+        for verdict in verdicts.values_mut() {
+            if let Some(Rejection::Conflict { peers, reasons }) = &mut verdict.rejection {
+                peers.sort_unstable();
+                peers.dedup();
+                reasons.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+            }
+        }
+        self.summary.verdicts = verdicts.into_values().collect();
         std::mem::take(&mut self.summary)
     }
 }

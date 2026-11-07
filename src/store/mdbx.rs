@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn evm_key_and_raw_value_round_trip() {
-        use crate::eu::key::{Key, SlotKeyCodec};
+        use crate::execution::key::{Key, SlotKeyCodec};
 
         let directory = tempfile::tempdir().unwrap();
         let mut mdbx: MdbxStore<Key, Vec<u8>, _, _> =

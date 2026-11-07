@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::store::CalleeProfile;
-use super::workload::Job;
+use crate::execution::workload::Job;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ExecutionMode {

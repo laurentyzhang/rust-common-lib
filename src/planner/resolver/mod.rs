@@ -1,14 +1,17 @@
 pub mod checkers;
-pub mod commit_plan;
 pub mod detector;
 mod metadata;
 mod selection;
+pub mod verdict;
 
-pub use commit_plan::{CONFLICT_META_ID, CommitPlan, ConflictResult, RejectPlan};
 pub use detector::ConflictDetector;
+pub use verdict::{
+    CONFLICT_META_ID, CommitVerdict, ConflictResult, Rejection, accepted_ids, rejected_ids,
+};
 
 use crate::crdt::state::{Status, Tracked};
-use crate::eu::output::ExecutionOutput;
+use crate::execution::output::ExecutionOutput;
+use crate::planner::scheduler::ID;
 
 /// Numeric constraint or state failures encountered while accumulating deltas.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -58,7 +61,7 @@ impl From<crate::crdt::state::StateError> for Reason {
 }
 
 /// Incompatible accesses to the same key, with diagnostic details.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccessConflict {
     CreationConflict(String),
     ExistenceConflict(String),
@@ -68,8 +71,8 @@ pub enum AccessConflict {
     ConcurrentDeltaOnNonCommutative(String),
 }
 
-/// Explains why a resolver checker rejected an execution record.
-#[derive(Debug, Clone)]
+/// Describes an access conflict or numeric constraint failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
     NumericError(NumericError),
     AccessConflict(AccessConflict),
@@ -83,8 +86,8 @@ pub struct TransactionConflictReport {
     pub access_conflicts: Vec<AccessConflict>,
 }
 
-/// An execution record paired with its rejection reason.
-pub type Violation<K> = (ExecutionOutput<K, Tracked<Status, Status>>, Reason);
+// Checker diagnostics retain the affected job, key, peers, and reason until selection.
+type Diagnostic<K> = (ID, K, Vec<ID>, Reason);
 
 /// Collects execution records and reports constraint violations for a generation.
 pub trait Checker<K> {

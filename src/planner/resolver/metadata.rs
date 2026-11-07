@@ -9,7 +9,7 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, U256};
 
-use super::{CONFLICT_META_ID, ConflictResult};
+use super::{CONFLICT_META_ID, CommitVerdict, ConflictResult};
 use crate::planner::{Planner, meta::property::Property};
 
 impl<DB: Database, K> Planner<DB, K> {
@@ -89,10 +89,23 @@ impl<DB: Database, K> Planner<DB, K> {
                 ),
             );
         }
+        let source = result
+            .verdicts
+            .first()
+            .map(|verdict| verdict.id)
+            .or_else(|| result.involved_pairs.first().map(|(id, _)| *id));
+        let meta_id = crate::planner::scheduler::ID {
+            block: source.map_or(0, |id| id.block),
+            generation: source.map_or(0, |id| id.generation),
+            ..CONFLICT_META_ID
+        };
         if !updates.is_empty() {
-            result.committable.insert(CONFLICT_META_ID);
+            result.verdicts.push(CommitVerdict {
+                id: meta_id,
+                rejection: None,
+            });
         }
-        result.conflict_meta = (CONFLICT_META_ID, updates);
+        result.conflict_meta = (meta_id, updates);
         Ok(result)
     }
 }

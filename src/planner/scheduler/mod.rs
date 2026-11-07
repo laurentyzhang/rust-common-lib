@@ -3,16 +3,17 @@ mod draft;
 mod greedy;
 mod job_resolver;
 mod pass_through;
-mod sender;
+pub(crate) mod sender;
 mod sender_batcher;
 mod store;
-mod workload;
 
 pub use config::{Scheduler, SchedulerConfig};
 pub use greedy::GreedyScheduler;
 pub use pass_through::PassThroughScheduler;
 pub use store::CalleeProfile;
-pub use workload::{Generation, ID, Job, JobSequence, ScheduleKey};
+pub use crate::execution::workload::{
+    Generation, HaltReason, ID, Job, JobResult, JobSequence, ScheduleKey,
+};
 
 #[cfg(test)]
 mod tests;

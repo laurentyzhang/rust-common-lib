@@ -1,5 +1,5 @@
 use super::config::Scheduler;
-use super::workload::{Generation, Job, JobSequence};
+use crate::execution::workload::{Generation, Job, JobSequence};
 
 /// Passes jobs through in one generation with each job in its own sequence.
 #[derive(Clone, Copy, Debug, Default)]

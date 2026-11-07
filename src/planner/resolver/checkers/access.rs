@@ -4,8 +4,8 @@ use crate::crdt::state::{
     status::{Status, Tag},
     value::CrdtValue,
 };
-use crate::eu::output::ExecutionOutput;
-use crate::planner::resolver::{AccessConflict, Reason, Violation};
+use crate::execution::output::ExecutionOutput;
+use crate::planner::resolver::{AccessConflict, Diagnostic, Reason};
 use crate::planner::scheduler::ID;
 use std::collections::{BTreeSet, HashMap};
 
@@ -33,20 +33,20 @@ impl<K> AccessChecker<K> {
         }
     }
 
-    pub fn check(&mut self) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
+    pub fn check(&mut self) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
     where
-        K: Ord + std::hash::Hash + Send + Sync,
+        K: Clone + Ord + std::hash::Hash + Send + Sync,
     {
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
     pub fn do_check(
         mut records: Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-    ) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
+    ) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
     where
-        K: Ord,
+        K: Clone + Ord,
     {
-        let mut rejected = Vec::new();
+        let mut diagnostics = Vec::new();
         let mut conflicts = BTreeSet::new();
         records.retain(|record| {
             let operations = &record.data.operations;
@@ -58,9 +58,10 @@ impl<K> AccessChecker<K> {
 
         // Report every conflicting pair so the resolver can select either sequence.
         while let Some(record) = records.pop() {
-            let mut rejection = None;
             for first in &records {
-                if record.id.sequence == first.id.sequence {
+                if (record.id.block, record.id.generation, record.id.sequence)
+                    == (first.id.block, first.id.generation, first.id.sequence)
+                {
                     continue;
                 }
                 let result = if record.data.operations.reads.count() > 0
@@ -82,15 +83,18 @@ impl<K> AccessChecker<K> {
 
                 if let Err(reason) = result {
                     conflicts.insert((first.id.min(record.id), first.id.max(record.id)));
-                    rejection.get_or_insert(reason);
+                    // Either endpoint may be rejected by selection.
+                    diagnostics.push((
+                        record.id,
+                        record.key.clone(),
+                        vec![first.id],
+                        reason.clone(),
+                    ));
+                    diagnostics.push((first.id, record.key.clone(), vec![record.id], reason));
                 }
             }
-            if let Some(reason) = rejection {
-                rejected.push((record, reason));
-            }
         }
-        rejected.reverse();
-        (rejected, conflicts)
+        (diagnostics, conflicts)
     }
 }
 

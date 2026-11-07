@@ -66,7 +66,7 @@ mod tests {
         ID {
             sequence,
             job,
-            ..ID::new(global)
+            ..ID::new(0, global)
         }
     }
 

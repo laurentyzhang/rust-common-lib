@@ -1,4 +1,4 @@
-use super::workload::{Generation, Job};
+use crate::execution::workload::{Generation, Job};
 
 /// Options for the scheduler's planning passes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

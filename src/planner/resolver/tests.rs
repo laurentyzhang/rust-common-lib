@@ -5,9 +5,12 @@ use crate::{
             CrdtDelta, CrdtValue, DeltaOp, Status, Tracked, status::Tag, value::ValueSnapshots,
         },
     },
-    eu::output::ExecutionOutput,
+    execution::output::ExecutionOutput,
     planner::{
-        resolver::{AccessConflict, Checker, ConflictDetector, NumericError, Reason},
+        resolver::{
+            AccessConflict, Checker, ConflictDetector, ConflictResult, NumericError, Reason,
+            Rejection, accepted_ids, rejected_ids,
+        },
         scheduler::ID,
     },
 };
@@ -22,7 +25,7 @@ pub(super) fn transition(
     ExecutionOutput {
         id: ID {
             sequence: data.id,
-            ..ID::new(data.id)
+            ..ID::new(0, data.id)
         },
         key,
         gas_used: 0,
@@ -44,6 +47,7 @@ fn record(
         .unwrap();
     ExecutionOutput {
         id: ID {
+            block: 0,
             global,
             sequence,
             job,
@@ -80,7 +84,13 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
             checker.import(vec![record]);
         }
         let report = checker.check();
-        assert_eq!(report.commit_plan(0, 0).accepted, vec![1, 4, 5, 6]);
+        assert_eq!(
+            accepted_ids(&report.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![1, 4, 5, 6]
+        );
         assert_eq!(report.gas_lookup.len(), 6);
         assert_eq!(report.cumulative_gas[0][0].0.sequence, 0);
         assert_eq!(
@@ -127,7 +137,13 @@ fn reports_every_conflicting_pair() {
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([(1, 2), (1, 3), (2, 3)])
     );
-    assert_eq!(report.commit_plan(0, 0).accepted, vec![2]);
+    assert_eq!(
+        accepted_ids(&report.verdicts)
+            .into_iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 #[test]
@@ -142,7 +158,7 @@ fn checks_numeric_bounds_across_multiple_imports() {
         records.push(ExecutionOutput {
             id: ID {
                 sequence: index as u64,
-                ..ID::new(id)
+                ..ID::new(0, id)
             },
             key: 7_u64,
             gas_used: gas,
@@ -158,12 +174,17 @@ fn checks_numeric_bounds_across_multiple_imports() {
         checker.import(vec![record]);
     }
     let result = checker.check();
-    assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2]);
     assert_eq!(
-        result
-            .violations
-            .iter()
-            .map(|(record, _)| record.id.global)
+        accepted_ids(&result.verdicts)
+            .into_iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        rejected_ids(&result.verdicts)
+            .into_iter()
+            .map(|id| id.global)
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([3, 4])
     );
@@ -179,7 +200,13 @@ fn clears_previous_generation_metadata() {
         }
         checker.import(records);
         let result = checker.check();
-        assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2]);
+        assert_eq!(
+            accepted_ids(&result.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert!(
             result
                 .gas_lookup
@@ -187,7 +214,7 @@ fn clears_previous_generation_metadata() {
                 .all(|key| key.0.generation == generation)
         );
     }
-    assert!(checker.check().committable.is_empty());
+    assert!(checker.check().verdicts.is_empty());
 }
 
 #[test]
@@ -201,7 +228,10 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
     ]);
     let report = checker.check();
     assert_eq!(report.gas_lookup.len(), 4);
-    assert_eq!(report.violations[0].0.accumulated_gas, 30);
+    assert_eq!(
+        report.gas_lookup[&crate::planner::scheduler::ScheduleKey(record(20, 0, 1, 20, 20).id)],
+        30
+    );
     assert_eq!(
         report
             .gas_lookup
@@ -223,7 +253,13 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
             .iter()
             .any(|(left, right)| (left.global, right.global) == (20, 40))
     );
-    assert_eq!(report.commit_plan(0, 0).accepted, vec![10, 20, 30]);
+    assert_eq!(
+        accepted_ids(&report.verdicts)
+            .into_iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![10, 20, 30]
+    );
 }
 
 #[test]
@@ -284,66 +320,74 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
             records.reverse();
         }
         let mut detector = ConflictDetector::new();
-        // Separate imports must accumulate into both owned stages.
         for record in records {
             detector.import(vec![record]);
         }
-
-        let rejected = detector.check().violations;
+        let result = detector.check();
         assert_eq!(
-            rejected
+            rejected_ids(&result.verdicts)
                 .iter()
-                .map(|(record, _)| (record.id.global, record.key))
+                .map(|id| id.global)
                 .collect::<Vec<_>>(),
-            vec![(20, 20), (30, 10)],
+            vec![20, 30]
+        );
+        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[2].rejection else {
+            panic!("numeric rejection must explain its contributors");
+        };
+        assert_eq!(
+            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            vec![5]
         );
         assert!(matches!(
-            rejected[0].1,
-            Reason::NumericError(NumericError::AboveUpperLimit(_))
+            reasons.as_slice(),
+            [(20, Reason::NumericError(NumericError::AboveUpperLimit(_)))]
         ));
+        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[3].rejection else {
+            panic!("access rejection must identify its peer");
+        };
+        assert_eq!(
+            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            vec![11]
+        );
         assert!(matches!(
-            rejected[1].1,
-            Reason::AccessConflict(AccessConflict::RemoveConflict(_))
+            reasons.as_slice(),
+            [(
+                10,
+                Reason::AccessConflict(AccessConflict::RemoveConflict(_))
+            )]
         ));
     }
 }
 
 #[test]
-fn conflict_result_builds_commit_and_reject_plans() {
+fn verdict_helpers_preserve_full_job_ids() {
+    let mut records = combined_records();
+    for record in &mut records {
+        record.id.block = 42;
+        record.id.generation = 7;
+    }
+    let ids: std::collections::BTreeMap<_, _> = records
+        .iter()
+        .map(|record| (record.id.global, record.id))
+        .collect();
     let mut detector = ConflictDetector::new();
-    detector.import(combined_records());
-
+    detector.import(records);
     let result = detector.check();
-    assert_eq!(
+    assert_eq!(accepted_ids(&result.verdicts), vec![ids[&5], ids[&11]]);
+    assert_eq!(rejected_ids(&result.verdicts), vec![ids[&20], ids[&30]]);
+    assert!(
         result
-            .committable
+            .verdicts
             .iter()
-            .map(|id| id.global)
-            .collect::<Vec<_>>(),
-        vec![5, 11]
+            .all(|verdict| verdict.id.block == 42 && verdict.id.generation == 7)
     );
-
-    let commit_plan = result.commit_plan(42, 7);
-    assert_eq!(commit_plan.block_id, 42);
-    assert_eq!(commit_plan.generation, 7);
-    assert_eq!(commit_plan.accepted, vec![5, 11]);
-
-    let reject_plan = result.reject_plan(42, 7);
-    assert_eq!(reject_plan.block_id, 42);
-    assert_eq!(reject_plan.generation, 7);
-    assert_eq!(reject_plan.rejected, vec![20, 30]);
-    assert_eq!(
-        reject_plan
-            .violations
-            .iter()
-            .map(|(record, _)| (record.id.global, record.key))
-            .collect::<Vec<_>>(),
-        vec![(20, 20), (30, 10)]
-    );
+    let empty = ConflictResult::<u64>::default();
+    assert!(accepted_ids(&empty.verdicts).is_empty());
+    assert!(rejected_ids(&empty.verdicts).is_empty());
 }
 
 #[test]
-fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
+fn preserves_access_and_numeric_reasons_for_the_same_job() {
     let value = CrdtValue::from(
         Scalar::<I256>::new(I256::unchecked_from(-5), I256::unchecked_from(5)).unwrap(),
     );
@@ -360,66 +404,49 @@ fn preserves_both_reasons_when_both_stages_reject_the_same_record() {
     detector.import(vec![transition(7, second)]);
     detector.import(vec![transition(7, first)]);
     let result = detector.check();
-    let rejected = &result.violations;
-
-    assert_eq!(rejected.len(), 2);
-    assert!(
-        rejected
+    assert_eq!(
+        accepted_ids(&result.verdicts)
             .iter()
-            .all(|(record, _)| (record.id.global, record.key) == (2, 7))
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![1]
     );
-    assert!(rejected.iter().any(|(record, reason)| {
-        matches!(
-            reason,
-            Reason::AccessConflict(AccessConflict::ReadConflict(_))
-        ) && matches!(
-            record.data.current(),
-            Status::Value(CrdtValue::I256(value))
-                if value.delta().copied() == Some(DeltaOp::Add(U256::from(4)))
-        )
-    }));
-    assert!(rejected.iter().any(|(record, reason)| {
-        matches!(
-            reason,
-            Reason::NumericError(NumericError::AboveUpperLimit(_))
-        ) && matches!(
-            record.data.current(),
-            Status::Value(CrdtValue::I256(value))
-                if value.delta().copied() == Some(DeltaOp::Add(U256::from(4)))
-        )
-    }));
-
-    let commit_plan = result.commit_plan(42, 7);
-    assert_eq!(commit_plan.accepted, vec![1]);
-    let reject_plan = result.reject_plan(42, 7);
-    assert_eq!(reject_plan.violations.len(), 2);
-    assert!(
-        reject_plan
-            .violations
-            .iter()
-            .all(|(record, _)| record.id.global == 2)
+    let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[1].rejection else {
+        panic!("job must carry both rejection reasons");
+    };
+    assert_eq!(
+        peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+        vec![1]
     );
+    assert_eq!(reasons.len(), 2);
+    assert!(reasons.iter().all(|(key, _)| *key == 7));
+    assert!(reasons.iter().any(|(_, reason)| matches!(
+        reason,
+        Reason::AccessConflict(AccessConflict::ReadConflict(_))
+    )));
+    assert!(reasons.iter().any(|(_, reason)| matches!(
+        reason,
+        Reason::NumericError(NumericError::AboveUpperLimit(_))
+    )));
 }
 
 #[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
     let mut detector = ConflictDetector::new();
-    assert!(detector.check().violations.is_empty());
-
+    assert!(detector.check().verdicts.is_empty());
     for _ in 0..2 {
         detector.import(combined_records());
-        let rejected = detector.check().violations;
+        let result = detector.check();
         assert_eq!(
-            rejected
+            rejected_ids(&result.verdicts)
                 .iter()
-                .map(|(record, _)| record.id.global)
+                .map(|id| id.global)
                 .collect::<Vec<_>>(),
-            vec![20, 30],
+            vec![20, 30]
         );
-        assert!(detector.check().violations.is_empty());
+        assert!(detector.check().verdicts.is_empty());
     }
 }
-
 #[test]
 fn numeric_reads_remain_visible_to_access_detection() {
     for (value, delta) in [
@@ -443,13 +470,24 @@ fn numeric_reads_remain_visible_to_access_detection() {
         let mut detector = ConflictDetector::new();
         detector.import(vec![transition(7, writer)]);
         detector.import(vec![transition(7, reader)]);
-        let rejected = detector.check().violations;
-
-        assert_eq!(rejected.len(), 1);
-        assert_eq!((rejected[0].0.id.global, rejected[0].0.key), (2, 7));
+        let result = detector.check();
+        assert_eq!(
+            rejected_ids(&result.verdicts)
+                .iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[1].rejection else {
+            panic!("read conflict must carry rejection details");
+        };
+        assert_eq!(
+            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            vec![1]
+        );
         assert!(matches!(
-            rejected[0].1,
-            Reason::AccessConflict(AccessConflict::ReadConflict(_))
+            reasons.as_slice(),
+            [(7, Reason::AccessConflict(AccessConflict::ReadConflict(_)))]
         ));
     }
 }
@@ -508,22 +546,26 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
         let mut detector = ConflictDetector::new();
         detector.import(vec![transition(7, second)]);
         detector.import(vec![transition(7, first)]);
-        let rejected = detector.check().violations;
-
-        assert_eq!(rejected.len(), 1);
-        assert_eq!((rejected[0].0.id.global, rejected[0].0.key), (2, 7));
-        assert!(matches!(
-            rejected[0].0.data.current(),
-            Status::Value(CrdtValue::I256(_) | CrdtValue::U256(_))
-        ));
+        let result = detector.check();
+        assert_eq!(
+            rejected_ids(&result.verdicts)
+                .iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![2]
+        );
+        let Some(Rejection::Conflict { reasons, .. }) = &result.verdicts[1].rejection else {
+            panic!("numeric rejection must carry its bound error");
+        };
+        assert_eq!(reasons[0].0, 7);
         if underflow {
             assert!(matches!(
-                rejected[0].1,
+                reasons[0].1,
                 Reason::NumericError(NumericError::Underflow(_))
             ));
         } else {
             assert!(matches!(
-                rejected[0].1,
+                reasons[0].1,
                 Reason::NumericError(NumericError::Overflow(_))
             ));
         }
@@ -540,10 +582,27 @@ fn accepts_conflict_free_jobs_across_imports() {
         record(3, 1, 0, 30, 9),
     ]);
     let result = checker.check();
-    assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 2, 3]);
-    assert!(result.violations.is_empty());
-    assert!(result.reject_plan(0, 0).rejected.is_empty());
-    assert!(checker.check().committable.is_empty());
+    assert_eq!(
+        accepted_ids(&result.verdicts)
+            .into_iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(
+        result
+            .verdicts
+            .iter()
+            .all(|verdict| verdict.rejection.is_none())
+    );
+    assert!(
+        rejected_ids(&result.verdicts)
+            .into_iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>()
+            .is_empty()
+    );
+    assert!(checker.check().verdicts.is_empty());
 }
 
 #[test]
@@ -566,8 +625,20 @@ fn keeps_expensive_suffixes_and_separates_generations() {
         let mut checker = ConflictDetector::new();
         checker.import(records);
         let result = checker.check();
-        assert_eq!(result.commit_plan(0, 0).accepted, vec![1, 5, 50, 70, 90]);
-        assert_eq!(result.reject_plan(0, 0).rejected, vec![100, 101]);
+        assert_eq!(
+            accepted_ids(&result.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![1, 5, 50, 70, 90]
+        );
+        assert_eq!(
+            rejected_ids(&result.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![100, 101]
+        );
     }
 }
 
@@ -588,7 +659,13 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
             checker.import(vec![record]);
         }
         let result = checker.check();
-        assert_eq!(result.commit_plan(0, 0).accepted, vec![2, 3]);
+        assert_eq!(
+            accepted_ids(&result.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
         assert_eq!(
             result
                 .involved_pairs
@@ -597,7 +674,58 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
                 .collect::<Vec<_>>(),
             vec![(1, 2), (1, 3)]
         );
-        assert_eq!(result.reject_plan(0, 0).rejected, vec![1]);
-        assert!(checker.check().committable.is_empty());
+        assert_eq!(
+            rejected_ids(&result.verdicts)
+                .into_iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[0].rejection else {
+            panic!("the chosen rollback must carry both conflict relationships");
+        };
+        assert_eq!(
+            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(
+            reasons.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
+        assert!(
+            result.verdicts[1..]
+                .iter()
+                .all(|verdict| verdict.rejection.is_none())
+        );
+        assert!(checker.check().verdicts.is_empty());
     }
+}
+
+#[test]
+fn suffix_rejections_identify_the_earlier_rejected_job() {
+    let mut records = vec![
+        record(1, 0, 0, 1, 10),
+        record(2, 0, 1, 7, 5),
+        record(3, 0, 2, 3, 1),
+        record(4, 1, 0, 7, 100),
+    ];
+    for record in &mut records {
+        record.id.block = 42;
+        record.id.generation = 7;
+    }
+    let rejected = records[1].id;
+    let dependent = records[2].id;
+    let peer = records[3].id;
+    let mut detector = ConflictDetector::new();
+    detector.import(records);
+    let result = detector.check();
+    assert_eq!(rejected_ids(&result.verdicts), vec![rejected, dependent]);
+    assert!(matches!(
+        &result.verdicts[1].rejection,
+        Some(Rejection::Conflict { peers, reasons }) if peers == &vec![peer] && reasons.len() == 1 && reasons[0].0 == 7
+    ));
+    assert_eq!(
+        result.verdicts[2].rejection,
+        Some(Rejection::Dependency(rejected))
+    );
 }

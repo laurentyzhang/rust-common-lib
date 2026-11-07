@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, U256};
 use rust_common_lib::{
-    eu::{ApiAddress, CallHandler, ScalarKeyCodec, ScalarKind, U256Handler},
+    execution::{ApiAddress, CallHandler, ScalarKeyCodec, ScalarKind, U256Handler},
     namespace::{Namespace, NamespaceCodec},
     planner::meta::{MetaKeyCodec, property::Property},
 };

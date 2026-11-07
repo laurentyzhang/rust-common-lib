@@ -1,5 +1,5 @@
-use crate::eu::output::ExecutionOutput;
-use crate::planner::resolver::Violation;
+use crate::execution::output::ExecutionOutput;
+use crate::planner::resolver::Diagnostic;
 use crate::planner::scheduler::ID;
 use rayon::prelude::*;
 use std::collections::{BTreeSet, HashMap};
@@ -8,8 +8,8 @@ use std::collections::{BTreeSet, HashMap};
 pub fn run_parallel<K, T>(
     entries: &mut BTreeSet<ExecutionOutput<K, T>>,
     counts: &mut HashMap<K, usize>,
-    check: impl Fn(Vec<ExecutionOutput<K, T>>) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>) + Sync,
-) -> (Vec<Violation<K>>, BTreeSet<(ID, ID)>)
+    check: impl Fn(Vec<ExecutionOutput<K, T>>) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>) + Sync,
+) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
 where
     K: Eq + std::hash::Hash + Send + Sync,
     T: Send,
@@ -28,12 +28,11 @@ where
         .map(|records| check(records))
         .collect::<Vec<_>>();
 
-    let mut rejected = Vec::new();
+    let mut diagnostics = Vec::new();
     let mut conflicts = BTreeSet::new();
     for (records, pairs) in results {
-        rejected.extend(records);
+        diagnostics.extend(records);
         conflicts.extend(pairs);
     }
-    rejected.sort_unstable_by_key(|(record, _)| record.id.global);
-    (rejected, conflicts)
+    (diagnostics, conflicts)
 }

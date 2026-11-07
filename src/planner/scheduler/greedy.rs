@@ -5,7 +5,7 @@ use super::draft::DraftPlan;
 use super::job_resolver::JobResolver;
 use super::sender_batcher::SenderBatcher;
 use super::store::CalleeProfile;
-use super::workload::{Generation, Job};
+use crate::execution::workload::{Generation, Job};
 
 /// Greedy transaction planner driven by caller-supplied callee profiles.
 ///

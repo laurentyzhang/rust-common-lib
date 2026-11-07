@@ -3,7 +3,7 @@ use alloy_evm::{
     revm::{context::TxEnv, database::EmptyDB},
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use rust_common_lib::eu::{
+use rust_common_lib::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter,
 };
 

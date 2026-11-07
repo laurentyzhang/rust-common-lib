@@ -7,7 +7,7 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
     address[19] = sender;
     Job {
         tx: (),
-        id: ID::new(id),
+        id: ID::new(0, id),
         sender: address,
         nonce,
         callee: Some(callee),
@@ -74,6 +74,7 @@ fn known_conflicting_callees_are_serialized_during_finalization() {
     assert_eq!(
         plan[0].sequences[0].jobs[0].id,
         ID {
+            block: 0,
             global: 1,
             generation: 0,
             sequence: 0,
@@ -83,6 +84,7 @@ fn known_conflicting_callees_are_serialized_during_finalization() {
     assert_eq!(
         plan[0].sequences[0].jobs[1].id,
         ID {
+            block: 0,
             global: 2,
             generation: 0,
             sequence: 0,
@@ -528,7 +530,7 @@ fn schedulers_preserve_transaction_payloads() {
     let jobs = [
         Job {
             tx: "first",
-            id: ID::new(1),
+            id: ID::new(0, 1),
             sender: [1; 20],
             nonce: 0,
             callee: None,
@@ -538,7 +540,7 @@ fn schedulers_preserve_transaction_payloads() {
         },
         Job {
             tx: "second",
-            id: ID::new(2),
+            id: ID::new(0, 2),
             sender: [2; 20],
             nonce: 0,
             callee: None,
@@ -735,12 +737,12 @@ fn small_profile_combinations_preserve_public_plan_invariants() {
 
 mod model_tests {
     use crate::planner::scheduler::sender::SenderNonceOffset;
-    use crate::planner::scheduler::workload::{Generation, ID, Job, JobSequence};
+    use crate::execution::workload::{Generation, ID, Job, JobSequence};
 
     fn transaction(sender: u8, nonce: u64, id: u64) -> Job<()> {
         Job {
             tx: (),
-            id: ID::new(id),
+            id: ID::new(0, id),
             sender: [sender; 20],
             nonce,
             callee: None,
@@ -793,7 +795,7 @@ mod policy_tests {
     fn transaction(callee: u64, fully_parallelizable: bool) -> Job<()> {
         Job {
             tx: (),
-            id: ID::new(callee),
+            id: ID::new(0, callee),
             sender: [0; 20],
             nonce: 0,
             callee: Some(callee),
@@ -864,7 +866,7 @@ mod queue_tests {
     fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         Job {
             tx: (),
-            id: ID::new(id),
+            id: ID::new(0, id),
             sender: [sender; 20],
             nonce,
             callee: Some(callee),
@@ -929,4 +931,33 @@ mod queue_tests {
         );
         assert!(queues.next_batch().is_none());
     }
+}
+
+#[test]
+fn scheduled_ids_preserve_block_identity() {
+    let mut jobs = [transaction(8, 1, 0, 1), transaction(9, 2, 0, 2)];
+    for job in &mut jobs {
+        job.id.block = 42;
+    }
+    let plan = GreedyScheduler::new().schedule(jobs);
+    let scheduled: Vec<_> = plan
+        .iter()
+        .flat_map(|generation| &generation.sequences)
+        .flat_map(|sequence| &sequence.jobs)
+        .map(|job| job.id)
+        .collect();
+    assert_eq!(scheduled.len(), 2);
+    assert!(scheduled.iter().all(|id| id.block == 42));
+    assert_eq!(
+        scheduled
+            .iter()
+            .map(|id| id.global)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([8, 9])
+    );
+    assert_ne!(ID::new(41, 8), ID::new(42, 8));
+    assert_eq!(
+        BTreeSet::from([ScheduleKey(ID::new(41, 8)), ScheduleKey(ID::new(42, 8))]).len(),
+        2
+    );
 }
