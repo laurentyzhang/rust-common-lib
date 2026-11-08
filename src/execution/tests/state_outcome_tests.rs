@@ -2,7 +2,7 @@ use crate::execution::{
     EvmStateCommitter, JobResult, Property, ScalarKeyCodec, StateOutcome, workload::ID,
 };
 use crate::namespace::Namespace;
-use crate::planner::resolver::{CommitVerdict, Rejection};
+use crate::planner::resolver::{CommitVerdict, Reason};
 use crate::store::traits::Committer;
 use alloy_evm::revm::{
     context_interface::result::{
@@ -49,18 +49,21 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     let verdicts = [
         CommitVerdict {
             id: ids[0],
-            rejection: None,
+            accepted: true,
+            peers: Vec::new(),
+            reasons: Vec::new(),
         },
         CommitVerdict {
             id: ids[1],
-            rejection: Some(Rejection::Conflict {
-                peers: vec![ID::new(0, 3)],
-                reasons: Vec::new(),
-            }),
+            accepted: false,
+            peers: vec![ID::new(0, 3)],
+            reasons: Vec::new(),
         },
         CommitVerdict {
             id: ids[2],
-            rejection: Some(Rejection::Dependency(ids[1])),
+            accepted: false,
+            peers: Vec::new(),
+            reasons: vec![(None, Reason::Dependency(ids[1]))],
         },
     ];
     for (raw, verdict) in raw.iter_mut().zip(&verdicts) {
@@ -111,7 +114,9 @@ fn finalized_sequence_states_preserve_serial_and_parallel_delta_contributions() 
             let mut job = raw_job(id);
             job.verdict = Some(CommitVerdict {
                 id,
-                rejection: None,
+                accepted: true,
+                peers: Vec::new(),
+                reasons: Vec::new(),
             });
             raw.push(job);
         }

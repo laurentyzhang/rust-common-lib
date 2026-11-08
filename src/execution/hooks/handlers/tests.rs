@@ -6,8 +6,8 @@ use crate::crdt::{
 use crate::execution::evm::storage::ApiStore;
 use crate::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    EvmStateCommitter, ExitStatus, JobResult, ReadRecorder, ScalarAdapter, ScalarKeyCodec,
-    StateDb, key::Key,
+    EvmStateCommitter, ExitStatus, JobResult, ReadRecorder, ScalarAdapter, ScalarKeyCodec, StateDb,
+    key::Key,
 };
 use crate::namespace::Namespace;
 use crate::namespace::codec::VERSION;
@@ -2008,7 +2008,10 @@ fn constructor_configuration_persists_and_drives_scheduling() {
                 ),
             )])
             .unwrap();
-        assert_eq!(scheduled[0].sequences[0].jobs[0].is_deferred, expected);
+        assert_eq!(
+            scheduled.generations[0].sequences[0].jobs[0].is_deferred,
+            expected
+        );
     }
 }
 

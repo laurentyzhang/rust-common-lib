@@ -30,10 +30,10 @@ pub enum HaltReason {
 /// A job's execution result, commit verdict, receipt, and recorded state reads.
 pub struct JobResult<R, H = HaltReason> {
     pub id: ID,
-    /// Assigned after generation conflict selection.
     pub result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
     pub receipt: Option<R>,
     pub reads: StateReads, // Combined from opcode inspection and API handlers.
+    /// Commit decision and conflict diagnostics, assigned after generation conflict selection.
     pub verdict: Option<CommitVerdict<Key>>,
 }
 

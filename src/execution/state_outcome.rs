@@ -1,4 +1,5 @@
 use super::{EvmStateCommitter, JobResult};
+use crate::planner::resolver::accepted_ids;
 use crate::store::traits::Committer;
 use alloy_evm::revm::state::EvmState;
 
@@ -10,15 +11,9 @@ pub struct StateOutcome<R, C> {
 
 impl<R, H> StateOutcome<Vec<JobResult<R, H>>, EvmStateCommitter> {
     pub(crate) fn finalize(mut self) -> StateOutcome<Vec<JobResult<R, H>>, EvmState> {
-        let accepted = self
-            .raw
-            .iter()
-            .filter_map(|raw| {
-                let verdict = raw.verdict.as_ref()?;
-                verdict.rejection.is_none().then_some(raw.id)
-            })
-            .collect();
-        self.committed.stage(accepted);
+        self.committed.stage(accepted_ids(
+            self.raw.iter().filter_map(|raw| raw.verdict.as_ref()),
+        ));
         self.committed.flush();
         StateOutcome {
             raw: self.raw,

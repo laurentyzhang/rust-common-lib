@@ -1,32 +1,22 @@
 //! Arcology's parallel execution worker set.
 
 use alloy_evm::block::{BlockExecutorFactory, ExecutableTxParts};
-use alloy_evm::{Database, EvmEnv, EvmFactory};
+use alloy_evm::{Database, EvmFactory};
 use alloy_op_evm::OpBlockExecutionCtx;
 use rayon::ThreadPool;
 use std::io::Error;
 
-use alloy_evm::revm::{
-    DatabaseCommit, DatabaseRef, context_interface::Transaction, state::EvmState,
-};
+use alloy_evm::revm::{DatabaseRef, context_interface::Transaction, state::EvmState};
 
 use super::{
-    ArcologyEvmFactory, StateOutcome,
+    ArcologyEvmFactory, ParaBlockConfig, StateOutcome,
     key::Key,
     op::backend::PostExecEvmFactoryAdapter,
     workload::{ID, Job, JobResult},
 };
-use crate::planner::{Planner, resolver::ConflictResult};
+use crate::planner::Planner;
 
-use crate::execution::evm::StateDb;
-
-/// Settings shared by every worker of a block.
-pub struct ParaBlockConfig<F: BlockExecutorFactory> {
-    pub env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
-    pub ctx: OpBlockExecutionCtx,
-}
-
-/// Coordinates block generations and finalizes transaction outcomes.
+/// Stateless processor that prepares block workloads and finalizes transaction outcomes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ArcologyParaBlockExecutor;
 
@@ -60,8 +50,8 @@ impl ArcologyParaBlockExecutor {
         }
         cumulative
     }
-    /// Executes a block: schedules the ordered transactions, runs the generations in turn
-    /// and returns ordered raw outcomes, committed block state, and generation conflict results.
+
+    /// Prepares jobs, schedules the block, and delegates execution to `Block::run`.
     pub fn execute_block<'db, F, PDB, Fallback, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,
@@ -71,13 +61,10 @@ impl ArcologyParaBlockExecutor {
         planner: &mut Planner<PDB, Key>,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
     ) -> Result<
-        (
-            StateOutcome<
-                Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-                EvmState,
-            >,
-            Vec<ConflictResult<Key>>,
-        ),
+        StateOutcome<
+            Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
+            EvmState,
+        >,
         Error,
     >
     where
@@ -105,28 +92,8 @@ impl ArcologyParaBlockExecutor {
             .enumerate()
             .map(|(index, tx)| Job::new(ID::new(block, index as u64), tx));
 
-        // Initialize the sequential state database with a fallback to the provided database.
-        let mut generation_db = StateDb::with_fallback(EvmState::default(), Some(fallback));
-
-        let mut results = Vec::new();
-        let mut resolutions = Vec::new();
-        for generation in planner.plan(jobs).map_err(Error::other)? {
-            let (generation_result, conflicts) =
-                generation.run(factory, config, pool, &mut planner.checker, &generation_db)?;
-            // Publish accepted changes before executing the next generation.
-            generation_db.commit(generation_result.committed);
-            resolutions.push(planner.resolve(conflicts).map_err(Error::other)?);
-            results.extend(generation_result.raw);
-        }
-
-        // Finish the block by restoring block order and applying cumulative gas.
-        Ok((
-            StateOutcome {
-                raw: Self::finish_block(results, set_cumulative),
-                committed: generation_db.into_inner(),
-            },
-            resolutions,
-        ))
+        let block = planner.plan(jobs).map_err(Error::other)?;
+        block.run(factory, config, pool, set_cumulative, fallback, planner)
     }
 }
 

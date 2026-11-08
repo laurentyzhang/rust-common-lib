@@ -8,14 +8,26 @@ use crate::{
     execution::output::ExecutionOutput,
     planner::{
         resolver::{
-            AccessConflict, Checker, ConflictDetector, ConflictResult, NumericError, Reason,
-            Rejection, accepted_ids, rejected_ids,
+            AccessConflict, Checker, CommitVerdict, ConflictDetector, NumericError, Reason,
+            accepted_ids, rejected_ids,
         },
         scheduler::ID,
     },
 };
 use alloy_primitives::{I256, U256};
 use std::collections::BTreeSet;
+
+fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
+    verdicts
+        .iter()
+        .flat_map(|verdict| {
+            verdict
+                .peers
+                .iter()
+                .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
+        })
+        .collect()
+}
 
 pub(super) fn transition(
     key: u64,
@@ -85,38 +97,21 @@ fn reconstructs_sequences_and_counts_each_transaction_once() {
         }
         let report = checker.check();
         assert_eq!(
-            accepted_ids(&report.verdicts)
+            accepted_ids(&report)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![1, 4, 5, 6]
         );
-        assert_eq!(report.gas_lookup.len(), 6);
-        assert_eq!(report.cumulative_gas[0][0].0.sequence, 0);
+        assert_eq!(report.len(), 6);
         assert_eq!(
-            report.cumulative_gas[0]
-                .iter()
-                .map(|(id, gas)| (id.global, *gas))
-                .collect::<Vec<_>>(),
-            vec![(1, 20), (2, 40), (3, 60)]
-        );
-        assert_eq!(report.cumulative_gas[1][0].0.sequence, 1);
-        assert_eq!(
-            report.cumulative_gas[1]
-                .iter()
-                .map(|(id, gas)| (id.global, *gas))
-                .collect::<Vec<_>>(),
-            vec![(4, 30), (5, 60), (6, 90)]
-        );
-        assert_eq!(
-            report
-                .involved_pairs
+            pairs(&report)
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(2, 4)])
         );
-        assert!(checker.check().gas_lookup.is_empty());
+        assert!(checker.check().is_empty());
     }
 }
 
@@ -130,20 +125,28 @@ fn reports_every_conflicting_pair() {
     ]);
     let report = checker.check();
     assert_eq!(
-        report
-            .involved_pairs
+        pairs(&report)
             .iter()
             .map(|(left, right)| (left.global, right.global))
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([(1, 2), (1, 3), (2, 3)])
     );
     assert_eq!(
-        accepted_ids(&report.verdicts)
+        accepted_ids(&report)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![2]
     );
+    assert_eq!(
+        report[1]
+            .peers
+            .iter()
+            .map(|id| id.global)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert!(!report[1].reasons.is_empty());
 }
 
 #[test]
@@ -175,14 +178,14 @@ fn checks_numeric_bounds_across_multiple_imports() {
     }
     let result = checker.check();
     assert_eq!(
-        accepted_ids(&result.verdicts)
+        accepted_ids(&result)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
     assert_eq!(
-        rejected_ids(&result.verdicts)
+        rejected_ids(&result)
             .into_iter()
             .map(|id| id.global)
             .collect::<BTreeSet<_>>(),
@@ -201,7 +204,7 @@ fn clears_previous_generation_metadata() {
         checker.import(records);
         let result = checker.check();
         assert_eq!(
-            accepted_ids(&result.verdicts)
+            accepted_ids(&result)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
@@ -209,12 +212,11 @@ fn clears_previous_generation_metadata() {
         );
         assert!(
             result
-                .gas_lookup
-                .keys()
-                .all(|key| key.0.generation == generation)
+                .iter()
+                .all(|verdict| verdict.id.generation == generation)
         );
     }
-    assert!(checker.check().verdicts.is_empty());
+    assert!(checker.check().is_empty());
 }
 
 #[test]
@@ -227,34 +229,14 @@ fn orders_jobs_by_coordinates_and_preserves_all_key_records() {
         record(40, 1, 0, 99, 15),
     ]);
     let report = checker.check();
-    assert_eq!(report.gas_lookup.len(), 4);
-    assert_eq!(
-        report.gas_lookup[&crate::planner::scheduler::ScheduleKey(record(20, 0, 1, 20, 20).id)],
-        30
-    );
-    assert_eq!(
-        report
-            .gas_lookup
-            .iter()
-            .map(|(key, gas)| (key.0.global, *gas))
-            .collect::<Vec<_>>(),
-        vec![(30, 10), (20, 30), (10, 60), (40, 15)]
-    );
-    assert_eq!(
-        report.cumulative_gas[0]
-            .iter()
-            .map(|(id, gas)| (id.global, *gas))
-            .collect::<Vec<_>>(),
-        vec![(30, 10), (20, 30), (10, 60)]
-    );
+    assert_eq!(report.len(), 4);
     assert!(
-        report
-            .involved_pairs
+        pairs(&report)
             .iter()
             .any(|(left, right)| (left.global, right.global) == (20, 40))
     );
     assert_eq!(
-        accepted_ids(&report.verdicts)
+        accepted_ids(&report)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
@@ -325,26 +307,27 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         }
         let result = detector.check();
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![20, 30]
         );
-        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[2].rejection else {
-            panic!("numeric rejection must explain its contributors");
-        };
+        assert!(!result[2].accepted);
+        let CommitVerdict { peers, reasons, .. } = &result[2];
         assert_eq!(
             peers.iter().map(|id| id.global).collect::<Vec<_>>(),
             vec![5]
         );
         assert!(matches!(
             reasons.as_slice(),
-            [(20, Reason::NumericError(NumericError::AboveUpperLimit(_)))]
+            [(
+                Some(20),
+                Reason::NumericError(NumericError::AboveUpperLimit(_))
+            )]
         ));
-        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[3].rejection else {
-            panic!("access rejection must identify its peer");
-        };
+        assert!(!result[3].accepted);
+        let CommitVerdict { peers, reasons, .. } = &result[3];
         assert_eq!(
             peers.iter().map(|id| id.global).collect::<Vec<_>>(),
             vec![11]
@@ -352,7 +335,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         assert!(matches!(
             reasons.as_slice(),
             [(
-                10,
+                Some(10),
                 Reason::AccessConflict(AccessConflict::RemoveConflict(_))
             )]
         ));
@@ -373,17 +356,16 @@ fn verdict_helpers_preserve_full_job_ids() {
     let mut detector = ConflictDetector::new();
     detector.import(records);
     let result = detector.check();
-    assert_eq!(accepted_ids(&result.verdicts), vec![ids[&5], ids[&11]]);
-    assert_eq!(rejected_ids(&result.verdicts), vec![ids[&20], ids[&30]]);
+    assert_eq!(accepted_ids(&result), vec![ids[&5], ids[&11]]);
+    assert_eq!(rejected_ids(&result), vec![ids[&20], ids[&30]]);
     assert!(
         result
-            .verdicts
             .iter()
             .all(|verdict| verdict.id.block == 42 && verdict.id.generation == 7)
     );
-    let empty = ConflictResult::<u64>::default();
-    assert!(accepted_ids(&empty.verdicts).is_empty());
-    assert!(rejected_ids(&empty.verdicts).is_empty());
+    let empty = Vec::<CommitVerdict<u64>>::new();
+    assert!(accepted_ids(&empty).is_empty());
+    assert!(rejected_ids(&empty).is_empty());
 }
 
 #[test]
@@ -405,21 +387,20 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
     detector.import(vec![transition(7, first)]);
     let result = detector.check();
     assert_eq!(
-        accepted_ids(&result.verdicts)
+        accepted_ids(&result)
             .iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![1]
     );
-    let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[1].rejection else {
-        panic!("job must carry both rejection reasons");
-    };
+    assert!(!result[1].accepted);
+    let CommitVerdict { peers, reasons, .. } = &result[1];
     assert_eq!(
         peers.iter().map(|id| id.global).collect::<Vec<_>>(),
         vec![1]
     );
     assert_eq!(reasons.len(), 2);
-    assert!(reasons.iter().all(|(key, _)| *key == 7));
+    assert!(reasons.iter().all(|(key, _)| *key == Some(7)));
     assert!(reasons.iter().any(|(_, reason)| matches!(
         reason,
         Reason::AccessConflict(AccessConflict::ReadConflict(_))
@@ -433,18 +414,18 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
 #[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
     let mut detector = ConflictDetector::new();
-    assert!(detector.check().verdicts.is_empty());
+    assert!(detector.check().is_empty());
     for _ in 0..2 {
         detector.import(combined_records());
         let result = detector.check();
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![20, 30]
         );
-        assert!(detector.check().verdicts.is_empty());
+        assert!(detector.check().is_empty());
     }
 }
 #[test]
@@ -472,22 +453,24 @@ fn numeric_reads_remain_visible_to_access_detection() {
         detector.import(vec![transition(7, reader)]);
         let result = detector.check();
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[1].rejection else {
-            panic!("read conflict must carry rejection details");
-        };
+        assert!(!result[1].accepted);
+        let CommitVerdict { peers, reasons, .. } = &result[1];
         assert_eq!(
             peers.iter().map(|id| id.global).collect::<Vec<_>>(),
             vec![1]
         );
         assert!(matches!(
             reasons.as_slice(),
-            [(7, Reason::AccessConflict(AccessConflict::ReadConflict(_)))]
+            [(
+                Some(7),
+                Reason::AccessConflict(AccessConflict::ReadConflict(_))
+            )]
         ));
     }
 }
@@ -548,16 +531,15 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
         detector.import(vec![transition(7, first)]);
         let result = detector.check();
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        let Some(Rejection::Conflict { reasons, .. }) = &result.verdicts[1].rejection else {
-            panic!("numeric rejection must carry its bound error");
-        };
-        assert_eq!(reasons[0].0, 7);
+        assert!(!result[1].accepted);
+        let CommitVerdict { reasons, .. } = &result[1];
+        assert_eq!(reasons[0].0, Some(7));
         if underflow {
             assert!(matches!(
                 reasons[0].1,
@@ -583,26 +565,21 @@ fn accepts_conflict_free_jobs_across_imports() {
     ]);
     let result = checker.check();
     assert_eq!(
-        accepted_ids(&result.verdicts)
+        accepted_ids(&result)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
+    assert!(result.iter().all(|verdict| verdict.accepted));
     assert!(
-        result
-            .verdicts
-            .iter()
-            .all(|verdict| verdict.rejection.is_none())
-    );
-    assert!(
-        rejected_ids(&result.verdicts)
+        rejected_ids(&result)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>()
             .is_empty()
     );
-    assert!(checker.check().verdicts.is_empty());
+    assert!(checker.check().is_empty());
 }
 
 #[test]
@@ -626,14 +603,14 @@ fn keeps_expensive_suffixes_and_separates_generations() {
         checker.import(records);
         let result = checker.check();
         assert_eq!(
-            accepted_ids(&result.verdicts)
+            accepted_ids(&result)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![1, 5, 50, 70, 90]
         );
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
@@ -660,44 +637,38 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
         }
         let result = checker.check();
         assert_eq!(
-            accepted_ids(&result.verdicts)
+            accepted_ids(&result)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![2, 3]
         );
         assert_eq!(
-            result
-                .involved_pairs
+            pairs(&result)
                 .iter()
                 .map(|(a, b)| (a.global, b.global))
                 .collect::<Vec<_>>(),
             vec![(1, 2), (1, 3)]
         );
         assert_eq!(
-            rejected_ids(&result.verdicts)
+            rejected_ids(&result)
                 .into_iter()
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![1]
         );
-        let Some(Rejection::Conflict { peers, reasons }) = &result.verdicts[0].rejection else {
-            panic!("the chosen rollback must carry both conflict relationships");
-        };
+        assert!(!result[0].accepted);
+        let CommitVerdict { peers, reasons, .. } = &result[0];
         assert_eq!(
             peers.iter().map(|id| id.global).collect::<Vec<_>>(),
             vec![2, 3]
         );
         assert_eq!(
             reasons.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-            vec![7, 8]
+            vec![Some(7), Some(8)]
         );
-        assert!(
-            result.verdicts[1..]
-                .iter()
-                .all(|verdict| verdict.rejection.is_none())
-        );
-        assert!(checker.check().verdicts.is_empty());
+        assert!(result[1..].iter().all(|verdict| verdict.accepted));
+        assert!(checker.check().is_empty());
     }
 }
 
@@ -706,8 +677,9 @@ fn suffix_rejections_identify_the_earlier_rejected_job() {
     let mut records = vec![
         record(1, 0, 0, 1, 10),
         record(2, 0, 1, 7, 5),
-        record(3, 0, 2, 3, 1),
+        record(3, 0, 2, 8, 1),
         record(4, 1, 0, 7, 100),
+        record(5, 2, 0, 8, 100),
     ];
     for record in &mut records {
         record.id.block = 42;
@@ -716,16 +688,26 @@ fn suffix_rejections_identify_the_earlier_rejected_job() {
     let rejected = records[1].id;
     let dependent = records[2].id;
     let peer = records[3].id;
+    let dependent_peer = records[4].id;
     let mut detector = ConflictDetector::new();
     detector.import(records);
     let result = detector.check();
-    assert_eq!(rejected_ids(&result.verdicts), vec![rejected, dependent]);
-    assert!(matches!(
-        &result.verdicts[1].rejection,
-        Some(Rejection::Conflict { peers, reasons }) if peers == &vec![peer] && reasons.len() == 1 && reasons[0].0 == 7
-    ));
+    assert_eq!(rejected_ids(&result), vec![rejected, dependent]);
+    assert!(!result[1].accepted);
+    assert_eq!(result[1].peers, vec![peer]);
+    assert_eq!(result[1].reasons.len(), 1);
+    assert_eq!(result[1].reasons[0].0, Some(7));
+    assert!(!result[2].accepted);
+    assert!(
+        result[2]
+            .reasons
+            .contains(&(None, Reason::Dependency(rejected)))
+    );
+    assert_eq!(result[2].peers, vec![dependent_peer]);
+    assert_eq!(result[2].reasons.len(), 2);
+    assert_eq!(result[2].reasons[1].0, Some(8));
     assert_eq!(
-        result.verdicts[2].rejection,
-        Some(Rejection::Dependency(rejected))
+        pairs(&result),
+        BTreeSet::from([(rejected, peer), (dependent, dependent_peer)])
     );
 }

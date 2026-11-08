@@ -4,12 +4,13 @@ pub mod scheduler;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::execution::workload::Block;
 use alloy_evm::{block::BlockExecutionError, revm::Database};
 use alloy_primitives::{Address, U256};
 
 use meta::property::Property;
 use resolver::ConflictDetector;
-use scheduler::{Generation, GreedyScheduler, Job, Scheduler, SchedulerConfig};
+use scheduler::{GreedyScheduler, Job, Scheduler, SchedulerConfig};
 
 /// Scheduling and conflict detection state for one generation.
 pub struct Planner<DB: Database, K> {
@@ -73,7 +74,7 @@ impl<DB: Database, K> Planner<DB, K> {
     pub fn plan<Tx>(
         &mut self,
         jobs: impl IntoIterator<Item = Job<Tx>>,
-    ) -> Result<Vec<Generation<Tx>>, BlockExecutionError> {
+    ) -> Result<Block<Tx>, BlockExecutionError> {
         let jobs = jobs.into_iter().collect::<Vec<_>>();
         let callees = jobs
             .iter()
@@ -101,7 +102,9 @@ impl<DB: Database, K> Planner<DB, K> {
             .collect();
 
         // Build the schedule based on the collected conflict information.
-        Ok(self.scheduler.schedule(jobs))
+        Ok(Block {
+            generations: self.scheduler.schedule(jobs),
+        })
     }
 }
 

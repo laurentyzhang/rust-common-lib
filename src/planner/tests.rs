@@ -8,13 +8,28 @@ use crate::{
     namespace::Namespace,
     planner::{
         meta::property::Property,
-        resolver::{CONFLICT_META_ID, Checker, ConflictResult, accepted_ids, rejected_ids},
-        scheduler::{ID, ScheduleKey},
+        resolver::{Checker, CommitVerdict, accepted_ids, rejected_ids},
+        scheduler::ID,
     },
     store::traits::Committer,
 };
-use alloy_evm::revm::state::{Account, EvmState, EvmStorageSlot};
+use alloy_evm::revm::{
+    DatabaseCommit,
+    state::{Account, EvmState, EvmStorageSlot},
+};
 use alloy_primitives::U256;
+
+fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
+    verdicts
+        .iter()
+        .flat_map(|verdict| {
+            verdict
+                .peers
+                .iter()
+                .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
+        })
+        .collect()
+}
 
 fn callee(contract: Address, selector: u32) -> u64 {
     let mut bytes = [0; 8];
@@ -74,30 +89,24 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
     for round in 0..2 {
         let mut planner = Planner::<_, u64>::new(&mut db, config);
         let plan = planner.plan([job(1, a, 10), job(2, b, 20)]).unwrap();
-        assert_eq!(plan.len(), if round == 0 { 1 } else { 2 });
+        assert_eq!(plan.generations.len(), if round == 0 { 1 } else { 2 });
         planner
             .checker
             .import(vec![record(1, 7, true), record(2, 7, false)]);
         let conflicts = planner.checker.check();
-        let result = planner.resolve(conflicts).unwrap();
+        let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
         assert_eq!(
-            result
-                .involved_pairs
+            pairs(&conflicts)
                 .iter()
                 .map(|(left, right)| (left.global, right.global))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([(1, 2)])
         );
-        assert_eq!(result.conflict_meta.0, CONFLICT_META_ID);
         assert_eq!(
-            accepted_ids(&result.verdicts)
+            accepted_ids(&conflicts)
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
-            if round == 0 {
-                BTreeSet::from([record(1, 7, true).id, CONFLICT_META_ID])
-            } else {
-                BTreeSet::from([record(1, 7, true).id])
-            }
+            BTreeSet::from([record(1, 7, true).id])
         );
         assert_eq!(
             planner.load_conflicts(a, callee(a, 10)).unwrap().1,
@@ -115,17 +124,16 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
                 BTreeSet::from([callee(a, 10)])
             }
         );
-        assert_eq!(result.conflict_meta.1.len(), if round == 0 { 2 } else { 0 });
+        assert_eq!(result.len(), if round == 0 { 2 } else { 0 });
         let conflicts = planner.checker.check();
-        let empty = planner.resolve(conflicts).unwrap();
-        assert!(empty.involved_pairs.is_empty());
-        assert!(empty.conflict_meta.1.is_empty());
-        assert!(empty.verdicts.is_empty());
+        let empty = planner.resolve(&conflicts, &EvmState::default()).unwrap();
+        assert!(conflicts.is_empty());
+        assert!(empty.is_empty());
         drop(planner);
 
         let mut committer = EvmStateCommitter::with_target(db.into_inner());
-        committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
-        committer.stage(accepted_ids(&result.verdicts));
+        committer.buffer(ID::new(0, u64::MAX), result);
+
         committer.flush();
         db = StateDb::new(committer.into_inner());
         let mut planner = Planner::<_, u64>::new(&mut db, config);
@@ -148,7 +156,11 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
 
     let mut planner = Planner::<_, u64>::new(&mut db, config);
     assert_eq!(
-        planner.plan([job(1, a, 11), job(2, b, 21)]).unwrap().len(),
+        planner
+            .plan([job(1, a, 11), job(2, b, 21)])
+            .unwrap()
+            .generations
+            .len(),
         1
     );
     let c = Address::repeat_byte(0x33);
@@ -157,7 +169,7 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
         .checker
         .import(vec![record(1, 7, true), record(3, 7, false)]);
     let conflicts = planner.checker.check();
-    let result = planner.resolve(conflicts).unwrap();
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert_eq!(
         planner.load_conflicts(a, callee(a, 10)).unwrap().1,
         BTreeSet::from([callee(b, 20)])
@@ -169,15 +181,14 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             .1
             .is_empty()
     );
-    let count =
-        &result.conflict_meta.1[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
+    let count = &result[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
     assert_eq!(count.original_value(), U256::from(1));
     assert_eq!(count.present_value(), U256::from(2));
     drop(planner);
 
     let mut committer = EvmStateCommitter::with_target(db.into_inner());
-    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
-    committer.stage(accepted_ids(&result.verdicts));
+    committer.buffer(ID::new(0, u64::MAX), result);
+
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
@@ -208,7 +219,7 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
         .checker
         .import(vec![record(1, 7, true), record(2, 7, false)]);
     let conflicts = planner.checker.check();
-    let result = planner.resolve(conflicts).unwrap();
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert!(
         planner
             .load_conflicts(a, callee(a, 10))
@@ -218,8 +229,8 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
     );
 
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
-    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
-    committer.stage(accepted_ids(&result.verdicts));
+    committer.buffer(ID::new(0, u64::MAX), result);
+
     committer.flush();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
@@ -231,11 +242,19 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
         BTreeSet::from([callee(a, 10)])
     );
     assert_eq!(
-        planner.plan([job(1, a, 12), job(2, a, 13)]).unwrap().len(),
+        planner
+            .plan([job(1, a, 12), job(2, a, 13)])
+            .unwrap()
+            .generations
+            .len(),
         1
     );
     assert_eq!(
-        planner.plan([job(1, a, 10), job(2, a, 11)]).unwrap().len(),
+        planner
+            .plan([job(1, a, 10), job(2, a, 11)])
+            .unwrap()
+            .generations
+            .len(),
         2
     );
 }
@@ -251,20 +270,20 @@ fn resolve_returns_metadata_with_a_read_only_database() {
         .checker
         .import(vec![record(1, 7, true), record(2, 7, false)]);
     let conflicts = planner.checker.check();
-    let result = planner.resolve(conflicts).unwrap();
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert_eq!(
-        accepted_ids(&result.verdicts)
+        accepted_ids(&conflicts)
             .into_iter()
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from([record(1, 7, true).id, CONFLICT_META_ID])
+        BTreeSet::from([record(1, 7, true).id])
     );
-    assert_eq!(rejected_ids(&result.verdicts).len(), 1);
-    assert_eq!(result.conflict_meta.1.len(), 2);
+    assert_eq!(rejected_ids(&conflicts).len(), 1);
+    assert_eq!(result.len(), 2);
     for (contract, selector, peer) in [(a, 10, callee(b, 20)), (b, 20, callee(a, 10))] {
         let host = callee(contract, selector);
         assert_eq!(planner.db.basic(contract).unwrap(), None);
         assert!(planner.load_conflicts(contract, host).unwrap().1.is_empty());
-        let account = &result.conflict_meta.1[&contract];
+        let account = &result[&contract];
         assert!(account.is_touched());
         let count = &account.storage[&Property::ConflictCount.slot(contract, host, 0)];
         assert_eq!(count.original_value(), U256::ZERO);
@@ -278,7 +297,7 @@ fn resolve_returns_metadata_with_a_read_only_database() {
 }
 
 #[test]
-fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
+fn conflict_metadata_is_committed_alongside_accepted_job_state() {
     let a = Address::repeat_byte(0x11);
     let b = Address::repeat_byte(0x22);
     let mut planner = Planner::<_, u64>::new(StateDb::default(), SchedulerConfig::default());
@@ -292,33 +311,21 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
     ]);
     let conflicts = planner.checker.check();
     let accepted_id = conflicts
-        .gas_lookup
-        .keys()
-        .find(|key| key.0.global == 3)
+        .iter()
+        .find(|verdict| verdict.id.global == 3)
         .unwrap()
-        .0;
-    let mut result = planner.resolve(conflicts).unwrap();
-    let meta_id = result.conflict_meta.0;
-    assert_eq!(meta_id, CONFLICT_META_ID);
-    assert_eq!(meta_id.global, u64::MAX);
+        .id;
     assert_eq!(
-        accepted_ids(&result.verdicts)
-            .into_iter()
+        accepted_ids(&conflicts)
+            .iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
-        vec![1, 3, u64::MAX]
+        vec![1, 3]
     );
-    assert!(!result.gas_lookup.contains_key(&ScheduleKey(meta_id)));
-    assert!(
-        result
-            .cumulative_gas
-            .iter()
-            .flatten()
-            .all(|(id, _)| *id != meta_id)
-    );
-
     let deferred = Property::DeferredCount.slot(a, callee(a, 11), 0);
     let mut accepted = Account::default().with_touched_mark();
+    accepted.info.nonce = 9;
+    accepted.info.balance = U256::from(42);
     accepted.storage.insert(
         deferred,
         EvmStorageSlot::new_changed(U256::ZERO, U256::from(2), Default::default()),
@@ -331,11 +338,13 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
     let mut committer = EvmStateCommitter::new();
     committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
     committer.buffer(record(2, 7, false).id, EvmState::from_iter([(a, rejected)]));
-    committer.buffer(meta_id, std::mem::take(&mut result.conflict_meta.1));
-    committer.stage(accepted_ids(&result.verdicts));
+    committer.stage(accepted_ids(&conflicts));
     committer.flush();
-
     let mut db = StateDb::new(committer.into_inner());
+    let metadata = planner.resolve(&conflicts, db.inner()).unwrap();
+    db.commit(metadata);
+    assert_eq!(db.basic(a).unwrap().unwrap().nonce, 9);
+    assert_eq!(db.basic(a).unwrap().unwrap().balance, U256::from(42));
     assert_eq!(db.storage(a, deferred).unwrap(), U256::from(2));
     assert_eq!(db.storage(a, U256::from(7)).unwrap(), U256::ZERO);
     for (host, function) in [(a, callee(a, 10)), (b, callee(b, 20))] {
@@ -346,12 +355,72 @@ fn conflict_metadata_uses_the_normal_commit_path_with_the_reserved_id() {
         );
     }
     assert_eq!(
-        rejected_ids(&result.verdicts)
-            .into_iter()
+        rejected_ids(&conflicts)
+            .iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![2]
     );
+}
+
+#[test]
+fn metadata_combines_generation_diagnostics_and_preserves_deleted_accounts() {
+    let a = Address::repeat_byte(0x11);
+    let b = Address::repeat_byte(0x22);
+    let c = Address::repeat_byte(0x33);
+    let mut planner = Planner::<_, u64>::new(StateDb::default(), SchedulerConfig::default());
+    planner
+        .plan([job(1, a, 10), job(2, b, 20), job(3, a, 10), job(4, c, 30)])
+        .unwrap();
+    let verdicts = [
+        CommitVerdict {
+            id: ID::new(0, 1),
+            accepted: true,
+            peers: vec![ID::new(0, 2)],
+            reasons: Vec::new(),
+        },
+        CommitVerdict {
+            id: ID {
+                generation: 1,
+                ..ID::new(0, 3)
+            },
+            accepted: true,
+            peers: vec![ID {
+                generation: 1,
+                ..ID::new(0, 4)
+            }],
+            reasons: Vec::new(),
+        },
+    ];
+    let mut deleted = Account::default().with_touched_mark();
+    deleted.mark_selfdestruct();
+    let mut current = StateDb::new(EvmState::from_iter([(c, deleted)]));
+    let metadata = planner.resolve(&verdicts, current.inner()).unwrap();
+    assert!(!metadata.contains_key(&c));
+    current.commit(metadata);
+    assert!(current.inner()[&c].is_selfdestructed());
+    assert_eq!(
+        current
+            .storage(a, Property::ConflictCount.slot(a, callee(a, 10), 0))
+            .unwrap(),
+        U256::from(2)
+    );
+    assert_eq!(
+        current
+            .storage(b, Property::ConflictCount.slot(b, callee(b, 20), 0))
+            .unwrap(),
+        U256::from(1)
+    );
+    let packed = current
+        .storage(a, Property::ConflictIndex.slot(a, callee(a, 10), 0))
+        .unwrap()
+        .to_be_bytes::<32>();
+    let peers = packed
+        .chunks_exact(8)
+        .take(2)
+        .map(|value| u64::from_le_bytes(value.try_into().unwrap()))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(peers, BTreeSet::from([callee(b, 20), callee(c, 30)]));
 }
 
 #[test]
@@ -364,9 +433,9 @@ fn shared_reads_do_not_create_contract_metadata() {
         .checker
         .import(vec![record(1, 7, false), record(2, 7, false)]);
     let conflicts = planner.checker.check();
-    let result = planner.resolve(conflicts).unwrap();
-    assert!(result.involved_pairs.is_empty());
-    assert!(result.conflict_meta.1.is_empty());
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
+    assert!(pairs(&conflicts).is_empty());
+    assert!(result.is_empty());
     assert!(
         planner
             .load_conflicts(a, callee(a, 10))
@@ -407,17 +476,16 @@ fn numeric_conflicts_report_contributing_transactions() {
         })
         .collect();
     detector.import(records);
-    let result = detector.check();
+    let conflicts = detector.check();
     assert_eq!(
-        accepted_ids(&result.verdicts)
+        accepted_ids(&conflicts)
             .into_iter()
             .map(|id| id.global)
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
     assert_eq!(
-        result
-            .involved_pairs
+        pairs(&conflicts)
             .iter()
             .map(|(left, right)| (left.global, right.global))
             .collect::<BTreeSet<_>>(),
@@ -470,12 +538,16 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     let mut jobs = vec![job(1, a, 10)];
     jobs.extend((20..23).map(|selector| job(u64::from(selector), b, selector)));
     planner.plan(jobs).unwrap();
-    let mut result = ConflictResult::default();
-    result.involved_pairs = (20..23).map(|id| (ID::new(0, 1), ID::new(0, id))).collect();
-    let result = planner.resolve(result).unwrap();
+    let conflicts = vec![CommitVerdict {
+        id: ID::new(0, 1),
+        accepted: true,
+        peers: (20..23).map(|id| ID::new(0, id)).collect(),
+        reasons: Vec::new(),
+    }];
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
-    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
-    committer.stage(accepted_ids(&result.verdicts));
+    committer.buffer(ID::new(0, u64::MAX), result);
+
     committer.flush();
 
     let mut planner = Planner::<_, u64>::new(
@@ -485,14 +557,18 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     let mut jobs = vec![job(1, a, 10)];
     jobs.extend((20..26).map(|selector| job(u64::from(selector), b, selector)));
     planner.plan(jobs).unwrap();
-    let mut result = ConflictResult::default();
-    result.involved_pairs = (20..26).map(|id| (ID::new(0, 1), ID::new(0, id))).collect();
-    let result = planner.resolve(result).unwrap();
+    let conflicts = vec![CommitVerdict {
+        id: ID::new(0, 1),
+        accepted: true,
+        peers: (20..26).map(|id| ID::new(0, id)).collect(),
+        reasons: Vec::new(),
+    }];
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     let function = callee(a, 10);
-    let count = &result.conflict_meta.1[&a].storage[&Property::ConflictCount.slot(a, function, 0)];
+    let count = &result[&a].storage[&Property::ConflictCount.slot(a, function, 0)];
     assert_eq!(count.original_value(), U256::from(3));
     assert_eq!(count.present_value(), U256::from(6));
-    let first = &result.conflict_meta.1[&a].storage[&Property::ConflictIndex.slot(a, function, 0)];
+    let first = &result[&a].storage[&Property::ConflictIndex.slot(a, function, 0)];
     let mut expected = [0; 32];
     for (index, selector) in (20..23).enumerate() {
         expected[index * 8..index * 8 + 8].copy_from_slice(&callee(b, selector).to_le_bytes());
@@ -500,7 +576,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     assert_eq!(first.original_value(), U256::from_be_bytes(expected));
     expected[24..].copy_from_slice(&callee(b, 23).to_le_bytes());
     assert_eq!(first.present_value(), U256::from_be_bytes(expected));
-    let second = &result.conflict_meta.1[&a].storage[&Property::ConflictIndex.slot(a, function, 1)];
+    let second = &result[&a].storage[&Property::ConflictIndex.slot(a, function, 1)];
     assert_eq!(second.original_value(), U256::ZERO);
     let mut expected = [0; 32];
     expected[..8].copy_from_slice(&callee(b, 24).to_le_bytes());
@@ -508,8 +584,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     assert_eq!(second.present_value(), U256::from_be_bytes(expected));
 
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
-    committer.buffer(result.conflict_meta.0, result.conflict_meta.1);
-    committer.stage(accepted_ids(&result.verdicts));
+    committer.buffer(ID::new(0, u64::MAX), result);
+
     committer.flush();
     let mut planner = Planner::<_, u64>::new(
         StateDb::new(committer.into_inner()),
@@ -556,23 +632,35 @@ fn max_conflict_count_means_sequential_only() {
         (true, BTreeSet::new())
     );
     assert_eq!(
-        planner.plan([job(1, a, 10), job(2, b, 20)]).unwrap().len(),
+        planner
+            .plan([job(1, a, 10), job(2, b, 20)])
+            .unwrap()
+            .generations
+            .len(),
         2
     );
     assert_eq!(
-        planner.plan([job(1, a, 11), job(2, b, 20)]).unwrap().len(),
+        planner
+            .plan([job(1, a, 11), job(2, b, 20)])
+            .unwrap()
+            .generations
+            .len(),
         1
     );
-    let mut result = ConflictResult::default();
     planner.plan([job(1, a, 10), job(2, b, 20)]).unwrap();
-    result.involved_pairs.insert((ID::new(0, 1), ID::new(0, 2)));
-    let result = planner.resolve(result).unwrap();
-    assert!(!result.conflict_meta.1.contains_key(&a));
+    let conflicts = vec![CommitVerdict {
+        id: ID::new(0, 1),
+        accepted: true,
+        peers: vec![ID::new(0, 2)],
+        reasons: Vec::new(),
+    }];
+    let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
+    assert!(!result.contains_key(&a));
     assert_eq!(planner.db.storage(a, slot).unwrap(), U256::MAX);
 }
 
 #[test]
-fn metadata_verdict_uses_the_checked_block_and_generation() {
+fn complete_verdicts_preserve_the_checked_block_and_generation() {
     let a = Address::repeat_byte(0x11);
     let b = Address::repeat_byte(0x22);
     let mut planner = Planner::<_, u64>::new(StateDb::default(), SchedulerConfig::default());
@@ -587,15 +675,19 @@ fn metadata_verdict_uses_the_checked_block_and_generation() {
         record.id.generation = 3;
     }
     planner.checker.import(records.into());
-    let conflicts = planner.checker.check();
-    let result = planner.resolve(conflicts).unwrap();
-    let meta_id = ID {
-        block: 42,
-        generation: 3,
-        ..CONFLICT_META_ID
-    };
-    assert_eq!(result.conflict_meta.0, meta_id);
-    assert!(accepted_ids(&result.verdicts).contains(&meta_id));
-    assert_eq!(result.verdicts.last().unwrap().id, meta_id);
-    assert!(result.verdicts.last().unwrap().rejection.is_none());
+    let verdicts = planner.checker.check();
+    assert_eq!(verdicts.len(), 2);
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| verdict.id.block == 42 && verdict.id.generation == 3)
+    );
+    assert!(
+        verdicts
+            .iter()
+            .flat_map(|verdict| &verdict.peers)
+            .all(|id| id.block == 42 && id.generation == 3)
+    );
+    let metadata = planner.resolve(&verdicts, &EvmState::default()).unwrap();
+    assert_eq!(metadata.len(), 2);
 }

@@ -9,31 +9,43 @@ use alloy_evm::{
 };
 use alloy_primitives::{Address, U256};
 
-use super::{CONFLICT_META_ID, CommitVerdict, ConflictResult};
+use super::CommitVerdict;
 use crate::planner::{Planner, meta::property::Property};
 
 impl<DB: Database, K> Planner<DB, K> {
-    /// Builds the conflict metadata job under the reserved maximum ID.
-    pub fn resolve(
+    /// Builds conflict metadata using all job diagnostics and current account information.
+    pub fn resolve<'a>(
         &mut self,
-        mut result: ConflictResult<K>,
-    ) -> Result<ConflictResult<K>, BlockExecutionError> {
+        verdicts: impl IntoIterator<Item = &'a CommitVerdict<K>>,
+        current: &EvmState,
+    ) -> Result<EvmState, BlockExecutionError>
+    where
+        K: 'a,
+    {
         let mut peers = BTreeMap::<(Address, u64), BTreeSet<u64>>::new();
-        for &(left, right) in &result.involved_pairs {
-            let left = self.callees.get(&left.global).ok_or_else(|| {
+        for verdict in verdicts {
+            let left = self.callees.get(&verdict.id.global).ok_or_else(|| {
                 BlockExecutionError::msg("conflicting transaction was not scheduled")
             })?;
-            let right = self.callees.get(&right.global).ok_or_else(|| {
-                BlockExecutionError::msg("conflicting transaction was not scheduled")
-            })?;
-            if let (Some(left), Some(right)) = (left, right) {
-                peers.entry(*left).or_default().insert(right.1);
-                peers.entry(*right).or_default().insert(left.1);
+            for right in &verdict.peers {
+                let right = self.callees.get(&right.global).ok_or_else(|| {
+                    BlockExecutionError::msg("conflicting transaction was not scheduled")
+                })?;
+                if let (Some(left), Some(right)) = (left, right) {
+                    peers.entry(*left).or_default().insert(right.1);
+                    peers.entry(*right).or_default().insert(left.1);
+                }
             }
         }
 
         let mut updates = EvmState::default();
         for ((host, callee), detected) in peers {
+            if current
+                .get(&host)
+                .is_some_and(|account| account.is_selfdestructed())
+            {
+                continue;
+            }
             let (sequential_only, existing) = self.load_conflicts(host, callee)?;
             if sequential_only {
                 continue;
@@ -43,11 +55,14 @@ impl<DB: Database, K> Planner<DB, K> {
                 continue;
             }
             if !updates.contains_key(&host) {
-                let info = self
-                    .db
-                    .basic(host)
-                    .map_err(BlockExecutionError::other)?
-                    .unwrap_or_default();
+                let info = match current.get(&host) {
+                    Some(account) => account.info.clone(),
+                    None => self
+                        .db
+                        .basic(host)
+                        .map_err(BlockExecutionError::other)?
+                        .unwrap_or_default(),
+                };
                 updates.insert(host, Account::from(info).with_touched_mark());
             }
             let account = updates.get_mut(&host).unwrap();
@@ -89,23 +104,6 @@ impl<DB: Database, K> Planner<DB, K> {
                 ),
             );
         }
-        let source = result
-            .verdicts
-            .first()
-            .map(|verdict| verdict.id)
-            .or_else(|| result.involved_pairs.first().map(|(id, _)| *id));
-        let meta_id = crate::planner::scheduler::ID {
-            block: source.map_or(0, |id| id.block),
-            generation: source.map_or(0, |id| id.generation),
-            ..CONFLICT_META_ID
-        };
-        if !updates.is_empty() {
-            result.verdicts.push(CommitVerdict {
-                id: meta_id,
-                rejection: None,
-            });
-        }
-        result.conflict_meta = (meta_id, updates);
-        Ok(result)
+        Ok(updates)
     }
 }

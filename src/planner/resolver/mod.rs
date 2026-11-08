@@ -5,9 +5,7 @@ mod selection;
 pub mod verdict;
 
 pub use detector::ConflictDetector;
-pub use verdict::{
-    CONFLICT_META_ID, CommitVerdict, ConflictResult, Rejection, accepted_ids, rejected_ids,
-};
+pub use verdict::{CommitVerdict, accepted_ids, rejected_ids};
 
 use crate::crdt::state::{Status, Tracked};
 use crate::execution::output::ExecutionOutput;
@@ -71,11 +69,13 @@ pub enum AccessConflict {
     ConcurrentDeltaOnNonCommutative(String),
 }
 
-/// Describes an access conflict or numeric constraint failure.
+/// Describes an access conflict, numeric constraint failure, or rejected dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason {
     NumericError(NumericError),
     AccessConflict(AccessConflict),
+    /// A rejected job that this job depends on.
+    Dependency(ID),
     None,
 }
 
@@ -89,10 +89,10 @@ pub struct TransactionConflictReport {
 // Checker diagnostics retain the affected job, key, peers, and reason until selection.
 type Diagnostic<K> = (ID, K, Vec<ID>, Reason);
 
-/// Collects execution records and reports constraint violations for a generation.
+/// Collects execution records and returns complete per-job verdicts for a generation.
 pub trait Checker<K> {
     fn import(&mut self, records: Vec<ExecutionOutput<K, Tracked<Status, Status>>>);
-    fn check(&mut self) -> ConflictResult<K>;
+    fn check(&mut self) -> Vec<CommitVerdict<K>>;
 }
 
 #[cfg(test)]

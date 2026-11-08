@@ -11,7 +11,7 @@ pub mod workload;
 pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
 pub use evm::storage::key;
 pub use evm::{EvmStateCommitter, StateDb};
-pub use executor::{ArcologyParaBlockExecutor, ParaBlockConfig};
+pub use executor::ArcologyParaBlockExecutor;
 pub use hooks::{
     ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus,
     I256Handler, II256, IRuntime, IU256, RuntimeHandler, U256Handler, dispatch_precompile,
@@ -22,4 +22,4 @@ pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, Arco
 pub use slot::{Property, ScalarAdapter, ScalarKeyCodec, ScalarKind};
 pub use state_outcome::StateOutcome;
 pub use tracking::{ReadRecorder, StateReads, recorder};
-pub use workload::{HaltReason, JobResult};
+pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig};

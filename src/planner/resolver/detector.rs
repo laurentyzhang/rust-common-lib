@@ -1,5 +1,5 @@
 use super::{
-    Checker, CommitVerdict, ConflictResult, Reason, Rejection,
+    Checker, CommitVerdict, Reason,
     checkers::{access::AccessChecker, sum::SumChecker},
     selection,
 };
@@ -18,7 +18,7 @@ pub struct ConflictDetector<K> {
     access_checker: AccessChecker<K>,
     i256_checker: SumChecker<K, I256>,
     u256_checker: SumChecker<K, U256>,
-    summary: ConflictResult<K>, // Conflict summary for the current batch.
+    gas_lookup: BTreeMap<ScheduleKey, u64>,
 }
 
 impl<K> ConflictDetector<K> {
@@ -27,7 +27,7 @@ impl<K> ConflictDetector<K> {
             access_checker: AccessChecker::new(),
             i256_checker: SumChecker::new(),
             u256_checker: SumChecker::new(),
-            summary: ConflictResult::default(),
+            gas_lookup: BTreeMap::new(),
         }
     }
 
@@ -35,25 +35,16 @@ impl<K> ConflictDetector<K> {
         // Group jobs by their scheduled sequence.
         let mut sequences = Vec::<Vec<(ID, u64)>>::new();
         let mut previous = None;
-        for (key, gas) in &self.summary.gas_lookup {
+        for (key, gas) in std::mem::take(&mut self.gas_lookup) {
             let id = key.0;
             let sequence = (id.block, id.generation, id.sequence);
             if previous != Some(sequence) {
                 sequences.push(Vec::new());
                 previous = Some(sequence);
             }
-            sequences.last_mut().unwrap().push((id, *gas));
-        }
-
-        // Accumulate each sequence's gas and update the lookup in the same order.
-        let mut gas_values = self.summary.gas_lookup.values_mut();
-        for sequence in &mut sequences {
-            let mut cumulative = 0;
-            for ((_, gas), lookup_gas) in sequence.iter_mut().zip(&mut gas_values) {
-                cumulative += *gas;
-                *gas = cumulative;
-                *lookup_gas = cumulative;
-            }
+            let jobs = sequences.last_mut().unwrap();
+            let cumulative = jobs.last().map_or(0, |(_, gas)| *gas) + gas;
+            jobs.push((id, cumulative));
         }
         sequences
     }
@@ -64,8 +55,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         let mut i256_records = Vec::new();
         let mut u256_records = Vec::new();
         for job in &executed_jobs {
-            self.summary
-                .gas_lookup
+            self.gas_lookup
                 .entry(ScheduleKey(job.id))
                 .or_insert(job.gas_used); // Insert gas used for this job if not already present.
 
@@ -89,8 +79,8 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
     }
 
     /// Checks all records accumulated by imports, consuming the current batch.
-    fn check(&mut self) -> ConflictResult<K> {
-        let ((mut diagnostics, pairs), ((i256, i256_pairs), (u256, u256_pairs))) = rayon::join(
+    fn check(&mut self) -> Vec<CommitVerdict<K>> {
+        let ((mut diagnostics, pairs), ((i256, _), (u256, _))) = rayon::join(
             || self.access_checker.check(),
             || {
                 rayon::join(
@@ -101,17 +91,10 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         );
 
         diagnostics.extend(i256.into_iter().chain(u256));
-        self.summary.involved_pairs = pairs
-            .iter()
-            .copied()
-            .chain(i256_pairs)
-            .chain(u256_pairs)
-            .collect();
-
-        self.summary.cumulative_gas = self.accumulate();
+        let sequences = self.accumulate();
 
         let accepted = selection::select(
-            &self.summary.cumulative_gas,
+            &sequences,
             &pairs,
             diagnostics.iter().filter_map(|(id, _, _, reason)| {
                 matches!(reason, Reason::NumericError(_)).then_some(*id)
@@ -120,45 +103,50 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
 
         // The first rejected job explains the discarded suffix of its sequence.
         let mut verdicts = BTreeMap::new();
-        for sequence in &self.summary.cumulative_gas {
+        for sequence in &sequences {
             let mut dependency = None;
             for &(id, _) in sequence {
-                let rejection = if accepted.contains(&id) {
-                    None
-                } else if let Some(cause) = dependency {
-                    Some(Rejection::Dependency(cause))
-                } else {
-                    dependency = Some(id);
-                    Some(Rejection::Conflict {
-                        peers: Vec::new(),
-                        reasons: Vec::new(),
-                    })
+                let mut verdict = CommitVerdict {
+                    id,
+                    accepted: accepted.contains(&id),
+                    peers: Vec::new(),
+                    reasons: Vec::new(),
                 };
-                verdicts.insert(id, CommitVerdict { id, rejection });
+                if !verdict.accepted {
+                    if let Some(cause) = dependency {
+                        verdict.reasons.push((None, Reason::Dependency(cause)));
+                    } else {
+                        dependency = Some(id);
+                    }
+                }
+                verdicts.insert(id, verdict);
             }
         }
 
         for (id, key, related, reason) in diagnostics {
-            let Some(Rejection::Conflict { peers, reasons }) =
-                &mut verdicts.get_mut(&id).unwrap().rejection
-            else {
-                continue;
-            };
-            peers.extend(related);
-            if !reasons.iter().any(|(existing_key, existing_reason)| {
-                existing_key == &key && existing_reason == &reason
-            }) {
-                reasons.push((key, reason));
+            let key = Some(key);
+            for peer in related {
+                verdicts.get_mut(&peer).unwrap().peers.push(id);
+                verdicts.get_mut(&id).unwrap().peers.push(peer);
+            }
+            let verdict = verdicts.get_mut(&id).unwrap();
+            if !verdict
+                .reasons
+                .iter()
+                .any(|(existing_key, existing_reason)| {
+                    existing_key == &key && existing_reason == &reason
+                })
+            {
+                verdict.reasons.push((key, reason));
             }
         }
         for verdict in verdicts.values_mut() {
-            if let Some(Rejection::Conflict { peers, reasons }) = &mut verdict.rejection {
-                peers.sort_unstable();
-                peers.dedup();
-                reasons.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-            }
+            verdict.peers.sort_unstable();
+            verdict.peers.dedup();
+            verdict
+                .reasons
+                .sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
         }
-        self.summary.verdicts = verdicts.into_values().collect();
-        std::mem::take(&mut self.summary)
+        verdicts.into_values().collect()
     }
 }

@@ -15,7 +15,7 @@ use std::{
 use crate::execution::{
     ArcologyEvmFactory, EvmStateCommitter, ParaBlockConfig, StateDb, StateOutcome, key::Key,
 };
-use crate::planner::resolver::{Checker, ConflictResult};
+use crate::planner::resolver::Checker;
 use crate::store::traits::Committer;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,13 +41,10 @@ impl<Tx> Generation<Tx> {
         checker: &mut impl Checker<Key>,
         fallback: &Fallback,
     ) -> Result<
-        (
-            StateOutcome<
-                Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-                EvmState,
-            >,
-            ConflictResult<Key>,
-        ),
+        StateOutcome<
+            Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
+            EvmState,
+        >,
         Error,
     >
     where
@@ -82,16 +79,13 @@ impl<Tx> Generation<Tx> {
             }
         }
 
-        let conflicts = checker.check();
+        let verdicts = checker.check();
         let mut committer = EvmStateCommitter::with_target(gen_db.into_inner());
         let mut raws = Vec::new();
         for mut sequence in sequences {
             for raw in &mut sequence.raw {
-                if let Ok(index) = conflicts
-                    .verdicts
-                    .binary_search_by_key(&raw.id, |verdict| verdict.id)
-                {
-                    raw.verdict = Some(conflicts.verdicts[index].clone());
+                if let Ok(index) = verdicts.binary_search_by_key(&raw.id, |verdict| verdict.id) {
+                    raw.verdict = Some(verdicts[index].clone());
                 }
             }
             let outcome = sequence.finalize();
@@ -101,13 +95,10 @@ impl<Tx> Generation<Tx> {
             raws.extend(outcome.raw);
         }
         committer.flush();
-        Ok((
-            StateOutcome {
-                raw: raws,
-                committed: committer.into_inner(),
-            },
-            conflicts,
-        ))
+        Ok(StateOutcome {
+            raw: raws,
+            committed: committer.into_inner(),
+        })
     }
 
     /// Sets each job ID's generation to the supplied index and its sequence/job
