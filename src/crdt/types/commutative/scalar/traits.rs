@@ -10,13 +10,13 @@ pub trait Type: Copy + std::fmt::Debug + std::fmt::Display + Ord {
     const MAX: Self;
 
     fn checked_apply(value: Self, operation: &DeltaOp<Self::Magnitude>) -> Option<Self>;
-    fn magnitude_between(larger: Self, smaller: Self) -> Self::Magnitude;
+    fn distance(larger: Self, smaller: Self) -> Self::Magnitude;
 
     fn delta_between(base: Self, projected: Self) -> DeltaOp<Self::Magnitude> {
         if projected < base {
-            DeltaOp::Sub(Self::magnitude_between(base, projected))
+            DeltaOp::Sub(Self::distance(base, projected))
         } else {
-            DeltaOp::Add(Self::magnitude_between(projected, base))
+            DeltaOp::Add(Self::distance(projected, base))
         }
     }
 

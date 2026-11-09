@@ -17,7 +17,7 @@ impl Type for AlloyU256 {
         }
     }
 
-    fn magnitude_between(larger: Self, smaller: Self) -> Self::Magnitude {
+    fn distance(larger: Self, smaller: Self) -> Self::Magnitude {
         larger - smaller
     }
 

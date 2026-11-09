@@ -20,7 +20,7 @@ impl Type for I256 {
         Some(I256::from_raw(projected ^ sign))
     }
 
-    fn magnitude_between(larger: Self, smaller: Self) -> Self::Magnitude {
+    fn distance(larger: Self, smaller: Self) -> Self::Magnitude {
         let sign = U256::from(1) << 255;
         (larger.into_raw() ^ sign) - (smaller.into_raw() ^ sign)
     }

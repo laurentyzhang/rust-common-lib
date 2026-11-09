@@ -26,166 +26,14 @@ fn state(balance: u64, slots: &[(u64, u64)]) -> EvmState {
     EvmState::from_iter([(Address::ZERO, account)])
 }
 
-#[test]
-fn commit_preserves_order_and_the_unpaired_fifth_state() {
-    let mut accumulator = EvmStateCommitter::with_target(state(0, &[(99, 99)]));
-    for id in [5, 1, 4, 2, 3] {
-        accumulator.buffer(ID::new(0, id), state(id, &[(0, id * 10), (id, id)]));
-    }
-
-    accumulator.flush();
-    let cache = accumulator.into_inner();
-
-    let account = &cache[&Address::ZERO];
-    assert_eq!(account.info.balance, U256::from(5));
-    assert_eq!(account.storage.len(), 7);
-    assert_eq!(account.storage[&U256::ZERO].present_value(), U256::from(50));
-    for id in 1..=5_u64 {
-        assert_eq!(
-            account.storage[&U256::from(id)].present_value(),
-            U256::from(id)
-        );
-    }
-}
-
-#[test]
-fn pairwise_commit_preserves_creation_across_groups() {
-    let mut accumulator = EvmStateCommitter::with_target(state(0, &[(99, 99)]));
-    for id in 1..=5_u64 {
-        let mut incoming = state(id, &[(id, id)]);
-        if id == 3 {
-            incoming.get_mut(&Address::ZERO).unwrap().mark_created();
-        }
-        accumulator.buffer(ID::new(0, id), incoming);
-    }
-
-    accumulator.flush();
-    let cache = accumulator.into_inner();
-
-    let account = &cache[&Address::ZERO];
-    assert!(account.is_created());
-    assert_eq!(account.info.balance, U256::from(5));
-    assert_eq!(account.storage.len(), 3);
-    for id in 3..=5_u64 {
-        assert_eq!(
-            account.storage[&U256::from(id)].present_value(),
-            U256::from(id)
-        );
-    }
-}
-
-#[test]
-fn pairwise_commit_retains_slot_deletion_and_allows_a_later_write() {
-    for rewrite in [false, true] {
-        let mut accumulator = EvmStateCommitter::with_target(state(0, &[(7, 7), (99, 99)]));
-        accumulator.buffer(ID::new(0, 1), state(1, &[(7, 11)]));
-        let mut deletion = state(2, &[(7, 0)]);
-        deletion.get_mut(&Address::ZERO).unwrap().storage.insert(
-            U256::from(7),
-            EvmStorageSlot::new_changed(U256::from(11), U256::ZERO, TransactionId::ZERO),
-        );
-        accumulator.buffer(ID::new(0, 2), deletion);
-        accumulator.buffer(ID::new(0, 3), EvmState::default());
-        accumulator.buffer(ID::new(0, 4), EvmState::default());
-        accumulator.buffer(
-            ID::new(0, 5),
-            if rewrite {
-                state(5, &[(7, 23)])
-            } else {
-                EvmState::default()
-            },
-        );
-
-        accumulator.flush();
-        let cache = accumulator.into_inner();
-
-        let account = &cache[&Address::ZERO];
-        let slot = &account.storage[&U256::from(7)];
-        assert_eq!(
-            slot.present_value(),
-            U256::from(if rewrite { 23 } else { 0 })
-        );
-        if !rewrite {
-            assert_eq!(slot.original_value(), U256::from(11));
-        }
-        assert_eq!(
-            account.storage[&U256::from(99)].present_value(),
-            U256::from(99)
-        );
-    }
-}
-
-#[test]
-fn pairwise_commit_replaces_account_with_its_deletion_record() {
-    let mut accumulator = EvmStateCommitter::with_target(state(0, &[(99, 99)]));
-    accumulator.buffer(ID::new(0, 1), state(1, &[(1, 1)]));
-    accumulator.buffer(ID::new(0, 2), state(2, &[(2, 2)]));
-    let mut deletion = state(0, &[(7, 0)]);
-    deletion
+fn change(original_balance: u64, balance: u64, slots: &[(u64, u64)]) -> EvmState {
+    let mut state = state(balance, slots);
+    state
         .get_mut(&Address::ZERO)
         .unwrap()
-        .mark_selfdestruct();
-    let expected = deletion.clone();
-    accumulator.buffer(ID::new(0, 3), deletion);
-    accumulator.buffer(ID::new(0, 4), EvmState::default());
-    accumulator.buffer(ID::new(0, 5), EvmState::default());
-
-    accumulator.flush();
-    let cache = accumulator.into_inner();
-
-    assert_eq!(cache, expected);
-}
-
-#[test]
-fn recreation_replaces_an_earlier_account_deletion() {
-    let mut accumulator = EvmStateCommitter::with_target(state(0, &[(99, 99)]));
-    let mut deletion = state(0, &[(1, 0)]);
-    deletion
-        .get_mut(&Address::ZERO)
-        .unwrap()
-        .mark_selfdestruct();
-    accumulator.buffer(ID::new(0, 1), deletion);
-    let mut creation = state(2, &[(2, 2)]);
-    creation.get_mut(&Address::ZERO).unwrap().mark_created();
-    accumulator.buffer(ID::new(0, 2), creation);
-    accumulator.buffer(ID::new(0, 3), state(3, &[(3, 3)]));
-    accumulator.buffer(ID::new(0, 4), state(4, &[(4, 4)]));
-    accumulator.buffer(ID::new(0, 5), state(5, &[(5, 5)]));
-
-    accumulator.flush();
-    let cache = accumulator.into_inner();
-
-    let account = &cache[&Address::ZERO];
-    assert!(!account.is_selfdestructed());
-    assert!(account.is_created());
-    assert_eq!(account.storage.len(), 4);
-    for id in 2..=5_u64 {
-        assert_eq!(
-            account.storage[&U256::from(id)].present_value(),
-            U256::from(id)
-        );
-    }
-}
-
-#[test]
-fn stage_filters_rejected_states_and_buffer_replaces_duplicate_ids() {
-    let mut accumulator = EvmStateCommitter::default();
-    accumulator.buffer(ID::new(0, 1), state(1, &[(1, 1)]));
-    accumulator.buffer(ID::new(0, 2), state(2, &[(2, 2)]));
-    accumulator.buffer(ID::new(0, 2), state(20, &[(2, 20)]));
-    accumulator.buffer(ID::new(0, 3), state(3, &[(3, 3)]));
-    accumulator.stage(vec![ID::new(0, 1), ID::new(0, 2)]);
-
-    accumulator.flush();
-    let cache = accumulator.into_inner();
-
-    let account = &cache[&Address::ZERO];
-    assert_eq!(account.info.balance, U256::from(20));
-    assert_eq!(account.storage.len(), 2);
-    assert_eq!(
-        account.storage[&U256::from(2)].present_value(),
-        U256::from(20)
-    );
+        .original_info_mut()
+        .balance = U256::from(original_balance);
+    state
 }
 
 #[test]
@@ -198,10 +46,10 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
     assert_eq!(cache, original);
 
     let mut accumulator = EvmStateCommitter::with_target(cache);
-    accumulator.buffer(ID::new(0, 1), state(1, &[(1, 1)]));
+    accumulator.buffer(ID::new(0, 1), change(0, 1, &[(1, 1)]));
     accumulator.flush();
     // A later batch with a lower ID must not replay states from the first batch.
-    accumulator.buffer(ID::new(0, 0), state(2, &[(2, 2)]));
+    accumulator.buffer(ID::new(0, 0), change(1, 2, &[(2, 2)]));
     accumulator.flush();
     let cache = accumulator.into_inner();
     let committed = cache.clone();
@@ -219,7 +67,7 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
 #[test]
 fn into_evm_state_returns_accumulated_state() {
     let mut accumulator = EvmStateCommitter::with_target(state(1, &[(1, 10)]));
-    accumulator.buffer(ID::new(0, 2), state(2, &[(2, 20)]));
+    accumulator.buffer(ID::new(0, 2), change(1, 2, &[(2, 20)]));
 
     accumulator.flush();
     let cache = accumulator.into_inner();

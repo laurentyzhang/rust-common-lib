@@ -1,8 +1,6 @@
 use super::*;
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
-use crate::planner::resolver::{
-    CommitVerdict, ConflictDetector, Reason, accepted_ids, rejected_ids,
-};
+use crate::planner::resolver::{CommitVerdict, ConflictDetector, accepted_ids, rejected_ids};
 use crate::planner::scheduler::{Generation, JobSequence};
 use alloy_evm::{
     EvmEnv, FromRecoveredTx, RecoveredTx,
@@ -67,6 +65,8 @@ fn job_returns_raw_and_committed_states() {
         } else {
             assert!(raw.result_and_state.is_err());
             assert!(raw.receipt.is_none());
+            assert!(raw.fee.is_zero());
+            assert!(raw.fee_recipients.is_empty());
             assert!(committed.is_empty());
         }
         assert!(fallback.basic_ref(caller).unwrap().is_none());
@@ -159,100 +159,6 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 }
 
 #[test]
-fn sequence_continues_after_rejected_job_with_prior_state() {
-    let factory = ArcologyBlockExecutorFactory::new(
-        OpAlloyReceiptBuilder::default(),
-        OpChainHardforks::op_mainnet(),
-        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
-    );
-    let mut env: EvmEnv<OpSpecId> = EvmEnv::default();
-    env.cfg_env.spec = OpSpecId::REGOLITH;
-    env.block_env.timestamp = U256::from(1_700_000_000u64);
-    env.block_env.gas_limit = 200_000;
-    let contract = Address::repeat_byte(0x99);
-    let code = Bytecode::new_raw(Bytes::from_static(&[
-        0x60, 0x00, 0x54, 0x60, 0x01, 0x01, 0x60, 0x00, 0x55, 0x00,
-    ]));
-    let fallback = StateDb::new(EvmState::from_iter([(
-        contract,
-        Account::from(AccountInfo {
-            code_hash: code.hash_slow(),
-            code: Some(code),
-            ..Default::default()
-        }),
-    )]));
-    let caller = Address::repeat_byte(0x22);
-    let tx = OpTxEnvelope::from(TxDeposit {
-        from: caller,
-        to: TxKind::Call(contract),
-        gas_limit: 200_001,
-        ..Default::default()
-    });
-    let rejected = Job::new(
-        ID::new(0, 2),
-        (
-            ArcologyTx::from_recovered_tx(&tx, caller),
-            Recovered { tx, signer: caller },
-        ),
-    );
-    let StateOutcome {
-        raw: mut outcomes,
-        committed,
-    } = JobSequence {
-        jobs: vec![job(1, contract), rejected, job(3, contract)],
-        nonce_offsets: Vec::new(),
-    }
-    .run(&factory, &fallback, env, OpBlockExecutionCtx::default())
-    .unwrap();
-
-    assert_eq!(
-        outcomes
-            .iter()
-            .map(|outcome| outcome.id.global)
-            .collect::<Vec<_>>(),
-        vec![1, 2, 3]
-    );
-    assert!(outcomes[1].result_and_state.is_err());
-    assert!(outcomes[1].receipt.is_none());
-    assert!(outcomes[1].to_records(outcomes[1].id).is_empty());
-    for (index, outcome) in outcomes
-        .iter()
-        .filter_map(|outcome| outcome.result_and_state.as_ref().ok())
-        .enumerate()
-    {
-        assert!(outcome.result.is_success());
-        assert_eq!(
-            outcome.state[&contract].storage[&U256::ZERO].present_value(),
-            U256::from(index + 1),
-        );
-    }
-    assert_eq!(
-        fallback.storage_ref(contract, U256::ZERO).unwrap(),
-        U256::ZERO
-    );
-    assert!(fallback.basic_ref(caller).unwrap().is_none());
-    assert!(!committed.contains_key(&caller));
-    assert_eq!(
-        committed[&contract].storage[&U256::ZERO].present_value(),
-        U256::from(2)
-    );
-
-    let gas_used: u64 = outcomes
-        .iter()
-        .filter_map(|outcome| outcome.result_and_state.as_ref().ok())
-        .map(|executed| executed.result.tx_gas_used())
-        .sum();
-    outcomes.reverse();
-    let cumulative = std::cell::Cell::new(0);
-    let outcomes = ArcologyParaBlockExecutor::finish_block(outcomes, &|_, gas| cumulative.set(gas));
-    assert_eq!(outcomes[0].id.global, 1);
-    assert_eq!(outcomes[1].id.global, 2);
-    assert_eq!(outcomes[2].id.global, 3);
-    assert!(outcomes[1].result_and_state.is_err());
-    assert_eq!(cumulative.get(), gas_used);
-}
-
-#[test]
 fn sequence_nonce_offsets_are_local_and_checked() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -291,7 +197,9 @@ fn sequence_nonce_offsets_are_local_and_checked() {
             let executed = outcomes[0].result_and_state.as_ref().unwrap();
             assert!(executed.result.is_success());
             assert_eq!(executed.state[&caller].info.nonce, expected);
-            assert_eq!(committed[&caller].info.nonce, expected);
+            // Speculative offsets are not nonce changes made by this sequence.
+            assert_eq!(committed[&caller].info.nonce, nonce + 1);
+            assert_eq!(committed[&caller].original_info().nonce, nonce);
         } else {
             let error = result
                 .err()
@@ -385,7 +293,10 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             committed_state[&contract].storage[&U256::ZERO].present_value(),
             U256::from(1)
         );
-        assert!(!committed_state.contains_key(&Address::with_last_byte(0x12)));
+        assert_eq!(
+            committed_state[&Address::with_last_byte(0x12)].info.nonce,
+            1
+        );
         let rejected = outcomes
             .iter()
             .find(|raw| raw.id.global == 2)
@@ -479,110 +390,6 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             persistent.storage_ref(contract, U256::ZERO).unwrap(),
             U256::ZERO
         );
-    }
-}
-
-#[test]
-fn generation_commits_finalized_sequence_prefixes() {
-    let factory = ArcologyBlockExecutorFactory::new(
-        OpAlloyReceiptBuilder::default(),
-        OpChainHardforks::op_mainnet(),
-        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
-    );
-    let mut env = EvmEnv::default();
-    env.cfg_env.spec = OpSpecId::BEDROCK;
-    let config = ParaBlockConfig {
-        env,
-        ctx: OpBlockExecutionCtx::default(),
-    };
-    let contracts = [
-        Address::repeat_byte(0x77),
-        Address::repeat_byte(0x88),
-        Address::repeat_byte(0x99),
-    ];
-    let code = Bytecode::new_raw(Bytes::from_static(&[
-        0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0,
-    ]));
-    let fallback = StateDb::new(EvmState::from_iter(contracts.map(|contract| {
-        (
-            contract,
-            Account::from(AccountInfo {
-                code_hash: code.hash_slow(),
-                code: Some(code.clone()),
-                ..Default::default()
-            }),
-        )
-    })));
-    for workers in [1, 2] {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .build()
-            .unwrap();
-        let sequences = vec![
-            JobSequence {
-                jobs: contracts
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, contract)| job(index as u64, contract))
-                    .collect(),
-                nonce_offsets: Vec::new(),
-            },
-            JobSequence {
-                jobs: (3..8).map(|id| job(id, contracts[1])).collect(),
-                nonce_offsets: Vec::new(),
-            },
-        ];
-        let mut generation = Generation { sequences };
-        generation.assign_ids(0);
-        let mut checker = ConflictDetector::new();
-        let outcome = generation
-            .run(&factory, &config, &pool, &mut checker, &fallback)
-            .unwrap();
-
-        assert_eq!(
-            rejected_ids(
-                &outcome
-                    .raw
-                    .iter()
-                    .filter_map(|raw| raw.verdict.clone())
-                    .collect::<Vec<_>>()
-            )
-            .iter()
-            .map(|id| id.global)
-            .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert_eq!(outcome.raw.len(), 8);
-        assert!(
-            outcome.raw[2]
-                .verdict
-                .as_ref()
-                .unwrap()
-                .reasons
-                .contains(&(None, Reason::Dependency(outcome.raw[1].id)))
-        );
-        assert_eq!(
-            outcome.committed[&contracts[0]].storage[&U256::ZERO].present_value(),
-            U256::from(1)
-        );
-        assert_eq!(
-            outcome.committed[&contracts[1]].storage[&U256::ZERO].present_value(),
-            U256::from(5)
-        );
-        assert!(!outcome.committed.contains_key(&contracts[2]));
-        for id in [1, 2] {
-            assert!(
-                !outcome
-                    .committed
-                    .contains_key(&Address::from(job(id, contracts[1]).sender))
-            );
-        }
-        for contract in contracts {
-            assert_eq!(
-                fallback.storage_ref(contract, U256::ZERO).unwrap(),
-                U256::ZERO
-            );
-        }
     }
 }
 

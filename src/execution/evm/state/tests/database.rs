@@ -111,6 +111,8 @@ fn merging_local_state_preserves_the_destination_fallback() {
     };
     let fallback = StateDb::new(EvmState::from_iter([(owner, Account::from(info.clone()))]));
     let mut db = StateDb::with_fallback(EvmState::default(), Some(&fallback));
-    db.merge(StateDb::with_fallback(EvmState::default(), None));
+    db.overlay
+        .merge(EvmState::default(), db.fallback.as_ref())
+        .unwrap();
     assert_eq!(db.basic(owner).unwrap(), Some(info));
 }

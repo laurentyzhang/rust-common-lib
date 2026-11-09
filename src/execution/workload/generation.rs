@@ -88,16 +88,15 @@ impl<Tx> Generation<Tx> {
                     raw.verdict = Some(verdicts[index].clone());
                 }
             }
-            let outcome = sequence.finalize();
+            let outcome = sequence.finalize(fallback)?;
             if let Some(raw) = outcome.raw.first() {
                 committer.buffer(raw.id, outcome.committed);
             }
             raws.extend(outcome.raw);
         }
-        committer.flush();
         Ok(StateOutcome {
             raw: raws,
-            committed: committer.into_inner(),
+            committed: committer.commit(fallback)?,
         })
     }
 

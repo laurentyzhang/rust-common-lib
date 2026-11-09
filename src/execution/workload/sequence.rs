@@ -70,11 +70,10 @@ impl<Tx> JobSequence<Tx> {
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut result = self.execute(factory, fallback, env, ctx)?;
-        result.committed.flush();
+        let result = self.execute(factory, fallback, env, ctx)?;
         Ok(StateOutcome {
             raw: result.raw,
-            committed: result.committed.into_inner(),
+            committed: result.committed.commit(fallback)?,
         })
     }
 

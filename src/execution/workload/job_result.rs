@@ -19,7 +19,7 @@ use crate::{
     },
     planner::resolver::CommitVerdict,
 };
-use alloy_primitives::I256;
+use alloy_primitives::{Address, I256, U256};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HaltReason {
@@ -33,6 +33,9 @@ pub struct JobResult<R, H = HaltReason> {
     pub result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
     pub receipt: Option<R>,
     pub reads: StateReads, // Combined from opcode inspection and API handlers.
+    pub sender: Address,
+    pub fee: U256,
+    pub fee_recipients: Vec<(Address, U256)>,
     /// Commit decision and conflict diagnostics, assigned after generation conflict selection.
     pub verdict: Option<CommitVerdict<Key>>,
 }
@@ -49,6 +52,9 @@ impl<R, H> JobResult<R, H> {
             result_and_state,
             receipt,
             reads,
+            sender: Address::ZERO,
+            fee: U256::ZERO,
+            fee_recipients: Vec::new(),
             verdict: None,
         }
     }

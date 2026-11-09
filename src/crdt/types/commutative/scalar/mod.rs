@@ -45,6 +45,16 @@ impl<T: Type> Scalar<T> {
         }
     }
 
+    /// Initializes a value and validates its pending delta with default bounds.
+    pub fn with_delta(value: T, delta: DeltaOp<T::Magnitude>) -> Result<Self, StateError> {
+        let mut scalar = Self {
+            value,
+            ..Self::default()
+        };
+        scalar.add_delta(&delta)?;
+        Ok(scalar)
+    }
+
     pub fn compare(&self, other: &Self) -> Ordering {
         let zero = T::Magnitude::default();
         match (&self.delta, &other.delta) {
