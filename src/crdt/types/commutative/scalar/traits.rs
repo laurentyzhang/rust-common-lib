@@ -1,4 +1,4 @@
-use crate::crdt::state::{DeltaOp, NumericError, StateError};
+use crate::crdt::state::{CrdtError, DeltaOp, NumericError};
 
 /// A value type that can be stored in a [`super::Scalar`] CRDT.
 pub trait Type: Copy + std::fmt::Debug + std::fmt::Display + Ord {
@@ -20,5 +20,5 @@ pub trait Type: Copy + std::fmt::Debug + std::fmt::Display + Ord {
         }
     }
 
-    fn state_error(error: NumericError) -> StateError;
+    fn state_error(error: NumericError) -> CrdtError;
 }

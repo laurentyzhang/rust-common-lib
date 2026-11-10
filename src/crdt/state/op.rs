@@ -1,4 +1,3 @@
-// use crate::crdt::state::StateError;
 // use crate::crdt::state::counter::Counter;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

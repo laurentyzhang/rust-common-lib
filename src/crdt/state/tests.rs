@@ -51,7 +51,7 @@ macro_rules! unsigned_delta_tests {
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(1)))),
-                    Err(StateError::$error(NumericError::Underflow(_)))
+                    Err(CrdtError::$error(NumericError::Underflow(_)))
                 ));
                 assert!(value == before);
                 value
@@ -60,7 +60,7 @@ macro_rules! unsigned_delta_tests {
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&CrdtDelta::$variant(DeltaOp::Add(n(1)))),
-                    Err(StateError::$error(NumericError::Overflow(_)))
+                    Err(CrdtError::$error(NumericError::Overflow(_)))
                 ));
                 assert!(value == before);
                 value.apply_delta();
@@ -70,7 +70,7 @@ macro_rules! unsigned_delta_tests {
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&CrdtDelta::$variant(DeltaOp::Sub(n(1)))),
-                    Err(StateError::$error(NumericError::Underflow(_)))
+                    Err(CrdtError::$error(NumericError::Underflow(_)))
                 ));
                 assert!(value == before);
                 value
@@ -97,14 +97,14 @@ macro_rules! unsigned_delta_tests {
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&DeltaOp::Sub(n(1))),
-                    Err(StateError::$error(NumericError::BelowLowerLimit(_)))
+                    Err(CrdtError::$error(NumericError::BelowLowerLimit(_)))
                 ));
                 assert!(value == before);
                 value.add_delta(&DeltaOp::Add(n(10))).unwrap();
                 let before = value.clone();
                 assert!(matches!(
                     value.add_delta(&DeltaOp::Add(n(1))),
-                    Err(StateError::$error(NumericError::AboveUpperLimit(_)))
+                    Err(CrdtError::$error(NumericError::AboveUpperLimit(_)))
                 ));
                 assert!(value == before);
                 value.apply_delta();
@@ -135,13 +135,13 @@ fn numeric_deltas_reject_other_numeric_types() {
         i256_value.add_delta(&CrdtDelta::U256(
             DeltaOp::Sub(alloy_primitives::U256::ZERO,)
         )),
-        Err(StateError::TypeMismatch)
+        Err(CrdtError::TypeMismatch)
     );
     assert_eq!(
         u256_value.add_delta(&CrdtDelta::I256(
             DeltaOp::Sub(alloy_primitives::U256::ZERO,)
         )),
-        Err(StateError::TypeMismatch)
+        Err(CrdtError::TypeMismatch)
     );
 }
 

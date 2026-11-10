@@ -130,7 +130,7 @@ impl ScalarAdapter {
             (self.min, state.min.to_word()),
             (self.max, state.max.to_word()),
             (self.value, state.value.to_word()),
-            (self.pos_delta, pos_delta),
+            (self.pos_delta, pos_delta), // Still need them, not the final storage.
             (self.neg_delta, neg_delta),
         ] {
             storage

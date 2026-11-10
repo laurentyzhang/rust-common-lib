@@ -6,7 +6,7 @@ pub mod status;
 pub mod tracked;
 pub mod value;
 
-pub use error::{NumericError, StateError};
+pub use error::{CrdtError, NumericError};
 pub use status::Status;
 pub use tracked::Tracked;
 pub use value::{CrdtDelta, CrdtValue, DeltaOp};

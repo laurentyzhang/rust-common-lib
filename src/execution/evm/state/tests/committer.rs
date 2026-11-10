@@ -25,18 +25,18 @@ fn flush_combines_only_accepted_deltas_and_clears_the_buffer() {
     committer.buffer(ID::new(0, 1), changes(10, 12));
     committer.buffer(ID::new(0, 3), changes(10, 99));
     committer.stage(vec![ID::new(0, 1), ID::new(0, 2)]);
-    committer.flush();
+    committer.flush().unwrap();
     assert_eq!(
         committer.inner()[&Address::ZERO].storage[&key].present_value(),
         U256::from(15)
     );
-    committer.flush();
+    committer.flush().unwrap();
     assert_eq!(
         committer.inner()[&Address::ZERO].storage[&key].present_value(),
         U256::from(15)
     );
     committer.buffer(ID::new(0, 4), changes(15, 16));
-    committer.flush();
+    committer.flush().unwrap();
     assert_eq!(
         committer.into_inner()[&Address::ZERO].storage[&key].present_value(),
         U256::from(16)

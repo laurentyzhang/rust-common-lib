@@ -1,5 +1,5 @@
 use super::{
-    CrdtDelta, StateError, Status, op::Operations, status::Tag, value::CrdtValue,
+    CrdtDelta, CrdtError, Status, op::Operations, status::Tag, value::CrdtValue,
     value::ValueSnapshots,
 };
 
@@ -165,9 +165,9 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
         Ok(())
     }
 
-    pub fn add_delta(&mut self, delta: CrdtDelta) -> Result<(), StateError> {
+    pub fn add_delta(&mut self, delta: CrdtDelta) -> Result<(), CrdtError> {
         if !self.is_live() {
-            return Err(StateError::CannotAddDeltaToMissingValue);
+            return Err(CrdtError::CannotAddDeltaToMissingValue);
         }
         self.operations.deltas.increment();
         self.value.current.add_delta(&delta)

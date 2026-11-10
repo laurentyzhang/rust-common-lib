@@ -1,12 +1,14 @@
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, AccountStatus, EvmState, EvmStorage, EvmStorageSlot},
+    state::{Account, EvmState, EvmStorage, EvmStorageSlot},
 };
 use alloy_primitives::{Address, U256};
 use rayon::prelude::*;
 
+use crate::crdt::state::{CrdtError, NumericError};
 use crate::crdt::{Crdt, Scalar, Type};
 use crate::execution::{ApiAddress, Property, ScalarKeyCodec};
+use crate::store::traits::StoreError;
 
 #[derive(Debug, Default)]
 pub(super) struct StateOverlay {
@@ -35,123 +37,50 @@ impl StateOverlay {
         &mut self,
         incoming: EvmState,
         fallback: Option<&DB>,
-    ) -> Result<(), DB::Error> {
+    ) -> Result<(), StoreError> {
         // Step 1 (serial): pair each incoming account with its committed counterpart.
         let accounts = incoming
             .into_iter()
             .map(|(address, incoming)| {
-                Ok((
-                    address,
-                    self.take_current(address, &incoming, fallback)?,
-                    incoming,
-                ))
+                Ok::<_, StoreError>((address, self.take_current(address, fallback)?, incoming))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Step 2 (parallel): accounts are independent; only successive incoming states require ordering.
-        let merged: Vec<_> = accounts
+        // Step 2 (parallel): accounts are independent, update then in parallel.
+        let merged_accounts: Vec<_> = accounts
             .into_par_iter()
-            .map(|(address, current, incoming)| (address, Self::merge_account(current, incoming)))
-            .collect();
+            .map(|(address, mut current, incoming)| {
+                if current == Account::default() || incoming.is_selfdestructed_locally() {
+                    return Ok((address, incoming));
+                }
+
+                Self::handle_fee_nonce(&mut current, &incoming).map_err(StoreError::State)?;
+                Self::merge_status(&mut current, &incoming);
+
+                // Both accounts exist, merge their storage.
+                for (key, value) in incoming.storage {
+                    if ApiAddress::is_storage_key(key) {
+                        Self::merge_api_slot(&mut current.storage, key, value);
+                    } else {
+                        current.storage.insert(key, value);
+                    }
+                }
+                Ok((address, current))
+            })
+            .collect::<Result<_, StoreError>>()?;
+
         // Step 3 (serial): put the merged accounts back into the overlay.
-        self.state.extend(merged);
+        self.state.extend(merged_accounts);
         Ok(())
     }
 
-    /// Takes the committed account out of the map so workers own it; it is re-inserted after merging.
-    fn take_current<DB: DatabaseRef>(
-        &mut self,
-        address: Address,
-        incoming: &Account,
-        fallback: Option<&DB>,
-    ) -> Result<Account, DB::Error> {
-        if let Some(current) = self.state.remove(&address) {
-            return Ok(current);
-        }
-        // Not committed yet: build a baseline account from the fallback DB (info only, no code/storage).
-        let info = match fallback {
-            Some(db) => db.basic_ref(address)?.unwrap_or_default(),
-            // The incoming snapshot supplies the base when no fallback is attached.
-            None => incoming.original_info(),
-        };
-        let mut current = Account::from(info);
-        current.info.code = None;
-        Ok(current)
-    }
-
-    /// Merges one incoming account into its committed counterpart.
-    fn merge_account(mut current: Account, mut incoming: Account) -> Account {
-        // `base` is the committed state's original info, kept as the merged account's original.
-        // `original` is what the incoming state started from, used to compute its deltas.
-        let base = current.original_info();
-        let original = incoming.original_info();
-        // A reset discards committed storage: the account was destroyed or (re)created.
-        let reset =
-            current.is_selfdestructed() || incoming.is_created() || incoming.is_selfdestructed();
-
-        if current.is_selfdestructed() {
-            current.info = Default::default();
-        }
-
-        // Balance and nonce are commutative: apply (incoming - original) onto the committed value
-        // instead of overwriting it, so concurrent changes from other states are preserved.
-        let mut nonce = U256::from(current.info.nonce);
-        for (value, old, new) in [
-            (
-                &mut current.info.balance,
-                original.balance,
-                incoming.info.balance,
-            ),
-            (
-                &mut nonce,
-                U256::from(original.nonce),
-                U256::from(incoming.info.nonce),
-            ),
-        ] {
-            *value = Scalar::with_delta(*value, U256::delta_between(old, new))
-                .unwrap()
-                .apply_delta()
-                .value;
-        }
-
-        current.info.nonce = nonce.to::<u64>();
-        // Code is only replaced when the incoming state deploys some.
-        if let Some(code) = incoming.info.code.take() {
-            current.info.code_hash = incoming.info.code_hash;
-            current.info.code = Some(code);
-        }
-        if !reset {
-            // Keep the creation flag from the committed state.
-            if current.is_created() {
-                incoming.mark_created();
-            }
-            Self::merge_storage(&mut current.storage, &mut incoming);
-        }
-        // The merged account keeps incoming metadata (status, etc.) with the combined info/storage.
-        incoming.info = current.info;
-        *incoming.original_info_mut() = base;
-        // A touched, surviving account exists now, so it is no longer "loaded as not existing".
-        if incoming.is_touched() && !incoming.is_selfdestructed() {
-            incoming.status.remove(AccountStatus::LoadedAsNotExisting);
-        }
-        incoming
-    }
-
-    /// Overlays incoming slots on committed ones and stores the result in `incoming.storage`.
-    /// CRDT API slots that already exist are merged as deltas instead of being overwritten.
-    fn merge_storage(committed: &mut EvmStorage, incoming: &mut Account) {
-        for (key, value) in std::mem::take(&mut incoming.storage) {
-            if !ApiAddress::is_storage_key(key) || !committed.contains_key(&key) {
-                committed.insert(key, value);
-            } else {
-                Self::handle_api_slot(committed, key, value);
-            }
-        }
-        incoming.storage = std::mem::take(committed);
+    /// Replaces the current status with the incoming account's status.
+    fn merge_status(current: &mut Account, incoming: &Account) {
+        current.status = incoming.status;
     }
 
     /// Dispatches CRDT delta merging by API type.
-    fn handle_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
+    fn merge_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
         match ScalarKeyCodec::decode(key) {
             Some((_, field, _))
                 if field == Property::PosDelta as u8 || field == Property::NegDelta as u8 =>
@@ -160,12 +89,64 @@ impl StateOverlay {
                 let change = new_value
                     .present_value()
                     .wrapping_sub(new_value.original_value());
-                let slot = storage
-                    .get_mut(&key)
-                    .expect("API slot exists before handling");
-                slot.present_value = slot.present_value().wrapping_add(change);
+                if let Some(slot) = storage.get_mut(&key) {
+                    slot.present_value = slot.present_value().wrapping_add(change);
+                } else {
+                    storage.insert(key, new_value);
+                }
             }
             _ => {}
         }
+    }
+
+    /// Takes the committed account out of the map so workers own it; it is re-inserted after merging.
+    fn take_current<DB: DatabaseRef>(
+        &self,
+        address: Address,
+        fallback: Option<&DB>,
+    ) -> Result<Account, StoreError> {
+        if let Some(current) = self.state.get(&address) {
+            return Ok(current.clone());
+        }
+
+        match fallback {
+            Some(db) => Ok(
+                match db
+                    .basic_ref(address)
+                    .map_err(|error| StoreError::Database(format!("{error:?}")))?
+                {
+                    Some(info) => Account::from(info),
+                    None => Account::default(),
+                },
+            ),
+            None => Ok(Account::default()),
+        }
+    }
+
+    /// Handles the fee and nonce fields for an account by applying the delta between the original and incoming values.
+    fn handle_fee_nonce(current: &mut Account, incoming: &Account) -> Result<(), CrdtError> {
+        let original = incoming.original_info();
+
+        let balance = Scalar::with_delta(
+            current.info.balance,
+            U256::delta_between(original.balance, incoming.info.balance),
+        )?
+        .apply_delta()
+        .value;
+
+        let merged_nonce = Scalar::with_delta(
+            U256::from(current.info.nonce),
+            U256::delta_between(U256::from(original.nonce), U256::from(incoming.info.nonce)),
+        )?
+        .apply_delta()
+        .value;
+
+        let nonce = u64::try_from(merged_nonce).map_err(|_| {
+            CrdtError::U256(NumericError::Overflow("merged nonce exceeds u64".into()))
+        })?;
+
+        current.info.balance = balance;
+        current.info.nonce = nonce;
+        Ok(())
     }
 }

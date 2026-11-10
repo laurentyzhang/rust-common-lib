@@ -5,7 +5,7 @@ mod u256;
 pub use traits::Type;
 
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::{DeltaOp, NumericError, StateError};
+use crate::crdt::state::{CrdtError, DeltaOp, NumericError};
 use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,7 +28,7 @@ impl<T: Type> Default for Scalar<T> {
 }
 
 impl<T: Type> Scalar<T> {
-    pub fn new(lower: T, upper: T) -> Result<Self, StateError> {
+    pub fn new(lower: T, upper: T) -> Result<Self, CrdtError> {
         Self::check_against_limits(lower, upper, T::ZERO)?;
         Ok(Self {
             value: T::ZERO,
@@ -46,7 +46,7 @@ impl<T: Type> Scalar<T> {
     }
 
     /// Initializes a value and validates its pending delta with default bounds.
-    pub fn with_delta(value: T, delta: DeltaOp<T::Magnitude>) -> Result<Self, StateError> {
+    pub fn with_delta(value: T, delta: DeltaOp<T::Magnitude>) -> Result<Self, CrdtError> {
         let mut scalar = Self {
             value,
             ..Self::default()
@@ -71,7 +71,7 @@ impl<T: Type> Scalar<T> {
     fn update_delta(
         &mut self,
         operation: DeltaOp<T::Magnitude>,
-    ) -> Result<&DeltaOp<T::Magnitude>, StateError> {
+    ) -> Result<&DeltaOp<T::Magnitude>, CrdtError> {
         self.delta = Some(self.try_delta(&operation)?);
         Ok(self.delta.as_ref().unwrap())
     }
@@ -79,7 +79,7 @@ impl<T: Type> Scalar<T> {
     fn try_delta(
         &self,
         operation: &DeltaOp<T::Magnitude>,
-    ) -> Result<DeltaOp<T::Magnitude>, StateError> {
+    ) -> Result<DeltaOp<T::Magnitude>, CrdtError> {
         let pending = match self.delta.as_ref() {
             Some(DeltaOp::Add(delta) | DeltaOp::Sub(delta)) => *delta,
             None => T::Magnitude::default(),
@@ -102,7 +102,7 @@ impl<T: Type> Scalar<T> {
         value: &T,
         pending: &T::Magnitude,
         operation: &DeltaOp<T::Magnitude>,
-    ) -> StateError {
+    ) -> CrdtError {
         let error = match operation {
             DeltaOp::Add(delta) => NumericError::overflow(value, pending, delta),
             DeltaOp::Sub(delta) => NumericError::underflow(value, pending, delta),
@@ -110,7 +110,7 @@ impl<T: Type> Scalar<T> {
         T::state_error(error)
     }
 
-    fn check_against_limits(lower: T, upper: T, value: T) -> Result<(), StateError> {
+    fn check_against_limits(lower: T, upper: T, value: T) -> Result<(), CrdtError> {
         if lower > upper {
             return Err(T::state_error(NumericError::invalid_limits(&lower, &upper)));
         }
@@ -129,7 +129,7 @@ impl<T: Type> Scalar<T> {
 }
 
 impl<T: Type> Crdt<T, DeltaOp<T::Magnitude>> for Scalar<T> {
-    type Error = StateError;
+    type Error = CrdtError;
 
     fn value(&self) -> Option<&T> {
         Some(&self.value)

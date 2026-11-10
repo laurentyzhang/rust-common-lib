@@ -6,8 +6,8 @@ use alloy_evm::revm::{
 use super::StateDb;
 
 impl<DB> DatabaseCommit for StateDb<DB> {
-    fn commit(&mut self, changes: EvmState) {
-        for (address, mut incoming) in changes {
+    fn commit(&mut self, other: EvmState) {
+        for (address, mut incoming) in other {
             if incoming.is_selfdestructed() {
                 self.inner_mut().insert(address, incoming);
                 continue;
@@ -17,7 +17,10 @@ impl<DB> DatabaseCommit for StateDb<DB> {
                 incoming.status.remove(AccountStatus::LoadedAsNotExisting);
             }
 
+            // Get the account for this address, if any.
             if let Some(existing) = self.inner_mut().get_mut(&address) {
+                // If the incoming account is not newly created and the
+                // existing account is not selfdestructed, merge storage and code.
                 if !incoming.is_created() && !existing.is_selfdestructed() {
                     // Preserve slots absent from this transaction's update.
                     let mut storage = std::mem::take(&mut existing.storage);

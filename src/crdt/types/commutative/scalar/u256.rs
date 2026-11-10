@@ -1,5 +1,5 @@
 use super::{Scalar, Type};
-use crate::crdt::state::{CrdtValue, DeltaOp, NumericError, StateError};
+use crate::crdt::state::{CrdtError, CrdtValue, DeltaOp, NumericError};
 use alloy_primitives::U256 as AlloyU256;
 use std::borrow::Cow;
 
@@ -21,8 +21,8 @@ impl Type for AlloyU256 {
         larger - smaller
     }
 
-    fn state_error(error: NumericError) -> StateError {
-        StateError::U256(error)
+    fn state_error(error: NumericError) -> CrdtError {
+        CrdtError::U256(error)
     }
 }
 

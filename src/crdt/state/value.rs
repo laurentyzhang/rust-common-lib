@@ -1,4 +1,4 @@
-use super::StateError;
+use super::CrdtError;
 use crate::crdt::Crdt;
 use crate::crdt::{NonComm, Scalar, Set};
 
@@ -151,7 +151,7 @@ impl<'a> CrdtValue<'a> {
         }
     }
 
-    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<(), StateError> {
+    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<(), CrdtError> {
         match (self, delta) {
             (_, CrdtDelta::None) => Ok(()),
             (Self::Bytes(value), CrdtDelta::Bytes(delta)) => {
@@ -169,7 +169,7 @@ impl<'a> CrdtValue<'a> {
                 value.to_mut().add_delta(delta).map(|_| ())
             }
 
-            _ => Err(StateError::TypeMismatch),
+            _ => Err(CrdtError::TypeMismatch),
         }
     }
 

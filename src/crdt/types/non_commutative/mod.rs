@@ -1,5 +1,5 @@
 use crate::crdt::crdt::{CacheableCrdt, Crdt};
-use crate::crdt::state::StateError;
+use crate::crdt::state::CrdtError;
 use std::cmp::Ordering;
 
 #[derive(Debug, PartialEq)]
@@ -19,7 +19,7 @@ where
 }
 
 impl<T: ?Sized> NonComm<T> {
-    pub fn new(data: impl Into<Box<T>>) -> Result<Self, StateError> {
+    pub fn new(data: impl Into<Box<T>>) -> Result<Self, CrdtError> {
         Ok(Self {
             delta: Some(data.into()),
         })
@@ -52,7 +52,7 @@ where
     T: ?Sized + PartialEq,
     Box<T>: Clone + for<'a> From<&'a T>,
 {
-    type Error = StateError;
+    type Error = CrdtError;
 
     fn value(&self) -> Option<&T> {
         self.delta.as_deref()

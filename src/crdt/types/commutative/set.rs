@@ -2,7 +2,7 @@
 
 use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
-use crate::crdt::state::{DeltaOp, StateError};
+use crate::crdt::state::{CrdtError, DeltaOp};
 use std::cmp::Ordering;
 use std::hash::Hash;
 
@@ -31,7 +31,7 @@ impl<T> Set<T>
 where
     T: Eq + Hash,
 {
-    pub fn new() -> Result<Self, StateError> {
+    pub fn new() -> Result<Self, CrdtError> {
         Ok(Self::default())
     }
 
@@ -49,7 +49,7 @@ impl<T> Crdt<DeltaSet<T>, [DeltaOp<T>]> for Set<T>
 where
     T: Clone + Eq + Hash,
 {
-    type Error = StateError;
+    type Error = CrdtError;
 
     fn value(&self) -> Option<&DeltaSet<T>> {
         Some(&self.entries)
@@ -59,7 +59,7 @@ where
         self.delta.as_deref()
     }
 
-    fn add_delta(&mut self, delta: &[DeltaOp<T>]) -> Result<&[DeltaOp<T>], StateError> {
+    fn add_delta(&mut self, delta: &[DeltaOp<T>]) -> Result<&[DeltaOp<T>], CrdtError> {
         let pending = self.delta.get_or_insert_default();
 
         for operation in delta {

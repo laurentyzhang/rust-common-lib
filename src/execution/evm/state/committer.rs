@@ -5,7 +5,7 @@ use std::io::Error;
 
 use super::{StateDb, overlay::StateOverlay};
 use crate::execution::workload::ID;
-use crate::store::traits::Committer;
+use crate::store::traits::{Committer, StoreError};
 
 /// Buffers transaction states and commits accepted changes.
 #[derive(Debug, Default)]
@@ -40,7 +40,7 @@ impl EvmStateCommitter {
         for incoming in self.buffered.into_values() {
             overlay
                 .merge(incoming, Some(fallback))
-                .map_err(Error::other)?;
+                .map_err(|error| Error::other(format!("{error:?}")))?;
         }
         Ok(overlay.into_inner())
     }
@@ -56,13 +56,14 @@ impl Committer<ID, EvmState> for EvmStateCommitter {
         self.buffered.retain(|id, _| accepted.contains(id));
     }
 
-    fn flush(&mut self) {
-        for incoming in std::mem::take(&mut self.buffered).into_values() {
-            self.state
-                .overlay
-                .merge(incoming, self.state.fallback.as_ref())
-                .unwrap();
+    fn flush(&mut self) -> Result<(), StoreError> {
+        let mut overlay = StateOverlay::new(self.state.inner().clone());
+        for incoming in self.buffered.values() {
+            overlay.merge(incoming.clone(), self.state.fallback.as_ref())?;
         }
+        self.state.overlay = overlay;
+        self.buffered.clear();
+        Ok(())
     }
 }
 

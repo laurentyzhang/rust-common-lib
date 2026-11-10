@@ -1,11 +1,11 @@
-use crate::crdt::state::StateError;
+pub use super::error::StoreError;
 
 pub trait Committer<K, V> {
     fn buffer(&mut self, id: K, state: V);
     /// Drop rejected states; absent keys may still include their keys.
     fn stage(&mut self, accepted: Vec<K>);
-    /// Commit accepted states in ID order and clear the buffer.
-    fn flush(&mut self);
+    /// Commit accepted states and clear the buffer on success.
+    fn flush(&mut self) -> Result<(), StoreError>;
 }
 
 pub trait FallbackStore<K, V>: Send + Sync {
@@ -21,32 +21,5 @@ pub trait FallbackStore<K, V>: Send + Sync {
     // For other fallback stores, it is identical to `get` by default.
     fn get_untracked(&self, key: &K) -> Result<Option<V>, StoreError> {
         self.get(key)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum StoreError {
-    State(StateError),
-    SetNoneToValue,
-    DeleteNonexistingEntry,
-    ValueCannotBeRecreated,
-    ValueCannotBeStripped,
-    NotFound,
-    EntryNotFound,
-    Database(String),
-    Codec(String),
-}
-
-impl std::fmt::Display for StoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
-    }
-}
-
-impl std::error::Error for StoreError {}
-
-impl From<StateError> for StoreError {
-    fn from(error: StateError) -> Self {
-        Self::State(error)
     }
 }

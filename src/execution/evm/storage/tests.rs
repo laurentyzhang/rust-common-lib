@@ -41,16 +41,16 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
     let cache = state(0, &[(99, 99)]);
     let original = cache.clone();
     let mut accumulator = EvmStateCommitter::with_target(cache);
-    accumulator.flush();
+    accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     assert_eq!(cache, original);
 
     let mut accumulator = EvmStateCommitter::with_target(cache);
     accumulator.buffer(ID::new(0, 1), change(0, 1, &[(1, 1)]));
-    accumulator.flush();
+    accumulator.flush().unwrap();
     // A later batch with a lower ID must not replay states from the first batch.
     accumulator.buffer(ID::new(0, 0), change(1, 2, &[(2, 2)]));
-    accumulator.flush();
+    accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     let committed = cache.clone();
     assert_eq!(
@@ -58,7 +58,7 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
         U256::from(2)
     );
     let mut accumulator = EvmStateCommitter::with_target(cache);
-    accumulator.flush();
+    accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     assert_eq!(cache, committed);
     assert_eq!(cache[&Address::ZERO].storage.len(), 3);
@@ -69,7 +69,7 @@ fn into_evm_state_returns_accumulated_state() {
     let mut accumulator = EvmStateCommitter::with_target(state(1, &[(1, 10)]));
     accumulator.buffer(ID::new(0, 2), change(1, 2, &[(2, 20)]));
 
-    accumulator.flush();
+    accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     assert_eq!(cache, state(2, &[(1, 10), (2, 20)]));
     assert!(EvmState::default().is_empty());
@@ -81,7 +81,7 @@ fn into_inner_excludes_rejected_and_unflushed_states() {
     let mut accumulator = EvmStateCommitter::with_target(initial.clone());
     accumulator.buffer(ID::new(0, 2), state(2, &[(2, 20)]));
     accumulator.stage(Vec::new());
-    accumulator.flush();
+    accumulator.flush().unwrap();
     accumulator.buffer(ID::new(0, 3), state(3, &[(3, 30)]));
 
     assert_eq!(accumulator.into_inner(), initial);
@@ -111,7 +111,7 @@ fn commit_writes_account_and_storage_to_accumulated_state() {
 
     let mut accumulator = EvmStateCommitter::default();
     accumulator.buffer(ID::new(0, 9), changes);
-    accumulator.flush();
+    accumulator.flush().unwrap();
     let mut db = StateDb::new(accumulator.into_inner());
 
     assert_eq!(db.basic(address).unwrap(), Some(info));

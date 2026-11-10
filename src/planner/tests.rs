@@ -134,7 +134,7 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
         let mut committer = EvmStateCommitter::with_target(db.into_inner());
         committer.buffer(ID::new(0, u64::MAX), result);
 
-        committer.flush();
+        committer.flush().unwrap();
         db = StateDb::new(committer.into_inner());
         let mut planner = Planner::<_, u64>::new(&mut db, config);
         assert_eq!(
@@ -189,7 +189,7 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
     let mut committer = EvmStateCommitter::with_target(db.into_inner());
     committer.buffer(ID::new(0, u64::MAX), result);
 
-    committer.flush();
+    committer.flush().unwrap();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
         planner.load_conflicts(a, callee(a, 10)).unwrap().1,
@@ -231,7 +231,7 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
     committer.buffer(ID::new(0, u64::MAX), result);
 
-    committer.flush();
+    committer.flush().unwrap();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
         planner.load_conflicts(a, callee(a, 10)).unwrap().1,
@@ -339,7 +339,7 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
     committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
     committer.buffer(record(2, 7, false).id, EvmState::from_iter([(a, rejected)]));
     committer.stage(accepted_ids(&conflicts));
-    committer.flush();
+    committer.flush().unwrap();
     let mut db = StateDb::new(committer.into_inner());
     let metadata = planner.resolve(&conflicts, db.inner()).unwrap();
     db.commit(metadata);
@@ -548,7 +548,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
     committer.buffer(ID::new(0, u64::MAX), result);
 
-    committer.flush();
+    committer.flush().unwrap();
 
     let mut planner = Planner::<_, u64>::new(
         StateDb::new(committer.into_inner()),
@@ -586,7 +586,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
     committer.buffer(ID::new(0, u64::MAX), result);
 
-    committer.flush();
+    committer.flush().unwrap();
     let mut planner = Planner::<_, u64>::new(
         StateDb::new(committer.into_inner()),
         SchedulerConfig::default(),

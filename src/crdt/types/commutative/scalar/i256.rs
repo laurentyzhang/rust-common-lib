@@ -1,5 +1,5 @@
 use super::{Scalar, Type};
-use crate::crdt::state::{CrdtValue, DeltaOp, NumericError, StateError};
+use crate::crdt::state::{CrdtError, CrdtValue, DeltaOp, NumericError};
 use alloy_primitives::{I256, U256};
 use std::borrow::Cow;
 
@@ -25,8 +25,8 @@ impl Type for I256 {
         (larger.into_raw() ^ sign) - (smaller.into_raw() ^ sign)
     }
 
-    fn state_error(error: NumericError) -> StateError {
-        StateError::I256(error)
+    fn state_error(error: NumericError) -> CrdtError {
+        CrdtError::I256(error)
     }
 }
 

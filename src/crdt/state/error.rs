@@ -10,7 +10,7 @@ pub enum NumericError {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum StateError {
+pub enum CrdtError {
     I256(NumericError),
     U256(NumericError),
     CannotAddDeltaToMissingValue,

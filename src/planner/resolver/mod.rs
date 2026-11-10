@@ -43,15 +43,15 @@ impl From<crate::crdt::state::NumericError> for NumericError {
 }
 
 /// Converts signed, unsigned, and state compatibility errors into numeric rejections.
-impl From<crate::crdt::state::StateError> for Reason {
-    fn from(error: crate::crdt::state::StateError) -> Self {
+impl From<crate::crdt::state::CrdtError> for Reason {
+    fn from(error: crate::crdt::state::CrdtError) -> Self {
         let error = match error {
-            crate::crdt::state::StateError::I256(error)
-            | crate::crdt::state::StateError::U256(error) => error.into(),
-            crate::crdt::state::StateError::CannotAddDeltaToMissingValue => {
+            crate::crdt::state::CrdtError::I256(error)
+            | crate::crdt::state::CrdtError::U256(error) => error.into(),
+            crate::crdt::state::CrdtError::CannotAddDeltaToMissingValue => {
                 NumericError::CannotAddDeltaToMissingValue
             }
-            crate::crdt::state::StateError::TypeMismatch => NumericError::TypeMismatch,
+            crate::crdt::state::CrdtError::TypeMismatch => NumericError::TypeMismatch,
         };
 
         Self::NumericError(error)

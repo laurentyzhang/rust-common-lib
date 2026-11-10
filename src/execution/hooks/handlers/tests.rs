@@ -1983,13 +1983,13 @@ fn constructor_configuration_persists_and_drives_scheduling() {
     let mut rejected = EvmStateCommitter::new();
     rejected.buffer(id, result.state.clone());
     rejected.stage(Vec::new());
-    rejected.flush();
+    rejected.flush().unwrap();
     assert!(rejected.inner().is_empty());
 
     let mut accepted = EvmStateCommitter::new();
     accepted.buffer(id, result.state);
     accepted.stage(vec![id]);
-    accepted.flush();
+    accepted.flush().unwrap();
     let db = StateDb::new(accepted.into_inner());
     let mut planner = Planner::<_, u64>::new(db, Default::default());
     for (gas, expected) in [(123_456, true), (0, false)] {
