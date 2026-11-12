@@ -32,7 +32,8 @@ pub enum HaltReason {
 /// A job's execution result, commit verdict, receipt, and recorded state reads.
 pub struct JobResult<R, H = HaltReason> {
     pub id: ID,
-    pub result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
+    raw_result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
+    commit_result: Option<Result<ResultAndState<H>, BlockExecutionError>>,
     pub receipt: Option<R>,
     pub reads: StateReads, // Combined from opcode inspection and API handlers.
     pub sender: Address,
@@ -41,12 +42,70 @@ pub struct JobResult<R, H = HaltReason> {
     pub verdict: CommitVerdict<Key>, // Commit decision and conflict diagnostics
 }
 
+#[cfg(test)]
+#[path = "../tests/job_result_tests.rs"]
+mod tests;
+
 impl<R, H> JobResult<R, H> {
-    /// Builds the sender's fee and nonce changes and the recipients' fee credits.
-    pub fn result_and_state(&self) -> &Result<ResultAndState<H>, BlockExecutionError> {
-        if self.verdict.decision != CommitDecision::Rejected {
-            return &self.result_and_state;
+    /// Returns the execution result and commit state, or an error for a pending verdict.
+    pub fn result_and_state(&mut self) -> &Result<ResultAndState<H>, BlockExecutionError>
+    where
+        H: Clone,
+    {
+        if self.raw_result_and_state.is_err() {
+            return &self.raw_result_and_state;
         }
+
+        // If the commit decision is still pending, return an error indicating so.
+        if self.verdict.decision == CommitDecision::Pending {
+            self.commit_result = Some(Err(BlockExecutionError::msg(format!(
+                "job {:?} has a pending verdict",
+                self.id
+            ))));
+            return self.commit_result.as_ref().unwrap();
+        }
+
+        // If the commit decision is accepted, return the raw result and state as-is.
+        if self.verdict.decision == CommitDecision::Accepted {
+            return &self.raw_result_and_state;
+        }
+
+        let result = self.raw_result_and_state.as_ref().unwrap().result.clone();
+        self.commit_result = Some(
+            self.fee_nonce_only_state()
+                .map(|state| ResultAndState::new(result, state))
+                .map_err(BlockExecutionError::other),
+        );
+        self.commit_result.as_ref().unwrap()
+    }
+
+    pub(crate) fn gas_used(&self) -> Option<u64> {
+        self.raw_result_and_state
+            .as_ref()
+            .ok()
+            .map(|executed| executed.result.tx_gas_used())
+    }
+
+    pub(crate) fn state_for_commit(&mut self, state: EvmState) -> Result<EvmState, std::io::Error>
+    where
+        H: Clone,
+    {
+        if let Err(error) = &self.raw_result_and_state {
+            return Err(std::io::Error::other(format!(
+                "job {:?} execution failed: {error}",
+                self.id
+            )));
+        }
+        let accepted = self.verdict.decision == CommitDecision::Accepted;
+        let executed = self
+            .result_and_state()
+            .as_ref()
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(if accepted {
+            state
+        } else {
+            executed.state.clone()
+        })
     }
 
     pub fn new(
@@ -57,7 +116,8 @@ impl<R, H> JobResult<R, H> {
     ) -> Self {
         Self {
             id,
-            result_and_state,
+            raw_result_and_state: result_and_state,
+            commit_result: None,
             receipt,
             reads,
             sender: Address::ZERO,
@@ -72,7 +132,7 @@ impl<R, H> JobResult<R, H> {
     }
     /// Merges reads and state changes into checker records with the job's ID and gas.
     pub fn to_records(&self, id: ID) -> Vec<ExecutionOutput<Key, Tracked<Status, Status>>> {
-        let Ok(executed) = &self.result_and_state else {
+        let Ok(executed) = &self.raw_result_and_state else {
             return Vec::new();
         };
         let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
@@ -112,7 +172,7 @@ impl<R, H> JobResult<R, H> {
 
     /// Collects account records from the result state.
     fn account_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
-        let Ok(result_and_state) = &self.result_and_state else {
+        let Ok(result_and_state) = &self.raw_result_and_state else {
             return Vec::new();
         };
         let mut records = Vec::with_capacity(result_and_state.state.len());
@@ -157,7 +217,7 @@ impl<R, H> JobResult<R, H> {
 
     /// Collects storage records from the result state for access and bound checks.
     fn slot_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
-        let Ok(result_and_state) = &self.result_and_state else {
+        let Ok(result_and_state) = &self.raw_result_and_state else {
             return Vec::new();
         };
         let mut records = Vec::new();
@@ -239,7 +299,7 @@ impl<R, H> JobResult<R, H> {
     }
 
     pub(crate) fn fee_nonce_only_state(&self) -> Result<EvmState, std::io::Error> {
-        let Ok(executed) = &self.result_and_state else {
+        let Ok(executed) = &self.raw_result_and_state else {
             return Ok(EvmState::default());
         };
 

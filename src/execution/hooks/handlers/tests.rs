@@ -1808,7 +1808,7 @@ fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
         job: 4,
         ..ID::new(0, 7)
     };
-    let outcome = JobResult::<(), _>::new(id, Ok(result), None, evm.drain_reads());
+    let mut outcome = JobResult::<(), _>::new(id, Ok(result), None, evm.drain_reads());
     let records = outcome.to_records(outcome.id);
     assert!(!records.is_empty());
     assert!(records.iter().all(|record| {
@@ -1816,7 +1816,7 @@ fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
             && record.data.id == outcome.id.global
             && record.gas_used
                 == outcome
-                    .result_and_state
+                    .result_and_state()
                     .as_ref()
                     .unwrap()
                     .result

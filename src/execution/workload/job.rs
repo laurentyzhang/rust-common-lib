@@ -51,6 +51,8 @@ pub struct Job<Tx> {
     pub id: ID,
     pub sender: Sender,
     pub nonce: u64,
+    /// L1-originated OP deposit transaction.
+    pub is_l1_deposit: bool,
     pub callee: Option<u64>,
     /// Full destination address used for contract metadata storage.
     pub contract: Option<Address>,
@@ -165,6 +167,7 @@ impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
             id,
             sender: tx_env.caller().0.0,
             nonce: tx_env.nonce(),
+            is_l1_deposit: tx_env.tx_type() == DEPOSIT_TX_TYPE_ID,
             callee,
             contract: match tx_env.kind() {
                 TxKind::Call(address) => Some(address),

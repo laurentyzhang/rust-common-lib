@@ -43,8 +43,7 @@ impl ArcologyParaBlockExecutor {
     ) -> u64 {
         let mut cumulative = 0;
         for result in results {
-            if let Ok(executed) = result.result_and_state() {
-                let gas = executed.result.tx_gas_used();
+            if let Some(gas) = result.gas_used() {
                 if let Some(receipt) = &mut result.receipt {
                     cumulative += gas;
                     set_cumulative(receipt, cumulative);

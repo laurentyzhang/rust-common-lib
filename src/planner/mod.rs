@@ -4,7 +4,7 @@ pub mod scheduler;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::execution::workload::Block;
+use crate::execution::workload::{Block, Generation, JobSequence};
 use alloy_evm::{block::BlockExecutionError, revm::Database};
 use alloy_primitives::{Address, U256};
 
@@ -70,6 +70,7 @@ impl<DB: Database, K> Planner<DB, K> {
         Ok((false, peers))
     }
 
+    /// Schedules deposits first in block order, then schedules the remaining jobs.
     /// Loads each function's contract metadata before building the plan.
     pub fn plan<Tx>(
         &mut self,
@@ -101,10 +102,17 @@ impl<DB: Database, K> Planner<DB, K> {
             .map(|job| (job.id.global, job.contract.zip(job.callee)))
             .collect();
 
-        // Build the schedule based on the collected conflict information.
-        Ok(Block {
-            generations: self.scheduler.schedule(jobs),
-        })
+        let (mut deposits, other): (Vec<_>, Vec<_>) =
+            jobs.into_iter().partition(|job| job.is_l1_deposit);
+        let mut generations = self.scheduler.schedule(other);
+        if !deposits.is_empty() {
+            deposits.sort_by_key(|job| job.id.global);
+            generations.insert(0, Generation::new(vec![JobSequence::new(deposits)]));
+            for (index, generation) in generations.iter_mut().enumerate() {
+                generation.assign_ids(index as u64);
+            }
+        }
+        Ok(Block { generations })
     }
 }
 

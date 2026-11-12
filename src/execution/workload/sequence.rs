@@ -1,6 +1,6 @@
 use super::{Job, JobResult};
+use crate::planner::resolver::CommitDecision;
 use crate::planner::scheduler::sender::SenderNonceOffset;
-use crate::store::traits::Committer;
 use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
@@ -13,9 +13,7 @@ use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use alloy_primitives::Address;
 use std::io::Error;
 
-use crate::execution::{
-    ArcologyEvmFactory, EvmStateCommitter, ReadRecorder, StateDb, StateOutcome,
-};
+use crate::execution::{ArcologyEvmFactory, ReadRecorder, StateDb, StateOutcome};
 
 /// Transactions in one sequence execute in order; sequences in a generation may run in parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,11 +68,13 @@ impl<Tx> JobSequence<Tx> {
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let result = self.execute(factory, fallback, env, ctx)?;
-        Ok(StateOutcome {
-            raw: result.raw,
-            committed: result.committed.commit(fallback)?,
-        })
+        let mut result = self.execute(factory, fallback, env, ctx)?;
+        for raw in &mut result.raw {
+            if raw.gas_used().is_some() {
+                raw.verdict.decision = CommitDecision::Accepted;
+            }
+        }
+        result.finalize(fallback)
     }
 
     pub(super) fn execute<F, Fallback>(
@@ -86,7 +86,7 @@ impl<Tx> JobSequence<Tx> {
     ) -> Result<
         StateOutcome<
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-            EvmStateCommitter,
+            Vec<EvmState>,
         >,
         Error,
     >
@@ -97,11 +97,10 @@ impl<Tx> JobSequence<Tx> {
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut committer = EvmStateCommitter::new_sequential();
         if self.jobs.is_empty() {
             return Ok(StateOutcome {
                 raw: Vec::new(),
-                committed: committer,
+                committed: Vec::new(),
             });
         }
 
@@ -111,6 +110,7 @@ impl<Tx> JobSequence<Tx> {
         let mut seq_db = StateDb::with_fallback(initialized, Some(fallback));
 
         let mut raws = Vec::with_capacity(self.jobs.len());
+        let mut states = Vec::with_capacity(self.jobs.len());
         for job in self.jobs {
             let result = {
                 let job_db = StateDb::with_fallback(EvmState::default(), Some(&seq_db));
@@ -123,15 +123,13 @@ impl<Tx> JobSequence<Tx> {
                 job.run(&mut executor)
             };
 
-            if result.raw.result_and_state().is_ok() {
-                committer.buffer(result.raw.id, result.committed.clone());
-            }
-            seq_db.commit(result.committed);
+            seq_db.commit(result.committed.clone());
+            states.push(result.committed);
             raws.push(result.raw);
         }
         Ok(StateOutcome {
             raw: raws,
-            committed: committer,
+            committed: states,
         })
     }
 

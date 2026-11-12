@@ -45,6 +45,7 @@ fn job(id: u64, contract: Address, selector: u32) -> Job<()> {
         id: ID::new(0, id),
         sender: Address::with_last_byte(id as u8).into_array(),
         nonce: 0,
+        is_l1_deposit: false,
         callee: Some(callee(contract, selector)),
         contract: Some(contract),
         is_deferred: false,
@@ -70,6 +71,58 @@ fn record(id: u64, key: u64, remove: bool) -> ExecutionOutput<u64, Tracked<Statu
         accumulated_gas: 0,
         data: tracked.clone_with_states(snapshots),
     }
+}
+
+#[test]
+fn deposits_run_first_in_original_order() {
+    let contract = Address::repeat_byte(0x11);
+    let mut first = job(1, contract, 1);
+    let mut second = job(3, contract, 3);
+    first.is_l1_deposit = true;
+    second.is_l1_deposit = true;
+    let mut planner = Planner::<_, u64>::new(StateDb::default(), Default::default());
+    let plan = planner
+        .plan([second, job(2, contract, 2), first, job(0, contract, 0)])
+        .unwrap();
+
+    assert!(plan.generations.len() > 1);
+    let deposits = &plan.generations[0].sequences;
+    assert_eq!(deposits.len(), 1);
+    assert_eq!(
+        deposits[0]
+            .jobs
+            .iter()
+            .map(|job| job.id.global)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    for (generation, group) in plan.generations.iter().enumerate() {
+        for (sequence, jobs) in group.sequences.iter().enumerate() {
+            for (position, job) in jobs.jobs.iter().enumerate() {
+                assert_eq!(job.id.generation, generation as u64);
+                assert_eq!(job.id.sequence, sequence as u64);
+                assert_eq!(job.id.job, position as u64);
+                assert_eq!(job.is_l1_deposit, generation == 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn deposit_only_and_empty_plans() {
+    let mut planner = Planner::<_, u64>::new(StateDb::default(), Default::default());
+    assert!(
+        planner
+            .plan(Vec::<Job<()>>::new())
+            .unwrap()
+            .generations
+            .is_empty()
+    );
+    let mut deposit = job(5, Address::repeat_byte(0x11), 0);
+    deposit.is_l1_deposit = true;
+    let plan = planner.plan([deposit]).unwrap();
+    assert_eq!(plan.generations.len(), 1);
+    assert_eq!(plan.generations[0].sequences[0].jobs[0].id.generation, 0);
 }
 
 #[test]

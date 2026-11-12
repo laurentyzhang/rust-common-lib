@@ -57,16 +57,17 @@ fn job_returns_raw_and_committed_states() {
             crate::execution::ReadRecorder::new(job.id.global),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let StateOutcome { raw, committed } = job.run(&mut executor);
+        let StateOutcome { mut raw, committed } = job.run(&mut executor);
         if gas_limit == 100_000 {
-            let executed = raw.result_and_state.unwrap();
-            assert!(executed.result.is_success());
+            raw.verdict.decision = CommitDecision::Accepted;
             assert!(raw.receipt.is_some());
+            let executed = raw.result_and_state().as_ref().unwrap();
+            assert!(executed.result.is_success());
             assert!(executed.state[&caller].is_loaded_as_not_existing());
             assert!(!committed[&caller].is_loaded_as_not_existing());
             assert_eq!(committed[&caller].info.nonce, 1);
         } else {
-            assert!(raw.result_and_state.is_err());
+            assert!(raw.result_and_state().is_err());
             assert!(raw.receipt.is_none());
             assert!(raw.fee.is_zero());
             assert!(raw.fee_recipients.is_empty());
@@ -118,14 +119,14 @@ fn scheduled_jobs_expose_their_own_deferred_phase() {
             job
         })
         .collect();
-    let StateOutcome { raw: outcomes, .. } = JobSequence {
+    let StateOutcome { raw: mut outcomes, .. } = JobSequence {
         jobs,
         nonce_offsets: Vec::new(),
     }
     .run(&factory, &fallback, env, OpBlockExecutionCtx::default())
     .unwrap();
-    for (outcome, expected) in outcomes.iter().zip([true, false]) {
-        let executed = outcome.result_and_state.as_ref().unwrap();
+    for (outcome, expected) in outcomes.iter_mut().zip([true, false]) {
+        let executed = outcome.result_and_state().as_ref().unwrap();
         assert!(executed.result.is_success());
         assert_eq!(
             bool::abi_decode_validate(executed.result.output().unwrap()).unwrap(),
@@ -162,6 +163,54 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 }
 
 #[test]
+fn job_detects_deposit_transaction_type() {
+    let deposit = job(0, Address::repeat_byte(0x99));
+    assert!(deposit.is_l1_deposit);
+}
+
+#[test]
+fn single_sequence_passes_without_inter_sequence_checking() {
+    use crate::crdt::state::{Status, Tracked};
+    use crate::execution::output::ExecutionOutput;
+    use crate::planner::resolver::Checker;
+
+    struct NoInterSequenceCheck;
+    impl Checker<Key> for NoInterSequenceCheck {
+        fn import(&mut self, _: Vec<ExecutionOutput<Key, Tracked<Status, Status>>>) {
+            panic!("single sequence should not import inter-sequence records");
+        }
+
+        fn check(&mut self) -> Vec<CommitVerdict<Key>> {
+            panic!("single sequence should not run inter-sequence checking");
+        }
+    }
+
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
+    );
+    let mut env: EvmEnv<OpSpecId> = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::BEDROCK;
+    env.block_env.gas_limit = 1_000_000;
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let generation = Generation {
+        sequences: vec![JobSequence {
+            jobs: vec![job(1, Address::repeat_byte(0x99))],
+            nonce_offsets: Vec::new(),
+        }],
+    };
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let outcome = generation
+        .run(&factory, &config, &pool, &mut NoInterSequenceCheck, &StateDb::default())
+        .unwrap();
+    assert_eq!(outcome.raw[0].verdict.decision, CommitDecision::Accepted);
+}
+
+#[test]
 fn sequence_nonce_offsets_are_local_and_checked() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -194,10 +243,10 @@ fn sequence_nonce_offsets_are_local_and_checked() {
         );
         if let Some(expected) = expected {
             let StateOutcome {
-                raw: outcomes,
+                raw: mut outcomes,
                 committed,
             } = result.unwrap();
-            let executed = outcomes[0].result_and_state.as_ref().unwrap();
+            let executed = outcomes[0].result_and_state().as_ref().unwrap();
             assert!(executed.result.is_success());
             assert_eq!(executed.state[&caller].info.nonce, expected);
             // Speculative offsets are not nonce changes made by this sequence.
@@ -258,7 +307,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect(),
         };
         let StateOutcome {
-            raw: outcomes,
+            raw: mut outcomes,
             committed: committed_state,
         } = generation
             .run(&factory, &config, &pool, &mut checker, &persistent)
@@ -271,9 +320,9 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect::<Vec<_>>(),
             order
         );
-        assert!(outcomes.iter().all(|result| {
+        assert!(outcomes.iter_mut().all(|result| {
             result
-                .result_and_state
+                .result_and_state()
                 .as_ref()
                 .unwrap()
                 .result
@@ -307,7 +356,11 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             .verdict;
         assert_eq!(rejected.decision, CommitDecision::Rejected);
         let CommitVerdict { conflicts, .. } = rejected;
-        assert!(conflicts.iter().any(|(peers, _)| peers.contains(&job(1, contract).id)));
+        assert!(
+            conflicts
+                .iter()
+                .any(|(peers, _)| peers.contains(&job(1, contract).id))
+        );
         assert!(
             conflicts
                 .iter()
@@ -323,7 +376,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
 
         let fallback = StateDb::with_fallback(committed_state, Some(&persistent));
         let StateOutcome {
-            raw: outcomes,
+            raw: mut outcomes,
             committed: committed_state,
         } = generation
             .run(&factory, &config, &pool, &mut checker, &fallback)
@@ -338,7 +391,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
         assert!(pairs(&outcomes).is_empty());
         assert_eq!(
-            outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
+            outcomes[0].result_and_state().as_ref().unwrap().state[&contract].storage[&U256::ZERO]
                 .present_value(),
             U256::from(2)
         );
@@ -480,7 +533,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
         .unwrap();
     let fallback = StateDb::default();
     let mut planner = Planner::new(StateDb::default(), Default::default());
-    let StateOutcome { raw: outcomes, .. } = ArcologyParaBlockExecutor::execute_block(
+    let StateOutcome { raw: mut outcomes, .. } = ArcologyParaBlockExecutor::execute_block(
         &factory,
         &config,
         &pool,
@@ -494,7 +547,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
     assert_eq!(outcomes[0].id, id);
     assert!(
         outcomes[0]
-            .result_and_state
+            .result_and_state()
             .as_ref()
             .unwrap()
             .result
@@ -507,7 +560,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
 }
 
 #[test]
-fn later_generations_read_committed_storage_and_sender_nonces() {
+fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
     use crate::planner::meta::property::Property;
     use alloy_evm::revm::state::EvmStorageSlot;
 
@@ -533,7 +586,7 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
         code: Some(code),
         ..Default::default()
     });
-    // A repeated deferrable call runs in the following generation.
+    // Deposits remain in one ordered sequence even when the callee is deferrable.
     account.storage.insert(
         Property::DeferredGas.slot(contract, callee, 0),
         EvmStorageSlot::new(U256::from(1), Default::default()),
@@ -552,10 +605,10 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
             job.id = ID::new(42, index as u64);
         }
         let block = planner.plan(jobs).unwrap();
-        assert_eq!(block.generations.len(), 2);
+        assert_eq!(block.generations.len(), 1);
         let cumulative = std::cell::RefCell::new(Vec::new());
         let StateOutcome {
-            raw: outcomes,
+            raw: mut outcomes,
             committed,
         } = block
             .run(
@@ -574,10 +627,11 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
         );
         assert_eq!(committed[&caller].info.nonce, 2);
         let mut expected_gas = 0;
-        for (index, outcome) in outcomes.iter().enumerate() {
+        for (index, outcome) in outcomes.iter_mut().enumerate() {
             assert_eq!(outcome.id.block, 42);
-            assert_eq!(outcome.id.generation, index as u64);
-            let executed = outcome.result_and_state.as_ref().unwrap();
+            assert_eq!(outcome.id.generation, 0);
+            assert_eq!(outcome.id.job, index as u64);
+            let executed = outcome.result_and_state().as_ref().unwrap();
             expected_gas += executed.result.tx_gas_used();
             assert_eq!(cumulative.borrow()[index], expected_gas);
             assert!(executed.result.is_success());
@@ -602,7 +656,7 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
 }
 
 #[test]
-fn execution_errors_remain_pending_without_committed_state() {
+fn execution_errors_are_reported_without_committing_state() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
         OpChainHardforks::op_mainnet(),
@@ -640,19 +694,6 @@ fn execution_errors_remain_pending_without_committed_state() {
         .build()
         .unwrap();
     let mut checker = ConflictDetector::new();
-    let StateOutcome {
-        raw: outcomes,
-        committed: committed_state,
-    } = generation
-        .run(&factory, &config, &pool, &mut checker, &StateDb::default())
-        .unwrap();
-    assert!(outcomes[0].result_and_state.is_err());
-    assert_eq!(outcomes[0].verdict.decision, CommitDecision::Pending);
-    assert!(outcomes[0].receipt.is_none());
-    assert!(
-        outcomes
-            .iter()
-            .all(|raw| raw.verdict.decision == CommitDecision::Pending)
-    );
-    assert!(committed_state.is_empty());
+    let result = generation.run(&factory, &config, &pool, &mut checker, &StateDb::default());
+    assert!(matches!(result, Err(error) if error.to_string().contains("execution failed")));
 }

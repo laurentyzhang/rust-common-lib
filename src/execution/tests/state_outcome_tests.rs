@@ -1,6 +1,5 @@
-use crate::execution::{EvmStateCommitter, JobResult, StateOutcome, workload::ID};
+use crate::execution::{JobResult, StateOutcome, workload::ID};
 use crate::planner::resolver::{CommitDecision, CommitVerdict, Reason};
-use crate::store::traits::Committer;
 use alloy_evm::revm::{
     context_interface::result::{
         ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason,
@@ -36,29 +35,23 @@ fn new_job_starts_pending() {
 }
 
 #[test]
-fn pending_job_keeps_buffered_state() {
+fn pending_job_returns_an_error() {
     let id = ID::new(0, 0);
     let address = Address::with_last_byte(1);
     let mut account = Account::default().with_touched_mark();
     account.info.nonce = 1;
-    let mut committer = EvmStateCommitter::new_parallel();
-    committer.buffer(id, EvmState::from_iter([(address, account)]));
-
-    let outcome = StateOutcome {
+    let result = StateOutcome {
         raw: vec![raw_job(id)],
-        committed: committer,
+        committed: vec![EvmState::from_iter([(address, account)])],
     }
-    .finalize(&crate::execution::StateDb::default())
-    .unwrap();
-
-    assert_eq!(outcome.raw[0].verdict.decision, CommitDecision::Pending);
-    assert_eq!(outcome.committed[&address].info.nonce, 1);
+    .finalize(&crate::execution::StateDb::default());
+    assert!(matches!(result, Err(error) if error.to_string().contains("pending verdict")));
 }
 
 #[test]
 fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     let mut raw = Vec::new();
-    let mut committer = EvmStateCommitter::new_parallel();
+    let mut states = Vec::new();
     let ids = [ID::new(0, 0), ID::new(0, 1), ID::new(0, 2)];
     for (index, id) in ids.into_iter().enumerate() {
         raw.push(raw_job(id));
@@ -67,7 +60,7 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
             account.info.nonce = index as u64 + 1;
             account
         })]);
-        committer.buffer(id, state);
+        states.push(state);
     }
     let verdicts = [
         CommitVerdict {
@@ -89,9 +82,9 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     for (raw, verdict) in raw.iter_mut().zip(&verdicts) {
         raw.verdict = verdict.clone();
     }
-    let outcome = StateOutcome {
+    let mut outcome = StateOutcome {
         raw,
-        committed: committer,
+        committed: states,
     }
     .finalize(&crate::execution::StateDb::default())
     .unwrap();
@@ -99,8 +92,8 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     assert_eq!(outcome.committed.len(), 1);
     assert_eq!(outcome.committed[&Address::with_last_byte(1)].info.nonce, 1);
     assert_eq!(outcome.raw.len(), 3);
-    for (raw, verdict) in outcome.raw.iter().zip(&verdicts) {
+    for (raw, verdict) in outcome.raw.iter_mut().zip(&verdicts) {
         assert_eq!(&raw.verdict, verdict);
-        assert!(raw.result_and_state.as_ref().unwrap().state.is_empty());
+        assert!(raw.result_and_state().as_ref().unwrap().state.is_empty());
     }
 }

@@ -61,6 +61,18 @@ fn job(
     )
 }
 
+#[test]
+fn job_detects_regular_transaction_type() {
+    let regular = job(
+        0,
+        Address::repeat_byte(0x11),
+        TxKind::Create,
+        0,
+        Bytes::new(),
+    );
+    assert!(!regular.is_l1_deposit);
+}
+
 fn factory() -> ArcologyBlockExecutorFactory<OpAlloyReceiptBuilder, OpChainHardforks> {
     ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -89,7 +101,7 @@ fn account(balance: u64, code: Bytes) -> Account {
     })
 }
 
-fn reject<R, H>(
+fn reject<R, H: Clone>(
     mut outcome: StateOutcome<JobResult<R, H>, EvmState>,
     fallback: &impl DatabaseRef,
 ) -> EvmState {
@@ -98,11 +110,9 @@ fn reject<R, H>(
         decision: CommitDecision::Rejected,
         conflicts: Vec::new(),
     };
-    let mut committed = EvmStateCommitter::new_parallel();
-    committed.buffer(outcome.raw.id, outcome.committed);
     StateOutcome {
         raw: vec![outcome.raw],
-        committed,
+        committed: vec![outcome.committed],
     }
     .finalize(fallback)
     .unwrap()
@@ -166,8 +176,8 @@ fn parallel_conflicts_keep_every_fee_and_nonce() {
             .unwrap();
         let mut gas = 0;
         let mut accepted = 0;
-        for raw in outcome.raw {
-            let used = raw.result_and_state.as_ref().unwrap().result.tx_gas_used();
+        for mut raw in outcome.raw {
+            let used = raw.result_and_state().as_ref().unwrap().result.tx_gas_used();
             gas += used;
             let is_accepted = raw.verdict.decision == CommitDecision::Accepted;
             accepted += u64::from(is_accepted);
@@ -215,7 +225,7 @@ fn rejected_creation_and_evm_revert_keep_their_nonce_and_fee() {
             ReadRecorder::new(0),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let outcome = job(
+        let mut outcome = job(
             0,
             caller,
             to,
@@ -223,7 +233,8 @@ fn rejected_creation_and_evm_revert_keep_their_nonce_and_fee() {
             Bytes::from_static(&[0x60, 1, 0x60, 0, 0x53, 0x60, 1, 0x60, 0, 0xf3]),
         )
         .run(&mut executor);
-        let executed = outcome.raw.result_and_state.as_ref().unwrap();
+        outcome.raw.verdict.decision = CommitDecision::Accepted;
+        let executed = outcome.raw.result_and_state().as_ref().unwrap();
         assert_eq!(executed.result.is_success(), to == TxKind::Create);
         let fee = outcome.raw.fee;
         assert!(outcome.raw.receipt.is_some());
@@ -250,7 +261,7 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
             ReadRecorder::new(id as u64),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let outcome = job(
+        let mut outcome = job(
             id as u64,
             caller,
             TxKind::Call(callers[1]),
@@ -258,10 +269,11 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
             Bytes::new(),
         )
         .run(&mut executor);
+        outcome.raw.verdict.decision = CommitDecision::Accepted;
         assert!(
             outcome
                 .raw
-                .result_and_state
+                .result_and_state()
                 .as_ref()
                 .unwrap()
                 .result
