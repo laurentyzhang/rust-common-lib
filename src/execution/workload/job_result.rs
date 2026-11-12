@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use alloy_evm::block::BlockExecutionError;
 use alloy_evm::revm::context_interface::result::ResultAndState;
+use alloy_evm::revm::state::{Account, EvmState};
 use op_revm::OpHaltReason as EvmHaltReason;
 
 use super::ID;
@@ -10,6 +11,7 @@ use crate::execution::{
     Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, StateReads, key::Key,
     output::ExecutionOutput,
 };
+
 use crate::{
     crdt::state::{
         DeltaOp, Tracked,
@@ -17,7 +19,7 @@ use crate::{
         status::{Status, Tag},
         value::ValueSnapshots,
     },
-    planner::resolver::CommitVerdict,
+    planner::resolver::{CommitDecision, CommitVerdict},
 };
 use alloy_primitives::{Address, I256, U256};
 
@@ -36,11 +38,17 @@ pub struct JobResult<R, H = HaltReason> {
     pub sender: Address,
     pub fee: U256,
     pub fee_recipients: Vec<(Address, U256)>,
-    /// Commit decision and conflict diagnostics, assigned after generation conflict selection.
-    pub verdict: Option<CommitVerdict<Key>>,
+    pub verdict: CommitVerdict<Key>, // Commit decision and conflict diagnostics
 }
 
 impl<R, H> JobResult<R, H> {
+    /// Builds the sender's fee and nonce changes and the recipients' fee credits.
+    pub fn result_and_state(&self) -> &Result<ResultAndState<H>, BlockExecutionError> {
+        if self.verdict.decision != CommitDecision::Rejected {
+            return &self.result_and_state;
+        }
+    }
+
     pub fn new(
         id: ID,
         result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
@@ -55,7 +63,11 @@ impl<R, H> JobResult<R, H> {
             sender: Address::ZERO,
             fee: U256::ZERO,
             fee_recipients: Vec::new(),
-            verdict: None,
+            verdict: CommitVerdict {
+                id,
+                decision: CommitDecision::Pending,
+                conflicts: Vec::new(),
+            },
         }
     }
     /// Merges reads and state changes into checker records with the job's ID and gas.
@@ -224,5 +236,46 @@ impl<R, H> JobResult<R, H> {
         }
 
         records
+    }
+
+    pub(crate) fn fee_nonce_only_state(&self) -> Result<EvmState, std::io::Error> {
+        let Ok(executed) = &self.result_and_state else {
+            return Ok(EvmState::default());
+        };
+
+        let mut state = EvmState::default();
+        // Start from the sender's original account, keeping only the fee and nonce.
+        if let Some(sender) = executed.state.get(&self.sender) {
+            let mut account = Account::from(sender.original_info()).with_touched_mark();
+            account.info.code = None;
+            account.info.nonce = sender.info.nonce;
+            account.info.balance = account.info.balance.checked_sub(self.fee).ok_or_else(|| {
+                std::io::Error::other("insufficient balance for rejected transaction fee")
+            })?;
+            state.insert(self.sender, account);
+        }
+
+        // Transaction may contain multiple transfer recipients for (OP only fees)
+        // Credit each recipient on its original account, or on the sender above.
+        for &(recipient, amount) in &self.fee_recipients {
+            if amount.is_zero() {
+                continue;
+            }
+            let original = executed
+                .state
+                .get(&recipient)
+                .expect("a paid fee recipient is present in the executed state")
+                .original_info();
+            let account = state
+                .entry(recipient)
+                .or_insert_with(|| Account::from(original).with_touched_mark());
+            account.info.code = None;
+            account.info.balance = account
+                .info
+                .balance
+                .checked_add(amount)
+                .ok_or_else(|| std::io::Error::other("fee recipient balance overflow"))?;
+        }
+        Ok(state)
     }
 }

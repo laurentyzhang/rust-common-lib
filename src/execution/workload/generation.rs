@@ -85,7 +85,7 @@ impl<Tx> Generation<Tx> {
         for mut sequence in sequences {
             for raw in &mut sequence.raw {
                 if let Ok(index) = verdicts.binary_search_by_key(&raw.id, |verdict| verdict.id) {
-                    raw.verdict = Some(verdicts[index].clone());
+                    raw.verdict = verdicts[index].clone();
                 }
             }
             let outcome = sequence.finalize(fallback)?;

@@ -1,5 +1,5 @@
 use crate::execution::{EvmStateCommitter, JobResult, StateOutcome, workload::ID};
-use crate::planner::resolver::{CommitVerdict, Reason};
+use crate::planner::resolver::{CommitDecision, CommitVerdict, Reason};
 use crate::store::traits::Committer;
 use alloy_evm::revm::{
     context_interface::result::{
@@ -27,9 +27,38 @@ fn raw_job(id: ID) -> JobResult<()> {
 }
 
 #[test]
+fn new_job_starts_pending() {
+    let id = ID::new(0, 0);
+    let job = raw_job(id);
+    assert_eq!(job.verdict.id, id);
+    assert_eq!(job.verdict.decision, CommitDecision::Pending);
+    assert!(job.verdict.conflicts.is_empty());
+}
+
+#[test]
+fn pending_job_keeps_buffered_state() {
+    let id = ID::new(0, 0);
+    let address = Address::with_last_byte(1);
+    let mut account = Account::default().with_touched_mark();
+    account.info.nonce = 1;
+    let mut committer = EvmStateCommitter::new_parallel();
+    committer.buffer(id, EvmState::from_iter([(address, account)]));
+
+    let outcome = StateOutcome {
+        raw: vec![raw_job(id)],
+        committed: committer,
+    }
+    .finalize(&crate::execution::StateDb::default())
+    .unwrap();
+
+    assert_eq!(outcome.raw[0].verdict.decision, CommitDecision::Pending);
+    assert_eq!(outcome.committed[&address].info.nonce, 1);
+}
+
+#[test]
 fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     let mut raw = Vec::new();
-    let mut committer = EvmStateCommitter::new();
+    let mut committer = EvmStateCommitter::new_parallel();
     let ids = [ID::new(0, 0), ID::new(0, 1), ID::new(0, 2)];
     for (index, id) in ids.into_iter().enumerate() {
         raw.push(raw_job(id));
@@ -43,25 +72,22 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     let verdicts = [
         CommitVerdict {
             id: ids[0],
-            accepted: true,
-            peers: Vec::new(),
-            reasons: Vec::new(),
+            decision: CommitDecision::Accepted,
+            conflicts: Vec::new(),
         },
         CommitVerdict {
             id: ids[1],
-            accepted: false,
-            peers: vec![ID::new(0, 3)],
-            reasons: Vec::new(),
+            decision: CommitDecision::Rejected,
+            conflicts: vec![(vec![ID::new(0, 3)], Reason::None)],
         },
         CommitVerdict {
             id: ids[2],
-            accepted: false,
-            peers: Vec::new(),
-            reasons: vec![(None, Reason::Dependency(ids[1]))],
+            decision: CommitDecision::Rejected,
+            conflicts: vec![(Vec::new(), Reason::Dependency(ids[1]))],
         },
     ];
     for (raw, verdict) in raw.iter_mut().zip(&verdicts) {
-        raw.verdict = Some(verdict.clone());
+        raw.verdict = verdict.clone();
     }
     let outcome = StateOutcome {
         raw,
@@ -74,7 +100,7 @@ fn finalization_filters_committed_job_states_without_rebuilding_from_raw() {
     assert_eq!(outcome.committed[&Address::with_last_byte(1)].info.nonce, 1);
     assert_eq!(outcome.raw.len(), 3);
     for (raw, verdict) in outcome.raw.iter().zip(&verdicts) {
-        assert_eq!(raw.verdict.as_ref(), Some(verdict));
+        assert_eq!(&raw.verdict, verdict);
         assert!(raw.result_and_state.as_ref().unwrap().state.is_empty());
     }
 }

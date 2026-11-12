@@ -8,8 +8,8 @@ use crate::{
     execution::output::ExecutionOutput,
     planner::{
         resolver::{
-            AccessConflict, Checker, CommitVerdict, ConflictDetector, NumericError, Reason,
-            accepted_ids, rejected_ids,
+            AccessConflict, Checker, CommitDecision, CommitVerdict, ConflictDetector, NumericError,
+            Reason, accepted_ids, rejected_ids,
         },
         scheduler::ID,
     },
@@ -22,8 +22,9 @@ fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
         .iter()
         .flat_map(|verdict| {
             verdict
-                .peers
+                .conflicts
                 .iter()
+                .flat_map(|(peers, _)| peers)
                 .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
         })
         .collect()
@@ -140,13 +141,14 @@ fn reports_every_conflicting_pair() {
     );
     assert_eq!(
         report[1]
-            .peers
+            .conflicts
             .iter()
+            .flat_map(|(peers, _)| peers)
             .map(|id| id.global)
-            .collect::<Vec<_>>(),
-        vec![1, 3]
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([1, 3])
     );
-    assert!(!report[1].reasons.is_empty());
+    assert!(!report[1].conflicts.is_empty());
 }
 
 #[test]
@@ -313,30 +315,38 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
                 .collect::<Vec<_>>(),
             vec![20, 30]
         );
-        assert!(!result[2].accepted);
-        let CommitVerdict { peers, reasons, .. } = &result[2];
+        assert_eq!(result[2].decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = &result[2];
         assert_eq!(
-            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            conflicts
+                .iter()
+                .flat_map(|(peers, _)| peers.iter())
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
             vec![5]
         );
         assert!(matches!(
-            reasons.as_slice(),
+            conflicts.as_slice(),
             [(
-                Some(20),
-                Reason::NumericError(NumericError::AboveUpperLimit(_))
+                _,
+                Reason::NumericError(20, NumericError::AboveUpperLimit(_))
             )]
         ));
-        assert!(!result[3].accepted);
-        let CommitVerdict { peers, reasons, .. } = &result[3];
+        assert_eq!(result[3].decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = &result[3];
         assert_eq!(
-            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            conflicts
+                .iter()
+                .flat_map(|(peers, _)| peers.iter())
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
             vec![11]
         );
         assert!(matches!(
-            reasons.as_slice(),
+            conflicts.as_slice(),
             [(
-                Some(10),
-                Reason::AccessConflict(AccessConflict::RemoveConflict(_))
+                _,
+                Reason::AccessConflict(10, AccessConflict::RemoveConflict(_))
             )]
         ));
     }
@@ -393,21 +403,24 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
             .collect::<Vec<_>>(),
         vec![1]
     );
-    assert!(!result[1].accepted);
-    let CommitVerdict { peers, reasons, .. } = &result[1];
+    assert_eq!(result[1].decision, CommitDecision::Rejected);
+    let CommitVerdict { conflicts, .. } = &result[1];
     assert_eq!(
-        peers.iter().map(|id| id.global).collect::<Vec<_>>(),
-        vec![1]
+        conflicts
+            .iter()
+            .flat_map(|(peers, _)| peers.iter())
+            .map(|id| id.global)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([1])
     );
-    assert_eq!(reasons.len(), 2);
-    assert!(reasons.iter().all(|(key, _)| *key == Some(7)));
-    assert!(reasons.iter().any(|(_, reason)| matches!(
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.iter().any(|(_, reason)| matches!(
         reason,
-        Reason::AccessConflict(AccessConflict::ReadConflict(_))
+        Reason::AccessConflict(7, AccessConflict::ReadConflict(_))
     )));
-    assert!(reasons.iter().any(|(_, reason)| matches!(
+    assert!(conflicts.iter().any(|(_, reason)| matches!(
         reason,
-        Reason::NumericError(NumericError::AboveUpperLimit(_))
+        Reason::NumericError(7, NumericError::AboveUpperLimit(_))
     )));
 }
 
@@ -459,17 +472,21 @@ fn numeric_reads_remain_visible_to_access_detection() {
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        assert!(!result[1].accepted);
-        let CommitVerdict { peers, reasons, .. } = &result[1];
+        assert_eq!(result[1].decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = &result[1];
         assert_eq!(
-            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
+            conflicts
+                .iter()
+                .flat_map(|(peers, _)| peers.iter())
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
             vec![1]
         );
         assert!(matches!(
-            reasons.as_slice(),
+            conflicts.as_slice(),
             [(
-                Some(7),
-                Reason::AccessConflict(AccessConflict::ReadConflict(_))
+                _,
+                Reason::AccessConflict(7, AccessConflict::ReadConflict(_))
             )]
         ));
     }
@@ -537,18 +554,17 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
                 .collect::<Vec<_>>(),
             vec![2]
         );
-        assert!(!result[1].accepted);
-        let CommitVerdict { reasons, .. } = &result[1];
-        assert_eq!(reasons[0].0, Some(7));
+        assert_eq!(result[1].decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = &result[1];
         if underflow {
             assert!(matches!(
-                reasons[0].1,
-                Reason::NumericError(NumericError::Underflow(_))
+                conflicts[0].1,
+                Reason::NumericError(7, NumericError::Underflow(_))
             ));
         } else {
             assert!(matches!(
-                reasons[0].1,
-                Reason::NumericError(NumericError::Overflow(_))
+                conflicts[0].1,
+                Reason::NumericError(7, NumericError::Overflow(_))
             ));
         }
     }
@@ -571,7 +587,11 @@ fn accepts_conflict_free_jobs_across_imports() {
             .collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
-    assert!(result.iter().all(|verdict| verdict.accepted));
+    assert!(
+        result
+            .iter()
+            .all(|verdict| verdict.decision == CommitDecision::Accepted)
+    );
     assert!(
         rejected_ids(&result)
             .into_iter()
@@ -657,17 +677,31 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
                 .collect::<Vec<_>>(),
             vec![1]
         );
-        assert!(!result[0].accepted);
-        let CommitVerdict { peers, reasons, .. } = &result[0];
+        assert_eq!(result[0].decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = &result[0];
         assert_eq!(
-            peers.iter().map(|id| id.global).collect::<Vec<_>>(),
-            vec![2, 3]
+            conflicts
+                .iter()
+                .flat_map(|(peers, _)| peers.iter())
+                .map(|id| id.global)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([2, 3])
         );
         assert_eq!(
-            reasons.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
-            vec![Some(7), Some(8)]
+            conflicts
+                .iter()
+                .filter_map(|(_, reason)| match reason {
+                    Reason::AccessConflict(key, _) | Reason::NumericError(key, _) => Some(*key),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([7, 8])
         );
-        assert!(result[1..].iter().all(|verdict| verdict.accepted));
+        assert!(
+            result[1..]
+                .iter()
+                .all(|verdict| verdict.decision == CommitDecision::Accepted)
+        );
         assert!(checker.check().is_empty());
     }
 }
@@ -693,19 +727,27 @@ fn suffix_rejections_identify_the_earlier_rejected_job() {
     detector.import(records);
     let result = detector.check();
     assert_eq!(rejected_ids(&result), vec![rejected, dependent]);
-    assert!(!result[1].accepted);
-    assert_eq!(result[1].peers, vec![peer]);
-    assert_eq!(result[1].reasons.len(), 1);
-    assert_eq!(result[1].reasons[0].0, Some(7));
-    assert!(!result[2].accepted);
+    assert_eq!(result[1].decision, CommitDecision::Rejected);
+    assert!(
+        result[1]
+            .conflicts
+            .iter()
+            .any(|(peers, reason)| peers.contains(&peer)
+                && matches!(reason, Reason::AccessConflict(7, _)))
+    );
+    assert_eq!(result[2].decision, CommitDecision::Rejected);
     assert!(
         result[2]
-            .reasons
-            .contains(&(None, Reason::Dependency(rejected)))
+            .conflicts
+            .contains(&(Vec::new(), Reason::Dependency(rejected)))
     );
-    assert_eq!(result[2].peers, vec![dependent_peer]);
-    assert_eq!(result[2].reasons.len(), 2);
-    assert_eq!(result[2].reasons[1].0, Some(8));
+    assert!(
+        result[2]
+            .conflicts
+            .iter()
+            .any(|(peers, reason)| peers.contains(&dependent_peer)
+                && matches!(reason, Reason::AccessConflict(8, _)))
+    );
     assert_eq!(
         pairs(&result),
         BTreeSet::from([(rejected, peer), (dependent, dependent_peer)])

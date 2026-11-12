@@ -5,7 +5,7 @@ mod selection;
 pub mod verdict;
 
 pub use detector::ConflictDetector;
-pub use verdict::{CommitVerdict, accepted_ids, rejected_ids};
+pub use verdict::{CommitDecision, CommitVerdict, accepted_ids, rejected_ids};
 
 use crate::crdt::state::{Status, Tracked};
 use crate::execution::output::ExecutionOutput;
@@ -42,19 +42,17 @@ impl From<crate::crdt::state::NumericError> for NumericError {
     }
 }
 
-/// Converts signed, unsigned, and state compatibility errors into numeric rejections.
-impl From<crate::crdt::state::CrdtError> for Reason {
+/// Converts signed, unsigned, and state compatibility errors into numeric errors.
+impl From<crate::crdt::state::CrdtError> for NumericError {
     fn from(error: crate::crdt::state::CrdtError) -> Self {
-        let error = match error {
+        match error {
             crate::crdt::state::CrdtError::I256(error)
             | crate::crdt::state::CrdtError::U256(error) => error.into(),
             crate::crdt::state::CrdtError::CannotAddDeltaToMissingValue => {
-                NumericError::CannotAddDeltaToMissingValue
+                Self::CannotAddDeltaToMissingValue
             }
-            crate::crdt::state::CrdtError::TypeMismatch => NumericError::TypeMismatch,
-        };
-
-        Self::NumericError(error)
+            crate::crdt::state::CrdtError::TypeMismatch => Self::TypeMismatch,
+        }
     }
 }
 
@@ -71,9 +69,9 @@ pub enum AccessConflict {
 
 /// Describes an access conflict, numeric constraint failure, or rejected dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Reason {
-    NumericError(NumericError),
-    AccessConflict(AccessConflict),
+pub enum Reason<K = ()> {
+    NumericError(K, NumericError),
+    AccessConflict(K, AccessConflict),
     /// A rejected job that this job depends on.
     Dependency(ID),
     None,
@@ -86,8 +84,8 @@ pub struct TransactionConflictReport {
     pub access_conflicts: Vec<AccessConflict>,
 }
 
-// Checker diagnostics retain the affected job, key, peers, and reason until selection.
-type Diagnostic<K> = (ID, K, Vec<ID>, Reason);
+// Checker diagnostics retain the affected job, peers, and keyed reason until selection.
+type Diagnostic<K> = (ID, Vec<ID>, Reason<K>);
 
 /// Collects execution records and returns complete per-job verdicts for a generation.
 pub trait Checker<K> {

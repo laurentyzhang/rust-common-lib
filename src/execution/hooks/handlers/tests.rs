@@ -1980,13 +1980,13 @@ fn constructor_configuration_persists_and_drives_scheduling() {
     );
     assert_ne!(result.state[&host].info.code_hash, KECCAK256_EMPTY);
     let id = ID::new(0, 7);
-    let mut rejected = EvmStateCommitter::new();
+    let mut rejected = EvmStateCommitter::new_parallel();
     rejected.buffer(id, result.state.clone());
     rejected.stage(Vec::new());
     rejected.flush().unwrap();
     assert!(rejected.inner().is_empty());
 
-    let mut accepted = EvmStateCommitter::new();
+    let mut accepted = EvmStateCommitter::new_parallel();
     accepted.buffer(id, result.state);
     accepted.stage(vec![id]);
     accepted.flush().unwrap();

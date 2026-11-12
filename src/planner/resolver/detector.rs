@@ -1,5 +1,5 @@
 use super::{
-    Checker, CommitVerdict, Reason,
+    Checker, CommitDecision, CommitVerdict, Reason,
     checkers::{access::AccessChecker, sum::SumChecker},
     selection,
 };
@@ -78,8 +78,18 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         self.u256_checker.import(u256_records);
     }
 
-    /// Checks all records accumulated by imports, consuming the current batch.
+    /// Checks imported records and returns one commit verdict per recorded job.
+    ///
+    /// Access and numeric-bound checks run independently. Their diagnostics are
+    /// combined with execution-order and gas information to select accepted
+    /// sequence prefixes. A numeric error requires rejection; an access conflict
+    /// is resolved by discarding one of the conflicting sequence suffixes.
+    ///
+    /// Each verdict includes its job's diagnostics and conflict peers, even when
+    /// the job is accepted. Rejected dependent jobs identify the first rejection
+    /// in their sequence. Checking consumes the imported batch.
     fn check(&mut self) -> Vec<CommitVerdict<K>> {
+        // Check general accesses and signed/unsigned numeric bounds concurrently.
         let ((mut diagnostics, pairs), ((i256, _), (u256, _))) = rayon::join(
             || self.access_checker.check(),
             || {
@@ -90,31 +100,41 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             },
         );
 
+        // Keep all diagnostic types, and group jobs into ordered sequences with
+        // cumulative gas so selection can compare the cost of rejected suffixes.
         diagnostics.extend(i256.into_iter().chain(u256));
         let sequences = self.accumulate();
 
+        // Numeric failures are mandatory rejections; access pairs are resolved
+        // by selecting compatible prefixes from the affected sequences.
         let accepted = selection::select(
             &sequences,
             &pairs,
-            diagnostics.iter().filter_map(|(id, _, _, reason)| {
-                matches!(reason, Reason::NumericError(_)).then_some(*id)
+            diagnostics.iter().filter_map(|(id, _, reason)| {
+                matches!(reason, Reason::NumericError(_, _)).then_some(*id)
             }),
         );
 
-        // The first rejected job explains the discarded suffix of its sequence.
+        // Create a verdict for every recorded job. The first rejection in each
+        // sequence explains why subsequent jobs in that sequence were rejected.
         let mut verdicts = BTreeMap::new();
         for sequence in &sequences {
             let mut dependency = None;
             for &(id, _) in sequence {
                 let mut verdict = CommitVerdict {
                     id,
-                    accepted: accepted.contains(&id),
-                    peers: Vec::new(),
-                    reasons: Vec::new(),
+                    decision: if accepted.contains(&id) {
+                        CommitDecision::Accepted
+                    } else {
+                        CommitDecision::Rejected
+                    },
+                    conflicts: Vec::new(),
                 };
-                if !verdict.accepted {
+                if verdict.decision == CommitDecision::Rejected {
                     if let Some(cause) = dependency {
-                        verdict.reasons.push((None, Reason::Dependency(cause)));
+                        verdict
+                            .conflicts
+                            .push((Vec::new(), Reason::Dependency(cause)));
                     } else {
                         dependency = Some(id);
                     }
@@ -123,30 +143,40 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             }
         }
 
-        for (id, key, related, reason) in diagnostics {
-            let key = Some(key);
-            for peer in related {
-                verdicts.get_mut(&peer).unwrap().peers.push(id);
-                verdicts.get_mut(&id).unwrap().peers.push(peer);
-            }
-            let verdict = verdicts.get_mut(&id).unwrap();
-            if !verdict
-                .reasons
-                .iter()
-                .any(|(existing_key, existing_reason)| {
-                    existing_key == &key && existing_reason == &reason
-                })
+        // Merge duplicate reasons, retaining their distinct associated peers.
+        for (id, mut related, reason) in diagnostics {
+            related.sort_unstable();
+            related.dedup();
+            let conflicts = &mut verdicts.get_mut(&id).unwrap().conflicts;
+            if let Some((peers, _)) = conflicts
+                .iter_mut()
+                .find(|(_, existing)| *existing == reason)
             {
-                verdict.reasons.push((key, reason));
+                peers.extend(related);
+                peers.sort_unstable();
+                peers.dedup();
+            } else {
+                conflicts.push((related, reason));
             }
         }
-        for verdict in verdicts.values_mut() {
-            verdict.peers.sort_unstable();
-            verdict.peers.dedup();
-            verdict
-                .reasons
-                .sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        // Ensure every reported peer link is visible from both endpoints, even
+        // when only one endpoint received a detailed diagnostic.
+        let links: Vec<_> = verdicts
+            .iter()
+            .flat_map(|(id, verdict)| {
+                verdict
+                    .conflicts
+                    .iter()
+                    .flat_map(move |(peers, _)| peers.iter().map(move |peer| (*id, *peer)))
+            })
+            .collect();
+        for (id, peer) in links {
+            let conflicts = &mut verdicts.get_mut(&peer).unwrap().conflicts;
+            if !conflicts.iter().any(|(peers, _)| peers.contains(&id)) {
+                conflicts.push((vec![id], Reason::None));
+            }
         }
+        // BTreeMap iteration returns verdicts ordered by job ID.
         verdicts.into_values().collect()
     }
 }

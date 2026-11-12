@@ -1,6 +1,8 @@
 use super::*;
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
-use crate::planner::resolver::{CommitVerdict, ConflictDetector, accepted_ids, rejected_ids};
+use crate::planner::resolver::{
+    CommitDecision, CommitVerdict, ConflictDetector, accepted_ids, rejected_ids,
+};
 use crate::planner::scheduler::{Generation, JobSequence};
 use alloy_evm::{
     EvmEnv, FromRecoveredTx, RecoveredTx,
@@ -19,11 +21,12 @@ use std::sync::Arc;
 
 fn pairs<R, H>(raws: &[JobResult<R, H>]) -> BTreeSet<(ID, ID)> {
     raws.iter()
-        .filter_map(|raw| raw.verdict.as_ref())
+        .map(|raw| &raw.verdict)
         .flat_map(|verdict| {
             verdict
-                .peers
+                .conflicts
                 .iter()
+                .flat_map(|(peers, _)| peers)
                 .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
         })
         .collect()
@@ -277,7 +280,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .is_success()
         }));
         assert_eq!(
-            accepted_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref()))
+            accepted_ids(outcomes.iter().map(|raw| &raw.verdict))
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([job(1, contract).id])
@@ -297,20 +300,18 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             committed_state[&Address::with_last_byte(0x12)].info.nonce,
             1
         );
-        let rejected = outcomes
+        let rejected = &outcomes
             .iter()
             .find(|raw| raw.id.global == 2)
             .unwrap()
-            .verdict
-            .as_ref()
-            .unwrap();
-        assert!(!rejected.accepted);
-        let CommitVerdict { peers, reasons, .. } = rejected;
-        assert_eq!(peers, &vec![job(1, contract).id]);
+            .verdict;
+        assert_eq!(rejected.decision, CommitDecision::Rejected);
+        let CommitVerdict { conflicts, .. } = rejected;
+        assert!(conflicts.iter().any(|(peers, _)| peers.contains(&job(1, contract).id)));
         assert!(
-            reasons
+            conflicts
                 .iter()
-                .any(|(key, _)| *key == Some(Key::Storage(contract, U256::ZERO)))
+                .any(|(_, reason)| matches!(reason, crate::planner::resolver::Reason::AccessConflict(key, _) if *key == Key::Storage(contract, U256::ZERO)))
         );
 
         let generation = Generation {
@@ -329,12 +330,12 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             .unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(
-            accepted_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref()))
+            accepted_ids(outcomes.iter().map(|raw| &raw.verdict))
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([outcomes[0].id])
         );
-        assert!(rejected_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref())).is_empty());
+        assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
         assert!(pairs(&outcomes).is_empty());
         assert_eq!(
             outcomes[0].result_and_state.as_ref().unwrap().state[&contract].storage[&U256::ZERO]
@@ -366,7 +367,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             U256::from(1)
         );
         assert_eq!(
-            accepted_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref()))
+            accepted_ids(outcomes.iter().map(|raw| &raw.verdict))
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([outcomes[0].id])
@@ -440,9 +441,9 @@ fn commits_all_conflict_free_parallel_jobs() {
     } = generation
         .run(&factory, &config, &pool, &mut checker, &fallback)
         .unwrap();
-    assert!(rejected_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref())).is_empty());
+    assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
     assert_eq!(
-        accepted_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref()))
+        accepted_ids(outcomes.iter().map(|raw| &raw.verdict))
             .into_iter()
             .collect::<BTreeSet<_>>(),
         outcomes.iter().map(|outcome| outcome.id).collect()
@@ -500,7 +501,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
             .is_success()
     );
     assert_eq!(
-        accepted_ids(outcomes.iter().filter_map(|raw| raw.verdict.as_ref())),
+        accepted_ids(outcomes.iter().map(|raw| &raw.verdict)),
         vec![id]
     );
 }
@@ -589,8 +590,8 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
                 U256::from(index + 1)
             );
             assert_eq!(executed.state[&caller].info.nonce, index as u64 + 1);
-            assert_eq!(outcome.verdict.as_ref().unwrap().id, outcome.id);
-            assert!(outcome.verdict.as_ref().unwrap().accepted);
+            assert_eq!(outcome.verdict.id, outcome.id);
+            assert_eq!(outcome.verdict.decision, CommitDecision::Accepted);
         }
         assert_eq!(
             fallback.storage_ref(contract, U256::ZERO).unwrap(),
@@ -601,7 +602,7 @@ fn later_generations_read_committed_storage_and_sender_nonces() {
 }
 
 #[test]
-fn execution_errors_have_no_commit_verdict_or_committed_state() {
+fn execution_errors_remain_pending_without_committed_state() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
         OpChainHardforks::op_mainnet(),
@@ -646,8 +647,12 @@ fn execution_errors_have_no_commit_verdict_or_committed_state() {
         .run(&factory, &config, &pool, &mut checker, &StateDb::default())
         .unwrap();
     assert!(outcomes[0].result_and_state.is_err());
-    assert!(outcomes[0].verdict.is_none());
+    assert_eq!(outcomes[0].verdict.decision, CommitDecision::Pending);
     assert!(outcomes[0].receipt.is_none());
-    assert!(outcomes.iter().all(|raw| raw.verdict.is_none()));
+    assert!(
+        outcomes
+            .iter()
+            .all(|raw| raw.verdict.decision == CommitDecision::Pending)
+    );
     assert!(committed_state.is_empty());
 }

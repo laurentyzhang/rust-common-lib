@@ -1,4 +1,5 @@
 use super::*;
+use crate::execution::evm::state::overlay::StateOverlay;
 use crate::execution::evm::storage::{AccountStorage, ApiStore};
 use alloy_evm::revm::{
     DatabaseCommit,
@@ -112,7 +113,11 @@ fn merging_local_state_preserves_the_destination_fallback() {
     let fallback = StateDb::new(EvmState::from_iter([(owner, Account::from(info.clone()))]));
     let mut db = StateDb::with_fallback(EvmState::default(), Some(&fallback));
     db.overlay
-        .merge(EvmState::default(), db.fallback.as_ref())
+        .apply(
+            EvmState::default(),
+            db.fallback.as_ref(),
+            StateOverlay::add_balance_nonce_deltas,
+        )
         .unwrap();
     assert_eq!(db.basic(owner).unwrap(), Some(info));
 }

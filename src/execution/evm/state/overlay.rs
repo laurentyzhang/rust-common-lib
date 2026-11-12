@@ -32,11 +32,12 @@ impl StateOverlay {
         self.state
     }
 
-    /// Applies incoming account and storage changes to the overlay.
-    pub(super) fn merge<DB: DatabaseRef>(
+    /// Applies account changes using the selected balance and nonce strategy.
+    pub(super) fn apply<DB: DatabaseRef>(
         &mut self,
         incoming: EvmState,
         fallback: Option<&DB>,
+        balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
     ) -> Result<(), StoreError> {
         // Step 1 (serial): pair each incoming account with its committed counterpart.
         let accounts = incoming
@@ -46,32 +47,44 @@ impl StateOverlay {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Step 2 (parallel): accounts are independent, update then in parallel.
+        // Step 2 (parallel): merge independent accounts without changing the overlay.
         let merged_accounts: Vec<_> = accounts
             .into_par_iter()
-            .map(|(address, mut current, incoming)| {
-                if current == Account::default() || incoming.is_selfdestructed_locally() {
-                    return Ok((address, incoming));
-                }
-
-                Self::handle_fee_nonce(&mut current, &incoming).map_err(StoreError::State)?;
-                Self::merge_status(&mut current, &incoming);
-
-                // Both accounts exist, merge their storage.
-                for (key, value) in incoming.storage {
-                    if ApiAddress::is_storage_key(key) {
-                        Self::merge_api_slot(&mut current.storage, key, value);
-                    } else {
-                        current.storage.insert(key, value);
-                    }
-                }
-                Ok((address, current))
+            .map(|(address, current, incoming)| {
+                Self::merge_account(address, current, incoming, balance_nonce_handler)
             })
             .collect::<Result<_, StoreError>>()?;
 
         // Step 3 (serial): put the merged accounts back into the overlay.
         self.state.extend(merged_accounts);
         Ok(())
+    }
+
+    /// Merges one account's balance, nonce, status, and storage.
+    fn merge_account(
+        address: Address,
+        mut current: Account,
+        incoming: Account,
+        balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
+    ) -> Result<(Address, Account), StoreError> {
+        // An empty current account takes the incoming account without invoking the strategy.
+        if current == Account::default() {
+            return Ok((address, incoming));
+        }
+
+        balance_nonce_handler(&mut current, &incoming).map_err(StoreError::State)?;
+        // Use the incoming account's lifecycle flags.
+        Self::merge_status(&mut current, &incoming);
+
+        // Combine API deltas; ordinary storage slots take the incoming values.
+        for (key, value) in incoming.storage {
+            if ApiAddress::is_storage_key(key) {
+                Self::merge_api_slot(&mut current.storage, key, value);
+            } else {
+                current.storage.insert(key, value);
+            }
+        }
+        Ok((address, current))
     }
 
     /// Replaces the current status with the incoming account's status.
@@ -99,7 +112,7 @@ impl StateOverlay {
         }
     }
 
-    /// Takes the committed account out of the map so workers own it; it is re-inserted after merging.
+    /// Clones the current account from the overlay or loads it from the fallback.
     fn take_current<DB: DatabaseRef>(
         &self,
         address: Address,
@@ -123,8 +136,11 @@ impl StateOverlay {
         }
     }
 
-    /// Handles the fee and nonce fields for an account by applying the delta between the original and incoming values.
-    fn handle_fee_nonce(current: &mut Account, incoming: &Account) -> Result<(), CrdtError> {
+    /// Adds the incoming balance and nonce changes to the current account.
+    pub(super) fn add_balance_nonce_deltas(
+        current: &mut Account,
+        incoming: &Account,
+    ) -> Result<(), CrdtError> {
         let original = incoming.original_info();
 
         let balance = Scalar::with_delta(
@@ -147,6 +163,16 @@ impl StateOverlay {
 
         current.info.balance = balance;
         current.info.nonce = nonce;
+        Ok(())
+    }
+
+    /// Copies the incoming balance and nonce from a subsequent state.
+    pub(super) fn copy_balance_nonce(
+        current: &mut Account,
+        incoming: &Account,
+    ) -> Result<(), CrdtError> {
+        current.info.balance = incoming.info.balance;
+        current.info.nonce = incoming.info.nonce;
         Ok(())
     }
 }

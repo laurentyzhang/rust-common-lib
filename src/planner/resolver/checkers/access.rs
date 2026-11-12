@@ -68,9 +68,9 @@ impl<K> AccessChecker<K> {
                     && record.data.operations.deltas.count() > 0
                     && first.data.operations.deltas.count() > 0
                 {
-                    Err(Reason::AccessConflict(AccessConflict::ReadConflict(
+                    Err(AccessConflict::ReadConflict(
                         "Read conflict detected with earlier delta".to_string(),
-                    )))
+                    ))
                 } else {
                     record
                         .data
@@ -81,16 +81,12 @@ impl<K> AccessChecker<K> {
                         .and_then(|_| record.data.remove_conflict_with(&first.data))
                 };
 
-                if let Err(reason) = result {
+                if let Err(error) = result {
                     conflicts.insert((first.id.min(record.id), first.id.max(record.id)));
                     // Either endpoint may be rejected by selection.
-                    diagnostics.push((
-                        record.id,
-                        record.key.clone(),
-                        vec![first.id],
-                        reason.clone(),
-                    ));
-                    diagnostics.push((first.id, record.key.clone(), vec![record.id], reason));
+                    let reason = Reason::AccessConflict(record.key.clone(), error);
+                    diagnostics.push((record.id, vec![first.id], reason.clone()));
+                    diagnostics.push((first.id, vec![record.id], reason));
                 }
             }
         }
@@ -99,7 +95,10 @@ impl<K> AccessChecker<K> {
 }
 
 impl Tracked<Status, Status> {
-    pub fn read_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    pub fn read_conflict_with(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if self.operations.reads.count() == 0 {
             return Ok(());
         }
@@ -110,7 +109,10 @@ impl Tracked<Status, Status> {
         Ok(())
     }
 
-    pub fn delta_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    pub fn delta_conflict_with(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if self.operations.deltas.count() == 0 {
             return Ok(());
         }
@@ -134,17 +136,18 @@ impl Tracked<Status, Status> {
                 Status::Tag(Tag::Missing) | Status::Tag(Tag::Default) | Status::Tag(Tag::Deleted)
             )
         {
-            return Err(Reason::AccessConflict(
-                AccessConflict::ConcurrentDeltaOnNonCommutative(
-                    "Deltas conflict detected with Deltas".to_string(),
-                ),
+            return Err(AccessConflict::ConcurrentDeltaOnNonCommutative(
+                "Deltas conflict detected with Deltas".to_string(),
             ));
         }
 
         Ok(())
     }
 
-    pub fn creation_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    pub fn creation_conflict_with(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if !self.is_newly_created() {
             return Ok(());
         }
@@ -161,7 +164,10 @@ impl Tracked<Status, Status> {
     }
 
     // Checks for conflicts arising from existence checks on the current record.
-    pub fn existence_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    pub fn existence_conflict_with(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if self.operations.existence_checks.count() == 0 {
             return Ok(());
         }
@@ -175,7 +181,10 @@ impl Tracked<Status, Status> {
     }
 
     // Checks for conflicts arising from remove operations on the current record.
-    pub fn remove_conflict_with(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    pub fn remove_conflict_with(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if self.operations.removes.count() == 0 {
             return Ok(());
         }
@@ -189,11 +198,14 @@ impl Tracked<Status, Status> {
 }
 
 impl Tracked<Status, Status> {
-    fn created_value_conflict(&self, other: &Tracked<Status, Status>) -> Result<(), Reason> {
+    fn created_value_conflict(
+        &self,
+        other: &Tracked<Status, Status>,
+    ) -> Result<(), AccessConflict> {
         if self.value.current != other.value.current {
-            return Err(Reason::AccessConflict(AccessConflict::CreationConflict(
+            return Err(AccessConflict::CreationConflict(
                 "Creation conflict with differing values".to_string(),
-            )));
+            ));
         }
 
         Ok(())
@@ -204,10 +216,11 @@ impl Tracked<Status, Status> {
         &self,
         other: &Tracked<Status, Status>,
         other_op: String,
-    ) -> Result<(), Reason> {
+    ) -> Result<(), AccessConflict> {
         if other.is_newly_created() {
-            return Err(Reason::AccessConflict(AccessConflict::ReadConflict(
-                format!("creation_conflict conflict detected with: {}", other_op),
+            return Err(AccessConflict::ReadConflict(format!(
+                "creation_conflict conflict detected with: {}",
+                other_op
             )));
         }
         Ok(())
@@ -218,10 +231,11 @@ impl Tracked<Status, Status> {
         &self,
         other: &Tracked<Status, Status>,
         other_op: String,
-    ) -> Result<(), Reason> {
+    ) -> Result<(), AccessConflict> {
         if other.operations.existence_checks.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ExistenceConflict(
-                format!("Existence conflict detected with: {}", other_op),
+            return Err(AccessConflict::ExistenceConflict(format!(
+                "Existence conflict detected with: {}",
+                other_op
             )));
         }
         Ok(())
@@ -232,10 +246,11 @@ impl Tracked<Status, Status> {
         &self,
         other: &Tracked<Status, Status>,
         other_op: String,
-    ) -> Result<(), Reason> {
+    ) -> Result<(), AccessConflict> {
         if other.operations.reads.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::ReadConflict(
-                format!("Reads conflict detected with: {}", other_op),
+            return Err(AccessConflict::ReadConflict(format!(
+                "Reads conflict detected with: {}",
+                other_op
             )));
         }
         Ok(())
@@ -245,10 +260,11 @@ impl Tracked<Status, Status> {
         &self,
         other: &Tracked<Status, Status>,
         other_op: String,
-    ) -> Result<(), Reason> {
+    ) -> Result<(), AccessConflict> {
         if other.operations.deltas.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::DeltaConflict(
-                format!("Delta conflict detected with: {}", other_op),
+            return Err(AccessConflict::DeltaConflict(format!(
+                "Delta conflict detected with: {}",
+                other_op
             )));
         }
         Ok(())
@@ -259,10 +275,11 @@ impl Tracked<Status, Status> {
         &self,
         other: &Tracked<Status, Status>,
         other_op: String,
-    ) -> Result<(), Reason> {
+    ) -> Result<(), AccessConflict> {
         if other.operations.removes.count() > 0 {
-            return Err(Reason::AccessConflict(AccessConflict::RemoveConflict(
-                format!("Remove conflict detected with: {}", other_op),
+            return Err(AccessConflict::RemoveConflict(format!(
+                "Remove conflict detected with: {}",
+                other_op
             )));
         }
         Ok(())

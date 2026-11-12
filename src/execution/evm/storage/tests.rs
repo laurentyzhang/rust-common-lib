@@ -109,7 +109,7 @@ fn commit_writes_account_and_storage_to_accumulated_state() {
     let mut changes = EvmState::default();
     changes.insert(address, account);
 
-    let mut accumulator = EvmStateCommitter::default();
+    let mut accumulator = EvmStateCommitter::new_parallel();
     accumulator.buffer(ID::new(0, 9), changes);
     accumulator.flush().unwrap();
     let mut db = StateDb::new(accumulator.into_inner());

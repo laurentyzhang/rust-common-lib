@@ -5,8 +5,8 @@ use crate::{
         state::{Status, Tracked},
     },
     execution::output::ExecutionOutput,
-    planner::resolver::Diagnostic,
     planner::resolver::checkers::util::run_parallel,
+    planner::resolver::{Diagnostic, Reason},
     planner::scheduler::ID,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -71,7 +71,11 @@ impl<K, T: Type> SumChecker<K, T> {
                 for &id in &contributors {
                     conflicts.insert((id.min(record.id), id.max(record.id)));
                 }
-                diagnostics.push((record.id, record.key, contributors.clone(), error.into()));
+                diagnostics.push((
+                    record.id,
+                    contributors.clone(),
+                    Reason::NumericError(record.key, error.into()),
+                ));
             } else {
                 contributors.push(record.id);
             }

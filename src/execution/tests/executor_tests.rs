@@ -6,7 +6,9 @@ use crate::{
         state::{DeltaOp, Status, status::Tag, value::CrdtValue},
     },
     execution::{EvmStateCommitter, Property, ScalarAdapter, ScalarKeyCodec},
-    planner::resolver::{AccessConflict, ConflictDetector, NumericError, Reason},
+    planner::resolver::{
+        AccessConflict, CommitDecision, CommitVerdict, ConflictDetector, NumericError, Reason,
+    },
 };
 use alloy_evm::revm::{
     context_interface::result::{
@@ -152,7 +154,7 @@ fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new(),
+        &mut EvmStateCommitter::new_parallel(),
     );
     assert!(results.iter().all(|result| result.result_and_state.is_ok()));
 }
@@ -166,12 +168,12 @@ fn scalar_creations_with_different_bounds_conflict() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new(),
+        &mut EvmStateCommitter::new_parallel(),
     );
     assert!(results[0].result_and_state.is_ok());
     assert!(
         matches!(&results[1].result_and_state, Err(JobError::Violation(conflicts))
-        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::AccessConflict(AccessConflict::CreationConflict(_)))))
+        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::AccessConflict(_, AccessConflict::CreationConflict(_)))))
     );
 }
 
@@ -195,7 +197,7 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
         if rejected {
             assert!(
                 matches!(&results[1].result_and_state, Err(JobError::Violation(conflicts))
-                if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(NumericError::AboveUpperLimit(_)))))
+                if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, NumericError::AboveUpperLimit(_)))))
             );
         } else {
             assert!(results[1].result_and_state.is_ok());
@@ -223,10 +225,10 @@ fn scalar_subtractions_are_checked_against_the_combined_lower_bound() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new(),
+        &mut EvmStateCommitter::new_parallel(),
     );
     assert!(results.iter().any(|result| matches!(&result.result_and_state, Err(JobError::Violation(conflicts))
-        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(NumericError::BelowLowerLimit(_)))))));
+        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, NumericError::BelowLowerLimit(_)))))));
     assert_eq!(
         results
             .iter()
@@ -286,7 +288,7 @@ fn rejected_jobs_report_all_conflicts_and_contribute_no_state_or_gas() {
             *key == Key::Storage(Address::ZERO, slot)
                 && matches!(
                     reason,
-                    Reason::AccessConflict(AccessConflict::ReadConflict(_))
+                    Reason::AccessConflict(_, AccessConflict::ReadConflict(_))
                 )
         }));
         assert_eq!(
@@ -313,7 +315,11 @@ fn accepted_reverts_consume_gas_and_execution_errors_stay_distinct() {
         reverted,
         JobResult {
             id: ID::new(0, 1),
-            verdict: None,
+            verdict: CommitVerdict {
+                id: ID::new(0, 1),
+                decision: CommitDecision::Pending,
+                conflicts: Vec::new(),
+            },
             result_and_state: Err(BlockExecutionError::msg("execution failed")),
             receipt: None,
             reads: Vec::new(),
@@ -323,7 +329,7 @@ fn accepted_reverts_consume_gas_and_execution_errors_stay_distinct() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new(),
+        &mut EvmStateCommitter::new_parallel(),
     );
     let results = ArcologyParaBlockExecutor::finish_block(results, &|receipt, gas| *receipt = gas);
     assert_eq!(results[0].receipt, Some(21_000));

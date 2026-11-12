@@ -8,7 +8,7 @@ use crate::{
     namespace::Namespace,
     planner::{
         meta::property::Property,
-        resolver::{Checker, CommitVerdict, accepted_ids, rejected_ids},
+        resolver::{Checker, CommitDecision, CommitVerdict, Reason, accepted_ids, rejected_ids},
         scheduler::ID,
     },
     store::traits::Committer,
@@ -24,8 +24,9 @@ fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
         .iter()
         .flat_map(|verdict| {
             verdict
-                .peers
+                .conflicts
                 .iter()
+                .flat_map(|(peers, _)| peers)
                 .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
         })
         .collect()
@@ -335,7 +336,7 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
         U256::from(7),
         EvmStorageSlot::new_changed(U256::ZERO, U256::from(99), Default::default()),
     );
-    let mut committer = EvmStateCommitter::new();
+    let mut committer = EvmStateCommitter::new_parallel();
     committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
     committer.buffer(record(2, 7, false).id, EvmState::from_iter([(a, rejected)]));
     committer.stage(accepted_ids(&conflicts));
@@ -375,21 +376,19 @@ fn metadata_combines_generation_diagnostics_and_preserves_deleted_accounts() {
     let verdicts = [
         CommitVerdict {
             id: ID::new(0, 1),
-            accepted: true,
-            peers: vec![ID::new(0, 2)],
-            reasons: Vec::new(),
+            decision: CommitDecision::Accepted,
+            conflicts: vec![(vec![ID::new(0, 2)], Reason::None)],
         },
         CommitVerdict {
             id: ID {
                 generation: 1,
                 ..ID::new(0, 3)
             },
-            accepted: true,
-            peers: vec![ID {
+            decision: CommitDecision::Accepted,
+            conflicts: vec![(vec![ID {
                 generation: 1,
                 ..ID::new(0, 4)
-            }],
-            reasons: Vec::new(),
+            }], Reason::None)],
         },
     ];
     let mut deleted = Account::default().with_touched_mark();
@@ -540,9 +539,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     planner.plan(jobs).unwrap();
     let conflicts = vec![CommitVerdict {
         id: ID::new(0, 1),
-        accepted: true,
-        peers: (20..23).map(|id| ID::new(0, id)).collect(),
-        reasons: Vec::new(),
+        decision: CommitDecision::Accepted,
+        conflicts: vec![((20..23).map(|id| ID::new(0, id)).collect(), Reason::None)],
     }];
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
@@ -559,9 +557,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     planner.plan(jobs).unwrap();
     let conflicts = vec![CommitVerdict {
         id: ID::new(0, 1),
-        accepted: true,
-        peers: (20..26).map(|id| ID::new(0, id)).collect(),
-        reasons: Vec::new(),
+        decision: CommitDecision::Accepted,
+        conflicts: vec![((20..26).map(|id| ID::new(0, id)).collect(), Reason::None)],
     }];
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     let function = callee(a, 10);
@@ -650,9 +647,8 @@ fn max_conflict_count_means_sequential_only() {
     planner.plan([job(1, a, 10), job(2, b, 20)]).unwrap();
     let conflicts = vec![CommitVerdict {
         id: ID::new(0, 1),
-        accepted: true,
-        peers: vec![ID::new(0, 2)],
-        reasons: Vec::new(),
+        decision: CommitDecision::Accepted,
+        conflicts: vec![(vec![ID::new(0, 2)], Reason::None)],
     }];
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert!(!result.contains_key(&a));
@@ -685,7 +681,7 @@ fn complete_verdicts_preserve_the_checked_block_and_generation() {
     assert!(
         verdicts
             .iter()
-            .flat_map(|verdict| &verdict.peers)
+            .flat_map(|verdict| verdict.conflicts.iter().flat_map(|(peers, _)| peers))
             .all(|id| id.block == 42 && id.generation == 3)
     );
     let metadata = planner.resolve(&verdicts, &EvmState::default()).unwrap();

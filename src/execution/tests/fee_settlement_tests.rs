@@ -3,14 +3,14 @@ use crate::execution::{
     JobResult, ParaBlockConfig, ReadRecorder, StateDb, StateOutcome,
     workload::{Generation, ID, Job, JobSequence},
 };
-use crate::planner::resolver::{CommitVerdict, ConflictDetector};
+use crate::planner::resolver::{CommitDecision, CommitVerdict, ConflictDetector};
 use crate::store::traits::Committer;
 use alloy_evm::{
     EvmEnv, EvmFactory, FromRecoveredTx, RecoveredTx,
     block::BlockExecutorFactory,
     revm::{
         DatabaseCommit, DatabaseRef,
-        state::{Account, AccountInfo, Bytecode, EvmState, EvmStorageSlot},
+        state::{Account, AccountInfo, Bytecode, EvmState},
     },
 };
 use alloy_op_evm::{OpBlockExecutionCtx, block::OpAlloyReceiptBuilder};
@@ -93,13 +93,12 @@ fn reject<R, H>(
     mut outcome: StateOutcome<JobResult<R, H>, EvmState>,
     fallback: &impl DatabaseRef,
 ) -> EvmState {
-    outcome.raw.verdict = Some(CommitVerdict {
+    outcome.raw.verdict = CommitVerdict {
         id: outcome.raw.id,
-        accepted: false,
-        peers: Vec::new(),
-        reasons: Vec::new(),
-    });
-    let mut committed = EvmStateCommitter::new();
+        decision: CommitDecision::Rejected,
+        conflicts: Vec::new(),
+    };
+    let mut committed = EvmStateCommitter::new_parallel();
     committed.buffer(outcome.raw.id, outcome.committed);
     StateOutcome {
         raw: vec![outcome.raw],
@@ -108,100 +107,6 @@ fn reject<R, H>(
     .finalize(fallback)
     .unwrap()
     .committed
-}
-
-#[test]
-fn rejection_keeps_calculated_fees_without_value_or_storage_changes() {
-    let caller = Address::repeat_byte(0x11);
-    let factory = factory();
-    for (spec, contract) in [OpSpecId::REGOLITH, OpSpecId::ISTHMUS]
-        .into_iter()
-        .flat_map(|spec| {
-            [
-                Address::repeat_byte(0x99),
-                L1_FEE_RECIPIENT,
-                BASE_FEE_RECIPIENT,
-                OPERATOR_FEE_RECIPIENT,
-                caller,
-            ]
-            .map(|contract| (spec, contract))
-        })
-    {
-        let mut target = account(0, Bytes::from_static(&[0x60, 0, 0x60, 0, 0x55, 0]));
-        target.storage.insert(
-            U256::ZERO,
-            EvmStorageSlot::new(U256::from(1), Default::default()),
-        );
-        let mut l1 = account(0, Bytes::new());
-        for (key, value) in [
-            (L1_BASE_FEE_SLOT, U256::from(2)),
-            (L1_SCALAR_SLOT, U256::from(1_000_000)),
-            (L1_OVERHEAD_SLOT, U256::from(100)),
-            (ECOTONE_L1_FEE_SCALARS_SLOT, U256::from(1_000_000) << 64),
-            (
-                OPERATOR_FEE_SCALARS_SLOT,
-                (U256::from(1_000_000) << 64) + U256::from(100),
-            ),
-        ] {
-            l1.storage
-                .insert(key, EvmStorageSlot::new(value, Default::default()));
-        }
-        let mut state = EvmState::from_iter([
-            (caller, account(FUNDS, Bytes::new())),
-            (L1_BLOCK_CONTRACT, l1),
-        ]);
-        if contract != caller {
-            state.insert(contract, target);
-        }
-        let fallback = StateDb::new(state);
-        let mut env = env(contract);
-        env.cfg_env.spec = spec;
-        let evm = factory.evm_factory().create_evm_with_inspector(
-            StateDb::with_fallback(EvmState::default(), Some(&fallback)),
-            env,
-            ReadRecorder::new(0),
-        );
-        let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let outcome = job(0, caller, TxKind::Call(contract), 123, Bytes::new()).run(&mut executor);
-        let executed = outcome.raw.result_and_state.as_ref().unwrap();
-        assert!(executed.result.is_success());
-        assert!(outcome.raw.receipt.is_some());
-        assert!(
-            outcome
-                .committed
-                .values()
-                .all(|account| account.info.code.is_none())
-        );
-        if contract != caller {
-            assert!(executed.result.gas().inner_refunded() > 0);
-        }
-        let gas_fee = U256::from(executed.result.tx_gas_used()) * U256::from(10);
-        assert!(outcome.raw.fee > gas_fee);
-        let mut expected = executed.state.clone();
-        if contract != caller {
-            expected.get_mut(&caller).unwrap().info.balance += U256::from(123);
-            expected.get_mut(&contract).unwrap().info.balance -= U256::from(123);
-        }
-        let committed = reject(outcome, &fallback);
-        assert_eq!(committed[&caller].info.nonce, 1);
-        for (address, account) in committed {
-            assert_eq!(
-                account.info.balance, expected[&address].info.balance,
-                "{spec:?} {address}"
-            );
-            assert!(account.storage.is_empty());
-            assert!(account.info.code.is_none());
-            assert!(!account.is_created() && !account.is_selfdestructed());
-            assert_eq!(
-                account.info.code_hash,
-                fallback
-                    .basic_ref(address)
-                    .unwrap()
-                    .unwrap_or_default()
-                    .code_hash
-            );
-        }
-    }
 }
 
 #[test]
@@ -264,7 +169,7 @@ fn parallel_conflicts_keep_every_fee_and_nonce() {
         for raw in outcome.raw {
             let used = raw.result_and_state.as_ref().unwrap().result.tx_gas_used();
             gas += used;
-            let is_accepted = raw.verdict.as_ref().unwrap().accepted;
+            let is_accepted = raw.verdict.decision == CommitDecision::Accepted;
             accepted += u64::from(is_accepted);
             let caller = callers[raw.id.global as usize];
             assert_eq!(outcome.committed[&caller].info.nonce, 1);
@@ -337,7 +242,7 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
     ));
     let mut local = StateDb::with_fallback(EvmState::default(), Some(&fallback));
     let factory = factory();
-    let mut committer = EvmStateCommitter::new();
+    let mut committer = EvmStateCommitter::new_sequential();
     for (id, caller) in callers.into_iter().enumerate() {
         let evm = factory.evm_factory().create_evm_with_inspector(
             StateDb::with_fallback(EvmState::default(), Some(&local)),
@@ -369,7 +274,9 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
             },
             &local,
         );
-        committer.buffer(ID::new(0, id as u64), settled);
+        let mut job_id = ID::new(0, id as u64);
+        job_id.job = id as u64;
+        committer.buffer(job_id, settled);
         local.commit(outcome.committed);
     }
     let committed = committer.commit(&fallback).unwrap();

@@ -2,7 +2,7 @@ use super::{Generation, JobResult};
 use crate::execution::{
     ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, StateOutcome, key::Key,
 };
-use crate::planner::Planner;
+use crate::planner::{Planner, resolver::CommitDecision};
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
@@ -57,7 +57,10 @@ impl<Tx> Block<Tx> {
 
         let metadata = planner
             .resolve(
-                results.iter().filter_map(|raw| raw.verdict.as_ref()),
+                results
+                    .iter()
+                    .filter(|raw| raw.verdict.decision != CommitDecision::Pending)
+                    .map(|raw| &raw.verdict),
                 block_db.inner(),
             )
             .map_err(Error::other)?;

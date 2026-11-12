@@ -97,7 +97,7 @@ impl<Tx> JobSequence<Tx> {
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut committer = EvmStateCommitter::new();
+        let mut committer = EvmStateCommitter::new_sequential();
         if self.jobs.is_empty() {
             return Ok(StateOutcome {
                 raw: Vec::new(),
@@ -123,7 +123,7 @@ impl<Tx> JobSequence<Tx> {
                 job.run(&mut executor)
             };
 
-            if result.raw.result_and_state.is_ok() {
+            if result.raw.result_and_state().is_ok() {
                 committer.buffer(result.raw.id, result.committed.clone());
             }
             seq_db.commit(result.committed);
