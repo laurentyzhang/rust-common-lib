@@ -1,7 +1,6 @@
 use super::{Generation, JobResult};
-use crate::execution::{
-    ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, StateOutcome, key::Key,
-};
+use crate::execution::evm::state::StateOverlay;
+use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
@@ -28,10 +27,10 @@ impl<Tx> Block<Tx> {
         fallback: &Fallback,
         planner: &mut Planner<PDB, Key>,
     ) -> Result<
-        StateOutcome<
+        (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
             EvmState,
-        >,
+        ),
         Error,
     >
     where
@@ -46,13 +45,17 @@ impl<Tx> Block<Tx> {
         F::Receipt: Clone + Send,
         Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut block_db = StateDb::with_fallback(EvmState::default(), Some(fallback));
+        let mut block_db = StateDb::with_fallback(
+            StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+            Some(fallback),
+        );
         let mut results = Vec::new();
         for generation in self.generations {
-            let result = generation.run(factory, config, pool, &mut planner.checker, &block_db)?;
+            let (raws, committed) =
+                generation.run(factory, config, pool, &mut planner.checker, &block_db)?;
             // Publish accepted changes before executing the next generation.
-            block_db.commit(result.committed);
-            results.extend(result.raw);
+            block_db.commit(committed);
+            results.extend(raws);
         }
 
         let metadata = planner
@@ -66,10 +69,10 @@ impl<Tx> Block<Tx> {
             .map_err(Error::other)?;
         block_db.commit(metadata);
 
-        Ok(StateOutcome {
-            raw: ArcologyParaBlockExecutor::finish_block(results, set_cumulative),
-            committed: block_db.into_inner(),
-        })
+        Ok((
+            ArcologyParaBlockExecutor::finish_block(results, set_cumulative),
+            block_db.into_inner(),
+        ))
     }
 }
 

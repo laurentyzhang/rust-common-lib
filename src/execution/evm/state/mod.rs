@@ -7,4 +7,5 @@ mod overlay;
 mod statedb;
 
 pub use committer::EvmStateCommitter;
+pub use overlay::StateOverlay;
 pub use statedb::StateDb;

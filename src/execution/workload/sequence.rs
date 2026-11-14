@@ -1,11 +1,11 @@
 use super::{Job, JobResult};
-use crate::planner::resolver::CommitDecision;
 use crate::planner::scheduler::sender::SenderNonceOffset;
+use crate::{crdt::state, planner::resolver::CommitDecision};
 use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
     revm::{
-        DatabaseCommit, DatabaseRef,
+        DatabaseRef,
         state::{Account, EvmState},
     },
 };
@@ -13,7 +13,8 @@ use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use alloy_primitives::Address;
 use std::io::Error;
 
-use crate::execution::{ArcologyEvmFactory, ReadRecorder, StateDb, StateOutcome};
+use crate::execution::evm::state::StateOverlay;
+use crate::execution::{ArcologyEvmFactory, ReadRecorder, StateDb};
 
 /// Transactions in one sequence execute in order; sequences in a generation may run in parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +33,11 @@ impl<Tx> JobSequence<Tx> {
             jobs,
             nonce_offsets: Vec::new(),
         }
+    }
+
+    pub(crate) fn is_all_accepted<R, H>(raws: &[JobResult<R, H>]) -> bool {
+        raws.iter()
+            .all(|result| result.verdict.decision == CommitDecision::Accepted)
     }
 }
 
@@ -55,10 +61,10 @@ impl<Tx> JobSequence<Tx> {
         env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
         ctx: OpBlockExecutionCtx,
     ) -> Result<
-        StateOutcome<
+        (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
             EvmState,
-        >,
+        ),
         Error,
     >
     where
@@ -68,13 +74,16 @@ impl<Tx> JobSequence<Tx> {
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut result = self.execute(factory, fallback, env, ctx)?;
-        for raw in &mut result.raw {
+        let (mut raws, mut committed) = self.execute(factory, fallback, env, ctx)?;
+        for raw in &mut raws {
             if raw.gas_used().is_some() {
                 raw.verdict.decision = CommitDecision::Accepted;
             }
         }
-        result.finalize(fallback)
+        if !Self::is_all_accepted(&raws) {
+            committed = Self::rebuild_sequence_state(&mut raws, fallback)?;
+        }
+        Ok((raws, committed))
     }
 
     pub(super) fn execute<F, Fallback>(
@@ -84,10 +93,10 @@ impl<Tx> JobSequence<Tx> {
         env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
         ctx: OpBlockExecutionCtx,
     ) -> Result<
-        StateOutcome<
+        (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-            Vec<EvmState>,
-        >,
+            EvmState,
+        ),
         Error,
     >
     where
@@ -98,24 +107,22 @@ impl<Tx> JobSequence<Tx> {
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         if self.jobs.is_empty() {
-            return Ok(StateOutcome {
-                raw: Vec::new(),
-                committed: Vec::new(),
-            });
+            return Ok((Vec::new(), EvmState::default()));
         }
 
-        let initialized = self.initialize_state(&fallback)?;
+        let initialized = self.offset_nonce(fallback)?;
 
         // Keep completed transaction changes local for subsequent jobs.
-        let mut seq_db = StateDb::with_fallback(initialized, Some(fallback));
+        let mut seq_db = StateDb::with_fallback(
+            StateOverlay::new(initialized, StateOverlay::copy_balance_nonce),
+            Some(fallback),
+        );
 
         let mut raws = Vec::with_capacity(self.jobs.len());
-        let mut states = Vec::with_capacity(self.jobs.len());
         for job in self.jobs {
             let result = {
-                let job_db = StateDb::with_fallback(EvmState::default(), Some(&seq_db));
                 let evm = factory.evm_factory().create_evm_with_inspector(
-                    job_db,
+                    &mut seq_db,
                     env.clone(),
                     ReadRecorder::new(job.id.global),
                 );
@@ -123,19 +130,41 @@ impl<Tx> JobSequence<Tx> {
                 job.run(&mut executor)
             };
 
-            seq_db.commit(result.committed.clone());
-            states.push(result.committed);
-            raws.push(result.raw);
+            raws.push(result);
         }
-        Ok(StateOutcome {
-            raw: raws,
-            committed: states,
-        })
+
+        Ok((raws, seq_db.into_inner()))
+    }
+
+    /// Applies job transitions in order and returns the sequence state ready to commit.
+    ///
+    /// Each job supplies its transitions through `result_and_state()`, which owns
+    /// verdict handling and reports pending verdicts or execution errors. Account
+    /// and API-counter transitions are represented by their original and resulting
+    /// values, so their deltas can be applied to the rebuilt sequence state.
+    ///
+    /// `fallback` supplies the starting account and storage values.
+    pub(crate) fn rebuild_sequence_state<R, H: Clone, DB: DatabaseRef>(
+        raws: &mut [JobResult<R, H>],
+        fallback: &DB,
+    ) -> Result<EvmState, Error> {
+        let mut overlay =
+            StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas);
+        for result in raws.iter_mut() {
+            let executed = result
+                .result_and_state()
+                .as_ref()
+                .map_err(|error| Error::other(error.to_string()))?;
+            overlay
+                .apply(executed.state.clone(), Some(fallback))
+                .map_err(Error::other)?;
+        }
+        Ok(overlay.into_inner())
     }
 
     /// Loads sender accounts from the fallback and advances their local nonces
     /// by earlier same-sender transactions in this generation. Leaves the fallback unchanged.
-    fn initialize_state<DB: DatabaseRef>(&self, fallback: &DB) -> Result<EvmState, Error> {
+    fn offset_nonce<DB: DatabaseRef>(&self, fallback: &DB) -> Result<EvmState, Error> {
         let mut state = EvmState::default();
         for entry in &self.nonce_offsets {
             if entry.offset == 0 {
@@ -155,3 +184,7 @@ impl<Tx> JobSequence<Tx> {
         Ok(state)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/sequence_tests.rs"]
+mod tests;

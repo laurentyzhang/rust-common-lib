@@ -57,10 +57,10 @@ impl EvmStateCommitter {
 
     /// Merges the buffered states against the shared base.
     pub(crate) fn commit<DB: DatabaseRef>(self, fallback: &DB) -> Result<EvmState, Error> {
-        let mut overlay = StateOverlay::new(self.state.into_inner());
+        let mut overlay = StateOverlay::new(self.state.into_inner(), self.nonce_fee_handler);
         for incoming in self.buffered.into_values() {
             overlay
-                .apply(incoming, Some(fallback), self.nonce_fee_handler)
+                .apply(incoming, Some(fallback))
                 .map_err(|error| Error::other(format!("{error:?}")))?;
         }
         Ok(overlay.into_inner())
@@ -78,13 +78,9 @@ impl Committer<ID, EvmState> for EvmStateCommitter {
     }
 
     fn flush(&mut self) -> Result<(), StoreError> {
-        let mut overlay = StateOverlay::new(self.state.inner().clone());
+        let mut overlay = StateOverlay::new(self.state.inner().clone(), self.nonce_fee_handler);
         for incoming in self.buffered.values() {
-            overlay.apply(
-                incoming.clone(),
-                self.state.fallback.as_ref(),
-                self.nonce_fee_handler,
-            )?;
+            overlay.apply(incoming.clone(), self.state.fallback.as_ref())?;
         }
         self.state.overlay = overlay;
         self.buffered.clear();

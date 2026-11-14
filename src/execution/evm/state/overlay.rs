@@ -1,23 +1,30 @@
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, EvmState, EvmStorage, EvmStorageSlot},
+    state::{Account, EvmState, EvmStorageSlot},
 };
 use alloy_primitives::{Address, U256};
 use rayon::prelude::*;
 
-use crate::crdt::state::{CrdtError, NumericError};
+use crate::crdt::state::CrdtError;
 use crate::crdt::{Crdt, Scalar, Type};
 use crate::execution::{ApiAddress, Property, ScalarKeyCodec};
 use crate::store::traits::StoreError;
 
-#[derive(Debug, Default)]
-pub(super) struct StateOverlay {
+#[derive(Debug)]
+pub struct StateOverlay {
     state: EvmState,
+    balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
 }
 
 impl StateOverlay {
-    pub(super) fn new(state: EvmState) -> Self {
-        Self { state }
+    pub fn new(
+        state: EvmState,
+        balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
+    ) -> Self {
+        Self {
+            state,
+            balance_nonce_handler,
+        }
     }
 
     pub(super) fn inner(&self) -> &EvmState {
@@ -28,22 +35,36 @@ impl StateOverlay {
         &mut self.state
     }
 
-    pub(super) fn into_inner(self) -> EvmState {
+    pub(in crate::execution) fn into_inner(self) -> EvmState {
         self.state
     }
 
     /// Applies account changes using the selected balance and nonce strategy.
-    pub(super) fn apply<DB: DatabaseRef>(
+    pub(in crate::execution) fn apply<DB: DatabaseRef>(
         &mut self,
         incoming: EvmState,
         fallback: Option<&DB>,
-        balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
     ) -> Result<(), StoreError> {
         // Step 1 (serial): pair each incoming account with its committed counterpart.
         let accounts = incoming
             .into_iter()
             .map(|(address, incoming)| {
-                Ok::<_, StoreError>((address, self.take_current(address, fallback)?, incoming))
+                let mut current = self.take_current(address, fallback, &incoming)?;
+                // Load missing slots before applying deltas, retaining their base values.
+                for (&key, slot) in &incoming.storage {
+                    if !current.storage.contains_key(&key) {
+                        let original = match fallback {
+                            Some(db) => db
+                                .storage_ref(address, key)
+                                .map_err(|error| StoreError::Database(format!("{error:?}")))?,
+                            None => slot.original_value(),
+                        };
+                        current
+                            .storage
+                            .insert(key, EvmStorageSlot::new(original, slot.transaction_id));
+                    }
+                }
+                Ok::<_, StoreError>((address, current, incoming))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -51,7 +72,7 @@ impl StateOverlay {
         let merged_accounts: Vec<_> = accounts
             .into_par_iter()
             .map(|(address, current, incoming)| {
-                Self::merge_account(address, current, incoming, balance_nonce_handler)
+                Self::merge_account(address, current, incoming, self.balance_nonce_handler)
             })
             .collect::<Result<_, StoreError>>()?;
 
@@ -67,22 +88,29 @@ impl StateOverlay {
         incoming: Account,
         balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
     ) -> Result<(Address, Account), StoreError> {
-        // An empty current account takes the incoming account without invoking the strategy.
-        if current == Account::default() {
-            return Ok((address, incoming));
-        }
-
         balance_nonce_handler(&mut current, &incoming).map_err(StoreError::State)?;
         // Use the incoming account's lifecycle flags.
         Self::merge_status(&mut current, &incoming);
+        if incoming.info.code_hash != incoming.original_info().code_hash {
+            current.info.code_hash = incoming.info.code_hash;
+            current.info.code = incoming.info.code;
+        } else if incoming.info.code_hash == current.info.code_hash && incoming.info.code.is_some()
+        {
+            current.info.code = incoming.info.code;
+        }
+        current.transaction_id = incoming.transaction_id;
 
         // Combine API deltas; ordinary storage slots take the incoming values.
-        for (key, value) in incoming.storage {
-            if ApiAddress::is_storage_key(key) {
-                Self::merge_api_slot(&mut current.storage, key, value);
-            } else {
-                current.storage.insert(key, value);
+        for (key, mut value) in incoming.storage {
+            if let Some(slot) = current.storage.get(&key) {
+                if ApiAddress::is_storage_key(key)
+                    && let Some(change) = Self::api_slot_delta(key, &value)
+                {
+                    value.present_value = slot.present_value().wrapping_add(change);
+                }
+                value.original_value = slot.original_value();
             }
+            current.storage.insert(key, value);
         }
         Ok((address, current))
     }
@@ -92,23 +120,14 @@ impl StateOverlay {
         current.status = incoming.status;
     }
 
-    /// Dispatches CRDT delta merging by API type.
-    fn merge_api_slot(storage: &mut EvmStorage, key: U256, new_value: EvmStorageSlot) {
+    pub(in crate::execution) fn api_slot_delta(key: U256, slot: &EvmStorageSlot) -> Option<U256> {
         match ScalarKeyCodec::decode(key) {
             Some((_, field, _))
                 if field == Property::PosDelta as u8 || field == Property::NegDelta as u8 =>
             {
-                // Apply only this state's change to the delta magnitude.
-                let change = new_value
-                    .present_value()
-                    .wrapping_sub(new_value.original_value());
-                if let Some(slot) = storage.get_mut(&key) {
-                    slot.present_value = slot.present_value().wrapping_add(change);
-                } else {
-                    storage.insert(key, new_value);
-                }
+                Some(slot.present_value().wrapping_sub(slot.original_value()))
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -117,6 +136,7 @@ impl StateOverlay {
         &self,
         address: Address,
         fallback: Option<&DB>,
+        incoming: &Account,
     ) -> Result<Account, StoreError> {
         if let Some(current) = self.state.get(&address) {
             return Ok(current.clone());
@@ -132,45 +152,35 @@ impl StateOverlay {
                     None => Account::default(),
                 },
             ),
-            None => Ok(Account::default()),
+            None => Ok(Account::from(incoming.original_info())),
         }
     }
 
     /// Adds the incoming balance and nonce changes to the current account.
-    pub(super) fn add_balance_nonce_deltas(
+    pub fn add_balance_nonce_deltas(
         current: &mut Account,
         incoming: &Account,
     ) -> Result<(), CrdtError> {
-        let original = incoming.original_info();
-
-        let balance = Scalar::with_delta(
+        // Add the balance delta to the initial account's balance.
+        current.info.balance = Scalar::with_delta(
             current.info.balance,
-            U256::delta_between(original.balance, incoming.info.balance),
+            U256::delta_between(incoming.original_info().balance, incoming.info.balance),
         )?
         .apply_delta()
         .value;
 
-        let merged_nonce = Scalar::with_delta(
-            U256::from(current.info.nonce),
-            U256::delta_between(U256::from(original.nonce), U256::from(incoming.info.nonce)),
+        // Add the nonce delta to the initial account's nonce.
+        current.info.nonce = Scalar::with_delta(
+            current.info.nonce,
+            u64::delta_between(incoming.original_info().nonce, incoming.info.nonce),
         )?
         .apply_delta()
         .value;
-
-        let nonce = u64::try_from(merged_nonce).map_err(|_| {
-            CrdtError::U256(NumericError::Overflow("merged nonce exceeds u64".into()))
-        })?;
-
-        current.info.balance = balance;
-        current.info.nonce = nonce;
         Ok(())
     }
 
     /// Copies the incoming balance and nonce from a subsequent state.
-    pub(super) fn copy_balance_nonce(
-        current: &mut Account,
-        incoming: &Account,
-    ) -> Result<(), CrdtError> {
+    pub fn copy_balance_nonce(current: &mut Account, incoming: &Account) -> Result<(), CrdtError> {
         current.info.balance = incoming.info.balance;
         current.info.nonce = incoming.info.nonce;
         Ok(())

@@ -1,4 +1,5 @@
 use super::{JobResult, JobSequence};
+use crate::execution::evm::state::StateOverlay;
 use crate::planner::scheduler::sender::{Sender, SenderNonceOffset};
 use alloy_evm::{
     EvmFactory,
@@ -12,9 +13,7 @@ use std::{
     io::Error,
 };
 
-use crate::execution::{
-    ArcologyEvmFactory, EvmStateCommitter, ParaBlockConfig, StateDb, StateOutcome, key::Key,
-};
+use crate::execution::{ArcologyEvmFactory, EvmStateCommitter, ParaBlockConfig, StateDb, key::Key};
 use crate::planner::resolver::Checker;
 use crate::store::traits::Committer;
 
@@ -41,10 +40,10 @@ impl<Tx> Generation<Tx> {
         checker: &mut impl Checker<Key>,
         fallback: &Fallback,
     ) -> Result<
-        StateOutcome<
+        (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
             EvmState,
-        >,
+        ),
         Error,
     >
     where
@@ -59,7 +58,10 @@ impl<Tx> Generation<Tx> {
         Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         // Generate a state database for the sequences, using the provided fallback as the base.
-        let gen_db = StateDb::with_fallback(EvmState::default(), Some(fallback));
+        let gen_db = StateDb::with_fallback(
+            StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+            Some(fallback),
+        );
 
         // Indexed collection preserves plan order across parallel workers.
         let results: Result<Vec<_>, Error> = pool.install(|| {
@@ -73,8 +75,8 @@ impl<Tx> Generation<Tx> {
                 .collect()
         });
         let sequences = results?;
-        for sequence in &sequences {
-            for raw in &sequence.raw {
+        for (raws, _) in &sequences {
+            for raw in raws {
                 checker.import(raw.to_records(raw.id));
             }
         }
@@ -82,22 +84,21 @@ impl<Tx> Generation<Tx> {
         let verdicts = checker.check();
         let mut committer = EvmStateCommitter::with_target(gen_db.into_inner());
         let mut raws = Vec::new();
-        for mut sequence in sequences {
-            for raw in &mut sequence.raw {
+        for (mut results, mut committed) in sequences {
+            for raw in &mut results {
                 if let Ok(index) = verdicts.binary_search_by_key(&raw.id, |verdict| verdict.id) {
                     raw.verdict = verdicts[index].clone();
                 }
             }
-            let outcome = sequence.finalize(fallback)?;
-            if let Some(raw) = outcome.raw.first() {
-                committer.buffer(raw.id, outcome.committed);
+            if !JobSequence::<Tx>::is_all_accepted(&results) {
+                committed = JobSequence::<Tx>::rebuild_sequence_state(&mut results, fallback)?;
             }
-            raws.extend(outcome.raw);
+            if let Some(raw) = results.first() {
+                committer.buffer(raw.id, committed);
+            }
+            raws.extend(results);
         }
-        Ok(StateOutcome {
-            raw: raws,
-            committed: committer.commit(fallback)?,
-        })
+        Ok((raws, committer.commit(fallback)?))
     }
 
     /// Sets each job ID's generation to the supplied index and its sequence/job
@@ -117,11 +118,11 @@ impl<Tx> Generation<Tx> {
     /// job in the generation's nonce and ID ordering. Stores one offset per
     /// sender, including zero offsets, in sender-address order.
     pub(crate) fn new(mut sequences: Vec<JobSequence<Tx>>) -> Self {
-        let mut transactions_by_sender = BTreeMap::<Sender, Vec<(u64, u64, usize)>>::new();
+        let mut tx_by_sender = BTreeMap::<Sender, Vec<(u64, u64, usize)>>::new();
         for (sequence_index, sequence) in sequences.iter_mut().enumerate() {
             sequence.nonce_offsets.clear();
             for job in &sequence.jobs {
-                transactions_by_sender.entry(job.sender).or_default().push((
+                tx_by_sender.entry(job.sender).or_default().push((
                     job.nonce,
                     job.id.global,
                     sequence_index,
@@ -129,11 +130,11 @@ impl<Tx> Generation<Tx> {
             }
         }
 
-        for (sender, mut transactions) in transactions_by_sender {
-            transactions.sort_unstable_by_key(|(nonce, id, _)| (*nonce, *id));
-            let mut seen_sequences = BTreeSet::new();
-            for (offset, (_, _, sequence_index)) in transactions.into_iter().enumerate() {
-                if seen_sequences.insert(sequence_index) {
+        for (sender, mut tx) in tx_by_sender {
+            tx.sort_unstable_by_key(|(nonce, id, _)| (*nonce, *id));
+            let mut with_offset = BTreeSet::new();
+            for (offset, (_, _, sequence_index)) in tx.into_iter().enumerate() {
+                if with_offset.insert(sequence_index) {
                     sequences[sequence_index]
                         .nonce_offsets
                         .push(SenderNonceOffset {

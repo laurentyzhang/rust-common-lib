@@ -25,7 +25,10 @@ fn reads_fallback_and_keeps_writes_local() {
         );
     }
     let fallback = StateDb::new(EvmState::from_iter([(owner, account)]));
-    let mut db = StateDb::with_fallback(EvmState::default(), Some(&fallback));
+    let mut db = StateDb::with_fallback(
+        StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+        Some(&fallback),
+    );
     assert_eq!(db.get(&owner).unwrap(), Some(info.clone()));
     assert_eq!(db.basic(owner).unwrap(), Some(info.clone()));
     assert_eq!(db.code_by_hash(info.code_hash).unwrap(), code);
@@ -77,8 +80,13 @@ fn local_account_resets_hide_fallback_storage() {
     let mut missing = Account::from(AccountInfo::default());
     missing.status.insert(AccountStatus::LoadedAsNotExisting);
     for (account, exists) in [(deleted, false), (created, true), (missing, false)] {
-        let mut db =
-            StateDb::with_fallback(EvmState::from_iter([(owner, account)]), Some(&fallback));
+        let mut db = StateDb::with_fallback(
+            StateOverlay::new(
+                EvmState::from_iter([(owner, account)]),
+                StateOverlay::copy_balance_nonce,
+            ),
+            Some(&fallback),
+        );
         assert_eq!(db.basic(owner).unwrap().is_some(), exists);
         assert_eq!(db.get(&owner).unwrap().is_some(), exists);
         assert_eq!(db.read(owner, U256::from(7)).unwrap(), U256::ZERO);
@@ -96,7 +104,10 @@ fn optional_fallback_controls_block_hash_reads() {
     );
     assert_eq!(local.block_hash(42).unwrap(), B256::ZERO);
     let fallback = EmptyDB::default();
-    let mut db = StateDb::with_fallback(EvmState::default(), Some(&fallback));
+    let mut db = StateDb::with_fallback(
+        StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+        Some(&fallback),
+    );
     assert_eq!(
         db.block_hash(42).unwrap(),
         fallback.block_hash_ref(42).unwrap()
@@ -111,13 +122,12 @@ fn merging_local_state_preserves_the_destination_fallback() {
         ..Default::default()
     };
     let fallback = StateDb::new(EvmState::from_iter([(owner, Account::from(info.clone()))]));
-    let mut db = StateDb::with_fallback(EvmState::default(), Some(&fallback));
+    let mut db = StateDb::with_fallback(
+        StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas),
+        Some(&fallback),
+    );
     db.overlay
-        .apply(
-            EvmState::default(),
-            db.fallback.as_ref(),
-            StateOverlay::add_balance_nonce_deltas,
-        )
+        .apply(EvmState::default(), db.fallback.as_ref())
         .unwrap();
     assert_eq!(db.basic(owner).unwrap(), Some(info));
 }

@@ -13,6 +13,7 @@ pub enum NumericError {
 pub enum CrdtError {
     I256(NumericError),
     U256(NumericError),
+    U64(NumericError),
     CannotAddDeltaToMissingValue,
     TypeMismatch,
 }

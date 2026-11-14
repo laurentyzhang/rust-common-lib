@@ -5,7 +5,6 @@ mod hooks;
 mod op;
 pub mod output;
 mod slot;
-mod state_outcome;
 mod tracking;
 pub mod workload;
 pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
@@ -20,6 +19,5 @@ pub use hooks::{
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use slot::{Property, ScalarAdapter, ScalarKeyCodec, ScalarKind};
-pub use state_outcome::StateOutcome;
 pub use tracking::{ReadRecorder, StateReads, recorder};
 pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig};

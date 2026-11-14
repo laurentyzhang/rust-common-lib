@@ -78,17 +78,26 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         self.u256_checker.import(u256_records);
     }
 
-    /// Checks imported records and returns one commit verdict per recorded job.
-    ///
-    /// Access and numeric-bound checks run independently. Their diagnostics are
-    /// combined with execution-order and gas information to select accepted
-    /// sequence prefixes. A numeric error requires rejection; an access conflict
-    /// is resolved by discarding one of the conflicting sequence suffixes.
-    ///
-    /// Each verdict includes its job's diagnostics and conflict peers, even when
-    /// the job is accepted. Rejected dependent jobs identify the first rejection
-    /// in their sequence. Checking consumes the imported batch.
+    /// Consumes the batch and returns job verdicts with conflict diagnostics.
+    /// Accepts a single sequence directly; otherwise checks conflicts and selects sequence prefixes.
     fn check(&mut self) -> Vec<CommitVerdict<K>> {
+        let sequences = self.accumulate();
+        // A single sequence already ran in order; accept its jobs and clear the batch.
+        if sequences.len() == 1 {
+            *self = Self::new();
+            let mut verdicts: Vec<_> = sequences
+                .into_iter()
+                .flatten()
+                .map(|(id, _)| CommitVerdict {
+                    id,
+                    decision: CommitDecision::Accepted,
+                    conflicts: Vec::new(),
+                })
+                .collect();
+            verdicts.sort_unstable_by_key(|verdict| verdict.id);
+            return verdicts;
+        }
+
         // Check general accesses and signed/unsigned numeric bounds concurrently.
         let ((mut diagnostics, pairs), ((i256, _), (u256, _))) = rayon::join(
             || self.access_checker.check(),
@@ -100,10 +109,8 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             },
         );
 
-        // Keep all diagnostic types, and group jobs into ordered sequences with
-        // cumulative gas so selection can compare the cost of rejected suffixes.
+        // Keep all diagnostic types for selecting accepted sequence prefixes.
         diagnostics.extend(i256.into_iter().chain(u256));
-        let sequences = self.accumulate();
 
         // Numeric failures are mandatory rejections; access pairs are resolved
         // by selecting compatible prefixes from the affected sequences.

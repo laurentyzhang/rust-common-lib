@@ -1,5 +1,8 @@
 use super::Scalar;
-use crate::crdt::{Crdt, state::DeltaOp};
+use crate::crdt::{
+    Crdt, Type,
+    state::{CrdtError, DeltaOp, NumericError},
+};
 use alloy_primitives::{I256, U256};
 
 #[test]
@@ -59,4 +62,42 @@ fn signed_delta_supports_the_full_i256_range() {
     value.add_delta(&DeltaOp::Add(U256::MAX)).unwrap();
     value.apply_delta();
     assert_eq!(value.value(), Some(&I256::MAX));
+}
+
+#[test]
+fn u64_deltas_use_the_full_range_and_reject_overflow_and_underflow() {
+    let mut scalar = Scalar::with_delta(0u64, u64::delta_between(0, u64::MAX)).unwrap();
+    assert_eq!(scalar.value(), Some(&0));
+    assert_eq!(scalar.apply_delta().value(), Some(&u64::MAX));
+    let before = scalar.clone();
+    assert!(matches!(
+        scalar.add_delta(&DeltaOp::Add(1)),
+        Err(CrdtError::U64(NumericError::Overflow(_)))
+    ));
+    assert_eq!(scalar, before);
+    scalar.add_delta(&u64::delta_between(u64::MAX, 0)).unwrap();
+    assert_eq!(scalar.apply_delta().value(), Some(&0));
+    let before = scalar.clone();
+    assert!(matches!(
+        scalar.add_delta(&DeltaOp::Sub(1)),
+        Err(CrdtError::U64(NumericError::Underflow(_)))
+    ));
+    assert_eq!(scalar, before);
+}
+
+#[test]
+fn u64_nonce_deltas_accumulate_and_respect_limits() {
+    let mut nonce = Scalar::with_delta(7u64, u64::delta_between(7, 8)).unwrap();
+    nonce.add_delta(&u64::delta_between(8, 10)).unwrap();
+    assert_eq!(nonce.delta(), Some(&DeltaOp::Add(3)));
+    assert_eq!(nonce.apply_delta().value(), Some(&10));
+
+    let mut bounded = Scalar::<u64>::new(0, 10).unwrap();
+    bounded.add_delta(&DeltaOp::Add(8)).unwrap();
+    let before = bounded.clone();
+    assert!(matches!(
+        bounded.add_delta(&DeltaOp::Add(3)),
+        Err(CrdtError::U64(NumericError::AboveUpperLimit(_)))
+    ));
+    assert_eq!(bounded, before);
 }

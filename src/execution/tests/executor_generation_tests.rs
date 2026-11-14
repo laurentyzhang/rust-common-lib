@@ -1,11 +1,13 @@
 use super::*;
+use crate::execution::evm::state::StateOverlay;
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
 use crate::planner::resolver::{
     CommitDecision, CommitVerdict, ConflictDetector, accepted_ids, rejected_ids,
 };
 use crate::planner::scheduler::{Generation, JobSequence};
 use alloy_evm::{
-    EvmEnv, FromRecoveredTx, RecoveredTx,
+    Evm, EvmEnv, FromRecoveredTx, RecoveredTx,
+    block::BlockExecutor,
     revm::{
         Database, DatabaseRef,
         state::{Account, AccountInfo, Bytecode, EvmState},
@@ -38,7 +40,7 @@ struct Recovered {
 }
 
 #[test]
-fn job_returns_raw_and_committed_states() {
+fn job_returns_raw_state_and_commits_to_database() {
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
         OpChainHardforks::op_mainnet(),
@@ -52,12 +54,16 @@ fn job_returns_raw_and_committed_states() {
         let job = job(1, Address::repeat_byte(0x99));
         let caller = Address::from(job.sender);
         let evm = factory.evm_factory().create_evm_with_inspector(
-            StateDb::with_fallback(EvmState::default(), Some(&fallback)),
+            StateDb::with_fallback(
+                StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+                Some(&fallback),
+            ),
             env,
             crate::execution::ReadRecorder::new(job.id.global),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
-        let StateOutcome { mut raw, committed } = job.run(&mut executor);
+        let mut raw = job.run(&mut executor);
+        let committed = executor.evm().db().inner();
         if gas_limit == 100_000 {
             raw.verdict.decision = CommitDecision::Accepted;
             assert!(raw.receipt.is_some());
@@ -119,7 +125,7 @@ fn scheduled_jobs_expose_their_own_deferred_phase() {
             job
         })
         .collect();
-    let StateOutcome { raw: mut outcomes, .. } = JobSequence {
+    let (mut outcomes, _) = JobSequence {
         jobs,
         nonce_offsets: Vec::new(),
     }
@@ -169,21 +175,8 @@ fn job_detects_deposit_transaction_type() {
 }
 
 #[test]
-fn single_sequence_passes_without_inter_sequence_checking() {
-    use crate::crdt::state::{Status, Tracked};
-    use crate::execution::output::ExecutionOutput;
+fn single_sequence_gets_accepted_verdicts_from_checker() {
     use crate::planner::resolver::Checker;
-
-    struct NoInterSequenceCheck;
-    impl Checker<Key> for NoInterSequenceCheck {
-        fn import(&mut self, _: Vec<ExecutionOutput<Key, Tracked<Status, Status>>>) {
-            panic!("single sequence should not import inter-sequence records");
-        }
-
-        fn check(&mut self) -> Vec<CommitVerdict<Key>> {
-            panic!("single sequence should not run inter-sequence checking");
-        }
-    }
 
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
@@ -203,15 +196,23 @@ fn single_sequence_passes_without_inter_sequence_checking() {
             nonce_offsets: Vec::new(),
         }],
     };
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-    let outcome = generation
-        .run(&factory, &config, &pool, &mut NoInterSequenceCheck, &StateDb::default())
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
         .unwrap();
-    assert_eq!(outcome.raw[0].verdict.decision, CommitDecision::Accepted);
+    let mut checker = ConflictDetector::new();
+    let (outcomes, _) = generation
+        .run(&factory, &config, &pool, &mut checker, &StateDb::default())
+        .unwrap();
+    assert_eq!(outcomes[0].verdict.decision, CommitDecision::Accepted);
+    assert!(checker.check().is_empty());
 }
 
 #[test]
 fn sequence_nonce_offsets_are_local_and_checked() {
+    use crate::execution::EvmStateCommitter;
+    use crate::store::traits::Committer;
+
     let factory = ArcologyBlockExecutorFactory::new(
         OpAlloyReceiptBuilder::default(),
         OpChainHardforks::op_mainnet(),
@@ -242,14 +243,15 @@ fn sequence_nonce_offsets_are_local_and_checked() {
             OpBlockExecutionCtx::default(),
         );
         if let Some(expected) = expected {
-            let StateOutcome {
-                raw: mut outcomes,
-                committed,
-            } = result.unwrap();
+            let (mut outcomes, committed) = result.unwrap();
             let executed = outcomes[0].result_and_state().as_ref().unwrap();
             assert!(executed.result.is_success());
             assert_eq!(executed.state[&caller].info.nonce, expected);
-            // Speculative offsets are not nonce changes made by this sequence.
+            assert_eq!(committed[&caller].info.nonce, expected);
+            assert_eq!(committed[&caller].original_info().nonce, nonce + offset);
+            let mut generation = EvmStateCommitter::new_parallel();
+            generation.buffer(ID::new(0, 0), committed);
+            let committed = generation.commit(&fallback).unwrap();
             assert_eq!(committed[&caller].info.nonce, nonce + 1);
             assert_eq!(committed[&caller].original_info().nonce, nonce);
         } else {
@@ -306,10 +308,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 })
                 .collect(),
         };
-        let StateOutcome {
-            raw: mut outcomes,
-            committed: committed_state,
-        } = generation
+        let (mut outcomes, committed_state) = generation
             .run(&factory, &config, &pool, &mut checker, &persistent)
             .unwrap();
         assert_eq!(outcomes.len(), 2);
@@ -374,11 +373,11 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             }],
         };
 
-        let fallback = StateDb::with_fallback(committed_state, Some(&persistent));
-        let StateOutcome {
-            raw: mut outcomes,
-            committed: committed_state,
-        } = generation
+        let fallback = StateDb::with_fallback(
+            StateOverlay::new(committed_state, StateOverlay::copy_balance_nonce),
+            Some(&persistent),
+        );
+        let (mut outcomes, committed_state) = generation
             .run(&factory, &config, &pool, &mut checker, &fallback)
             .unwrap();
         assert_eq!(outcomes.len(), 1);
@@ -401,10 +400,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         );
 
         let mut planner = Planner::new(StateDb::new(state.clone()), Default::default());
-        let StateOutcome {
-            raw: outcomes,
-            committed,
-        } = ArcologyParaBlockExecutor::execute_block(
+        let (outcomes, committed) = ArcologyParaBlockExecutor::execute_block(
             &factory,
             &config,
             &pool,
@@ -488,10 +484,7 @@ fn commits_all_conflict_free_parallel_jobs() {
         .num_threads(2)
         .build()
         .unwrap();
-    let StateOutcome {
-        raw: outcomes,
-        committed: committed_state,
-    } = generation
+    let (outcomes, committed_state) = generation
         .run(&factory, &config, &pool, &mut checker, &fallback)
         .unwrap();
     assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
@@ -533,7 +526,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
         .unwrap();
     let fallback = StateDb::default();
     let mut planner = Planner::new(StateDb::default(), Default::default());
-    let StateOutcome { raw: mut outcomes, .. } = ArcologyParaBlockExecutor::execute_block(
+    let (mut outcomes, _) = ArcologyParaBlockExecutor::execute_block(
         &factory,
         &config,
         &pool,
@@ -607,10 +600,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
         let block = planner.plan(jobs).unwrap();
         assert_eq!(block.generations.len(), 1);
         let cumulative = std::cell::RefCell::new(Vec::new());
-        let StateOutcome {
-            raw: mut outcomes,
-            committed,
-        } = block
+        let (mut outcomes, committed) = block
             .run(
                 &factory,
                 &config,
@@ -652,6 +642,146 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
             U256::ZERO
         );
         assert!(fallback.basic_ref(caller).unwrap().is_none());
+    }
+}
+
+#[test]
+fn sequence_keeps_api_transitions_for_rejected_suffixes() {
+    use crate::crdt::state::{Status, Tracked};
+    use crate::execution::{
+        ApiAddress, IU256, ScalarAdapter, U256Handler, output::ExecutionOutput,
+    };
+    use crate::planner::resolver::Checker;
+    use alloy_evm::revm::state::EvmStorageSlot;
+    use alloy_sol_types::SolCall;
+
+    struct Verdicts(Vec<CommitVerdict<Key>>);
+    impl Checker<Key> for Verdicts {
+        fn import(&mut self, _: Vec<ExecutionOutput<Key, Tracked<Status, Status>>>) {}
+
+        fn check(&mut self) -> Vec<CommitVerdict<Key>> {
+            std::mem::take(&mut self.0)
+        }
+    }
+
+    let api = ApiAddress::U256.address();
+    let mut router = CallRouter::new();
+    router.register(api, U256Handler).unwrap();
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(router).unwrap(),
+    );
+    let mut env: EvmEnv<OpSpecId> = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::REGOLITH;
+    env.block_env.timestamp = U256::from(1_700_000_000u64);
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let caller = Address::from(job(1, api).sender);
+    let handle = Address::with_last_byte(7);
+    let key = crate::execution::ScalarKeyCodec::encode(
+        crate::namespace::Namespace::U256,
+        crate::execution::Property::Value as u8,
+        handle,
+    );
+    let slots = ScalarAdapter::new(key);
+    let mut account = Account::from(AccountInfo::default().with_nonce(7));
+    account.storage.insert(
+        slots.max,
+        EvmStorageSlot::new(U256::from(100), Default::default()),
+    );
+    let fallback = StateDb::new(EvmState::from_iter([(caller, account)]));
+
+    for reject_last in [false, true] {
+        let jobs = [2, 3, 5]
+            .into_iter()
+            .enumerate()
+            .map(|(index, delta)| {
+                let tx = OpTxEnvelope::from(TxDeposit {
+                    from: caller,
+                    to: TxKind::Call(api),
+                    input: IU256::addCall {
+                        key: key.into(),
+                        delta: U256::from(delta),
+                    }
+                    .abi_encode()
+                    .into(),
+                    gas_limit: 100_000,
+                    ..Default::default()
+                });
+                Job::new(
+                    ID {
+                        job: index as u64,
+                        ..ID::new(0, index as u64)
+                    },
+                    (
+                        ArcologyTx::from_recovered_tx(&tx, caller),
+                        Recovered { tx, signer: caller },
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut checker = Verdicts(
+            jobs.iter()
+                .enumerate()
+                .map(|(index, job)| CommitVerdict {
+                    id: job.id,
+                    decision: if reject_last && index == 2 {
+                        CommitDecision::Rejected
+                    } else {
+                        CommitDecision::Accepted
+                    },
+                    conflicts: Vec::new(),
+                })
+                .collect(),
+        );
+        let (mut outcomes, committed) = Generation {
+            sequences: vec![JobSequence {
+                jobs,
+                nonce_offsets: vec![crate::planner::scheduler::sender::SenderNonceOffset {
+                    sender: caller.into_array(),
+                    offset: 2,
+                }],
+            }],
+        }
+        .run(&factory, &config, &pool, &mut checker, &fallback)
+        .unwrap();
+        let account = &committed[&caller];
+        assert_eq!(account.original_info().nonce, 7);
+        assert_eq!(account.info.nonce, 10);
+        assert_eq!(
+            account.storage[&slots.pos_delta].original_value(),
+            U256::ZERO
+        );
+        assert_eq!(
+            account.storage[&slots.pos_delta].present_value(),
+            U256::from(if reject_last { 5 } else { 10 })
+        );
+        for (index, raw) in outcomes.iter_mut().take(2).enumerate() {
+            let executed = raw.result_and_state().as_ref().unwrap();
+            assert!(executed.result.is_success());
+            let state = &executed.state;
+            assert_eq!(state[&caller].original_info().nonce, 9 + index as u64);
+            assert_eq!(
+                state[&caller].storage[&slots.pos_delta].original_value(),
+                U256::from([0, 2][index])
+            );
+            assert_eq!(
+                state[&caller].storage[&slots.pos_delta].present_value(),
+                U256::from([2, 5][index])
+            );
+        }
+        assert_eq!(
+            fallback.storage_ref(caller, slots.pos_delta).unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(fallback.basic_ref(caller).unwrap().unwrap().nonce, 7);
     }
 }
 

@@ -1,11 +1,12 @@
 use super::*;
+use crate::execution::evm::state::StateOverlay;
 use crate::execution::{Property, ScalarKeyCodec};
 use crate::namespace::Namespace;
 use alloy_evm::{
     block::StateDB,
     revm::{
         Database,
-        state::{Account, AccountInfo, EvmStorageSlot},
+        state::{Account, AccountInfo, Bytecode, EvmStorageSlot},
     },
 };
 use alloy_primitives::{Address, U256};
@@ -65,4 +66,93 @@ fn commit_hides_deleted_accounts_and_recreation_resets_storage() {
     db.commit(EvmState::from_iter([(Address::ZERO, recreated)]));
     assert_eq!(db.basic(Address::ZERO).unwrap(), Some(info));
     assert_eq!(db.storage(Address::ZERO, slot).unwrap(), U256::ZERO);
+}
+
+#[test]
+fn commit_preserves_sequence_originals_across_transactions() {
+    let slot = U256::from(7);
+    let mut first = changes(&[(slot, U256::from(10), U256::from(12))]);
+    let account = first.get_mut(&Address::ZERO).unwrap();
+    account.original_info_mut().nonce = 3;
+    account.info.nonce = 4;
+    let mut db = StateDb::new(first);
+    let mut second = changes(&[(slot, U256::from(12), U256::from(15))]);
+    let account = second.get_mut(&Address::ZERO).unwrap();
+    account.original_info_mut().nonce = 4;
+    account.info.nonce = 5;
+    db.commit(second);
+    let account = &db.inner()[&Address::ZERO];
+    assert_eq!(account.original_info().nonce, 3);
+    assert_eq!(account.info.nonce, 5);
+    assert_eq!(account.storage[&slot].original_value(), U256::from(10));
+    assert_eq!(account.storage[&slot].present_value(), U256::from(15));
+}
+
+#[test]
+fn commit_updates_code_and_keeps_it_when_not_loaded_again() {
+    let code = Bytecode::new_raw(vec![0x60, 0x01, 0x00].into());
+    let original = AccountInfo::default();
+    let mut db = StateDb::new(EvmState::from_iter([(
+        Address::ZERO,
+        Account::from(original.clone()),
+    )]));
+    let mut incoming = Account::from(original.clone()).with_touched_mark();
+    incoming.info.code_hash = code.hash_slow();
+    incoming.info.code = Some(code.clone());
+    db.commit(EvmState::from_iter([(Address::ZERO, incoming)]));
+    assert_eq!(db.inner()[&Address::ZERO].original_info(), original);
+    assert_eq!(db.code_by_hash(code.hash_slow()).unwrap(), code);
+
+    let mut incoming = Account::from(db.inner()[&Address::ZERO].info.clone()).with_touched_mark();
+    incoming.info.code = None;
+    db.commit(EvmState::from_iter([(Address::ZERO, incoming)]));
+    assert_eq!(db.inner()[&Address::ZERO].info.code, Some(code));
+}
+
+#[test]
+fn commit_rebases_slots_on_fallback_and_keeps_their_originals() {
+    let delta = ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO);
+    let value = ScalarKeyCodec::encode(Namespace::U256, Property::Value as u8, Address::ZERO);
+    let ordinary = U256::from(7);
+    let fallback = StateDb::new(changes(&[
+        (delta, U256::ZERO, U256::from(10)),
+        (value, U256::ZERO, U256::from(42)),
+        (ordinary, U256::ZERO, U256::from(50)),
+    ]));
+    let mut db = StateDb::with_fallback(
+        StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas),
+        Some(&fallback),
+    );
+    db.commit(changes(&[
+        (delta, U256::from(12), U256::from(15)),
+        (value, U256::from(42), U256::from(47)),
+        (ordinary, U256::from(55), U256::from(60)),
+    ]));
+    for (key, original, present) in [(delta, 10, 13), (value, 42, 47), (ordinary, 50, 60)] {
+        let slot = &db.inner()[&Address::ZERO].storage[&key];
+        assert_eq!(slot.original_value(), U256::from(original));
+        assert_eq!(slot.present_value(), U256::from(present));
+    }
+    db.commit(changes(&[(delta, U256::from(15), U256::from(17))]));
+    let slot = &db.inner()[&Address::ZERO].storage[&delta];
+    assert_eq!(slot.original_value(), U256::from(10));
+    assert_eq!(slot.present_value(), U256::from(15));
+    assert_eq!(
+        fallback.inner()[&Address::ZERO].storage[&delta].present_value(),
+        U256::from(10)
+    );
+}
+
+#[test]
+fn apply_checks_deltas_for_empty_accounts_without_partial_changes() {
+    let state = EvmState::from_iter([(Address::ZERO, Account::default())]);
+    let mut overlay = StateOverlay::new(state.clone(), StateOverlay::add_balance_nonce_deltas);
+    let mut invalid = Account::from(AccountInfo::default().with_balance(U256::from(10)));
+    invalid.info.balance = U256::from(5);
+    let incoming = EvmState::from_iter([
+        (Address::ZERO, invalid),
+        (Address::with_last_byte(1), Account::default()),
+    ]);
+    assert!(overlay.apply::<StateDb>(incoming, None).is_err());
+    assert_eq!(overlay.inner(), &state);
 }

@@ -47,7 +47,7 @@ pub struct JobResult<R, H = HaltReason> {
 mod tests;
 
 impl<R, H> JobResult<R, H> {
-    /// Returns the execution result and commit state, or an error for a pending verdict.
+    /// Returns the execution result and verdict-filtered transitions, or an error for a pending verdict.
     pub fn result_and_state(&mut self) -> &Result<ResultAndState<H>, BlockExecutionError>
     where
         H: Clone,
@@ -70,7 +70,8 @@ impl<R, H> JobResult<R, H> {
             return &self.raw_result_and_state;
         }
 
-        let result = self.raw_result_and_state.as_ref().unwrap().result.clone();
+        let executed = self.raw_result_and_state.as_ref().unwrap();
+        let result = executed.result.clone();
         self.commit_result = Some(
             self.fee_nonce_only_state()
                 .map(|state| ResultAndState::new(result, state))
@@ -84,28 +85,6 @@ impl<R, H> JobResult<R, H> {
             .as_ref()
             .ok()
             .map(|executed| executed.result.tx_gas_used())
-    }
-
-    pub(crate) fn state_for_commit(&mut self, state: EvmState) -> Result<EvmState, std::io::Error>
-    where
-        H: Clone,
-    {
-        if let Err(error) = &self.raw_result_and_state {
-            return Err(std::io::Error::other(format!(
-                "job {:?} execution failed: {error}",
-                self.id
-            )));
-        }
-        let accepted = self.verdict.decision == CommitDecision::Accepted;
-        let executed = self
-            .result_and_state()
-            .as_ref()
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        Ok(if accepted {
-            state
-        } else {
-            executed.state.clone()
-        })
     }
 
     pub fn new(
@@ -298,17 +277,25 @@ impl<R, H> JobResult<R, H> {
         records
     }
 
-    pub(crate) fn fee_nonce_only_state(&self) -> Result<EvmState, std::io::Error> {
+    fn fee_nonce_only_state(&self) -> Result<EvmState, std::io::Error> {
         let Ok(executed) = &self.raw_result_and_state else {
             return Ok(EvmState::default());
         };
 
         let mut state = EvmState::default();
-        // Start from the sender's original account, keeping only the fee and nonce.
+        // Keep only fee and nonce transitions from the original execution accounts.
         if let Some(sender) = executed.state.get(&self.sender) {
             let mut account = Account::from(sender.original_info()).with_touched_mark();
-            account.info.code = None;
-            account.info.nonce = sender.info.nonce;
+            let nonce_delta = sender
+                .info
+                .nonce
+                .checked_sub(sender.original_info().nonce)
+                .ok_or_else(|| std::io::Error::other("sender nonce decreased"))?;
+            account.info.nonce = account
+                .info
+                .nonce
+                .checked_add(nonce_delta)
+                .ok_or_else(|| std::io::Error::other("sender nonce overflow"))?;
             account.info.balance = account.info.balance.checked_sub(self.fee).ok_or_else(|| {
                 std::io::Error::other("insufficient balance for rejected transaction fee")
             })?;
@@ -316,7 +303,7 @@ impl<R, H> JobResult<R, H> {
         }
 
         // Transaction may contain multiple transfer recipients for (OP only fees)
-        // Credit each recipient on its original account, or on the sender above.
+        // Credit each recipient on its baseline account, or on the sender above.
         for &(recipient, amount) in &self.fee_recipients {
             if amount.is_zero() {
                 continue;
@@ -324,12 +311,11 @@ impl<R, H> JobResult<R, H> {
             let original = executed
                 .state
                 .get(&recipient)
-                .expect("a paid fee recipient is present in the executed state")
+                .expect("a fee account is present in the executed state")
                 .original_info();
             let account = state
                 .entry(recipient)
                 .or_insert_with(|| Account::from(original).with_touched_mark());
-            account.info.code = None;
             account.info.balance = account
                 .info
                 .balance

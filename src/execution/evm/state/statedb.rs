@@ -11,7 +11,7 @@ pub struct StateDb<DB = EmptyDB> {
 impl StateDb {
     pub fn new(overlay: EvmState) -> Self {
         Self {
-            overlay: StateOverlay::new(overlay),
+            overlay: StateOverlay::new(overlay, StateOverlay::copy_balance_nonce),
             fallback: None,
         }
     }
@@ -24,18 +24,15 @@ impl Default for StateDb {
 }
 
 impl<DB> StateDb<DB> {
-    pub fn with_fallback(overlay: EvmState, fallback: Option<DB>) -> Self {
-        Self {
-            overlay: StateOverlay::new(overlay),
-            fallback,
-        }
+    pub fn with_fallback(overlay: StateOverlay, fallback: Option<DB>) -> Self {
+        Self { overlay, fallback }
     }
 
     pub fn inner(&self) -> &EvmState {
         self.overlay.inner()
     }
 
-    pub(super) fn inner_mut(&mut self) -> &mut EvmState {
+    pub fn inner_mut(&mut self) -> &mut EvmState {
         self.overlay.inner_mut()
     }
 

@@ -1,6 +1,7 @@
 mod i256;
 mod traits;
 mod u256;
+mod u64;
 
 pub use traits::Type;
 

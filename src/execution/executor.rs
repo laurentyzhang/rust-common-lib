@@ -9,7 +9,7 @@ use std::io::Error;
 use alloy_evm::revm::{DatabaseRef, context_interface::Transaction, state::EvmState};
 
 use super::{
-    ArcologyEvmFactory, ParaBlockConfig, StateOutcome,
+    ArcologyEvmFactory, ParaBlockConfig,
     key::Key,
     op::backend::PostExecEvmFactoryAdapter,
     workload::{ID, Job, JobResult},
@@ -63,10 +63,10 @@ impl ArcologyParaBlockExecutor {
         planner: &mut Planner<PDB, Key>,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
     ) -> Result<
-        StateOutcome<
+        (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
             EvmState,
-        >,
+        ),
         Error,
     >
     where

@@ -47,7 +47,8 @@ impl From<crate::crdt::state::CrdtError> for NumericError {
     fn from(error: crate::crdt::state::CrdtError) -> Self {
         match error {
             crate::crdt::state::CrdtError::I256(error)
-            | crate::crdt::state::CrdtError::U256(error) => error.into(),
+            | crate::crdt::state::CrdtError::U256(error)
+            | crate::crdt::state::CrdtError::U64(error) => error.into(),
             crate::crdt::state::CrdtError::CannotAddDeltaToMissingValue => {
                 Self::CannotAddDeltaToMissingValue
             }

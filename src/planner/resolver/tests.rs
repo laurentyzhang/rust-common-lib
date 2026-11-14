@@ -425,6 +425,50 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
 }
 
 #[test]
+fn single_sequence_is_accepted_without_checks_and_consumes_the_batch() {
+    for (value, first_delta, second_delta) in [
+        (
+            CrdtValue::from(Scalar::<I256>::default()),
+            CrdtDelta::I256(DeltaOp::Add(U256::MAX >> 1)),
+            CrdtDelta::I256(DeltaOp::Add(U256::from(1))),
+        ),
+        (
+            CrdtValue::from(Scalar::<U256>::default()),
+            CrdtDelta::U256(DeltaOp::Add(U256::MAX)),
+            CrdtDelta::U256(DeltaOp::Add(U256::from(1))),
+        ),
+    ] {
+        let mut first = Tracked::new_owned_existing(value.clone(), 9);
+        first.add_delta(first_delta).unwrap();
+        let mut second = Tracked::new_owned_existing(value, 3);
+        second.add_delta(second_delta).unwrap();
+        let mut first = transition(7, first);
+        first.id.sequence = 0;
+        let mut second = transition(7, second);
+        second.id.sequence = 0;
+        second.id.job = 1;
+        let ids = vec![second.id, first.id];
+        let mut detector = ConflictDetector::new();
+        detector.import(vec![first, second]);
+        let verdicts = detector.check();
+        assert_eq!(accepted_ids(&verdicts), ids);
+        assert!(verdicts.iter().all(|verdict| verdict.conflicts.is_empty()));
+        assert!(detector.check().is_empty());
+
+        detector.import(combined_records());
+        let verdicts = detector.check();
+        assert_eq!(
+            rejected_ids(&verdicts)
+                .iter()
+                .map(|id| id.global)
+                .collect::<Vec<_>>(),
+            vec![20, 30]
+        );
+        assert!(detector.check().is_empty());
+    }
+}
+
+#[test]
 fn consumes_both_stages_and_accepts_a_fresh_batch() {
     let mut detector = ConflictDetector::new();
     assert!(detector.check().is_empty());

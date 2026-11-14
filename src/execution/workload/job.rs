@@ -5,7 +5,7 @@ use alloy_evm::{
     block::{BlockExecutionError, BlockExecutor, ExecutableTx, TxResult},
     revm::context_interface::{Cfg, Transaction},
     revm::database_interface::WrapDatabaseRef,
-    revm::{DatabaseRef, state::EvmState},
+    revm::{Database, DatabaseRef},
 };
 use alloy_op_evm::block::OpTxEnv;
 use alloy_primitives::{Address, TxKind, U256};
@@ -13,7 +13,7 @@ use op_alloy::consensus::DEPOSIT_TX_TYPE_ID;
 use op_revm::{L1BlockInfo, constants::*};
 use std::ops::DerefMut;
 
-use crate::execution::{ArcologyEvm, ArcologyTx, ReadRecorder, StateDb, StateOutcome};
+use crate::execution::{ArcologyEvm, ArcologyTx, ReadRecorder};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ID {
@@ -64,17 +64,13 @@ pub struct Job<Tx> {
 }
 
 impl<Tx> Job<Tx> {
-    /// Executes one transaction and returns its raw outcome and committed local state.
-    pub fn run<E, DB>(
-        self,
-        executor: &mut E,
-    ) -> StateOutcome<JobResult<E::Receipt, <E::Evm as Evm>::HaltReason>, EvmState>
+    /// Executes one transaction, commits it to the database, and returns its raw outcome.
+    pub fn run<E, DB>(self, executor: &mut E) -> JobResult<E::Receipt, <E::Evm as Evm>::HaltReason>
     where
         E: BlockExecutor,
-        E::Evm: Evm<DB = StateDb<DB>, Tx = ArcologyTx>
-            + DerefMut<Target = ArcologyEvm<StateDb<DB>, ReadRecorder>>,
+        E::Evm: Evm<DB = DB, Tx = ArcologyTx> + DerefMut<Target = ArcologyEvm<DB, ReadRecorder>>,
         E::Receipt: Clone,
-        DB: DatabaseRef + std::fmt::Debug,
+        DB: Database + DatabaseRef + std::fmt::Debug,
         Tx: ExecutableTx<E>,
     {
         executor.evm_mut().reset_reads(self.id.global);
@@ -102,15 +98,7 @@ impl<Tx> Job<Tx> {
         let mut l1_info = match execution.and(l1_info) {
             Ok(info) => info,
             Err(error) => {
-                return StateOutcome {
-                    raw: JobResult::new(
-                        self.id,
-                        Err(error),
-                        None,
-                        executor.evm_mut().drain_reads(),
-                    ),
-                    committed: EvmState::default(),
-                };
+                return JobResult::new(self.id, Err(error), None, executor.evm_mut().drain_reads());
             }
         };
         let receipt = executor
@@ -137,14 +125,7 @@ impl<Tx> Job<Tx> {
                 (OPERATOR_FEE_RECIPIENT, operator_fee),
             ];
         }
-        let mut committed = executor.evm().db().inner().clone();
-        // REVM includes loaded code; expose only actual code updates to the committer.
-        for account in committed.values_mut() {
-            if account.info.code_hash == account.original_info().code_hash {
-                account.info.code = None;
-            }
-        }
-        StateOutcome { raw, committed }
+        raw
     }
 }
 
