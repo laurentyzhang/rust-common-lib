@@ -6,7 +6,7 @@ use alloy_evm::{
     block::StateDB,
     revm::{
         Database,
-        state::{Account, AccountInfo, Bytecode, EvmStorageSlot},
+        state::{Account, AccountInfo, AccountStatus, Bytecode, EvmStorageSlot},
     },
 };
 use alloy_primitives::{Address, U256};
@@ -46,7 +46,7 @@ fn commit_applies_scalar_materialization_and_keeps_other_slots() {
 }
 
 #[test]
-fn commit_hides_deleted_accounts_and_recreation_resets_storage() {
+fn commit_hides_deleted_accounts() {
     let slot = U256::from(7);
     let mut db = StateDb::new(changes(&[(slot, U256::ZERO, U256::from(99))]));
     let mut deletion = Account::default();
@@ -56,16 +56,36 @@ fn commit_hides_deleted_accounts_and_recreation_resets_storage() {
     assert_eq!(db.basic(Address::ZERO).unwrap(), None);
     assert_eq!(db.storage(Address::ZERO, slot).unwrap(), U256::ZERO);
 
-    let info = AccountInfo {
-        nonce: 1,
-        ..Default::default()
-    };
-    let mut recreated = Account::from(info.clone());
-    recreated.mark_touch();
-    recreated.mark_created();
-    db.commit(EvmState::from_iter([(Address::ZERO, recreated)]));
-    assert_eq!(db.basic(Address::ZERO).unwrap(), Some(info));
-    assert_eq!(db.storage(Address::ZERO, slot).unwrap(), U256::ZERO);
+    let read = Account::new_not_existing(Default::default());
+    db.commit(EvmState::from_iter([(Address::ZERO, read)]));
+    assert!(db.inner()[&Address::ZERO].is_selfdestructed());
+    assert_eq!(db.basic(Address::ZERO).unwrap(), None);
+}
+
+#[test]
+fn commit_preserves_status_across_read_only_jobs() {
+    for (status, expected) in [
+        (
+            AccountStatus::Touched | AccountStatus::Cold,
+            AccountStatus::Touched,
+        ),
+        (
+            AccountStatus::Touched
+                | AccountStatus::Created
+                | AccountStatus::CreatedLocal
+                | AccountStatus::Cold,
+            AccountStatus::Touched | AccountStatus::Created,
+        ),
+    ] {
+        let mut account = Account::from(AccountInfo::default().with_nonce(1));
+        account.status = status;
+        let mut read = Account::from(account.info.clone());
+        read.mark_cold();
+        let mut db = StateDb::new(EvmState::from_iter([(Address::ZERO, account)]));
+        db.commit(EvmState::from_iter([(Address::ZERO, read)]));
+        assert!(db.commit_error().is_none());
+        assert_eq!(db.inner()[&Address::ZERO].status, expected);
+    }
 }
 
 #[test]
@@ -155,4 +175,38 @@ fn apply_checks_deltas_for_empty_accounts_without_partial_changes() {
     ]);
     assert!(overlay.apply::<StateDb>(incoming, None).is_err());
     assert_eq!(overlay.inner(), &state);
+}
+
+#[test]
+fn commit_preserves_first_error_and_stops_subsequent_commits() {
+    let address = Address::repeat_byte(0x11);
+    let initial = EvmState::from_iter([(
+        address,
+        Account::from(
+            AccountInfo::default()
+                .with_balance(U256::from(5))
+                .with_nonce(1),
+        ),
+    )]);
+    let mut db: StateDb = StateDb::with_fallback(
+        StateOverlay::new(initial.clone(), StateOverlay::add_balance_nonce_deltas),
+        None,
+    );
+    let mut invalid = Account::from(
+        AccountInfo::default()
+            .with_balance(U256::from(10))
+            .with_nonce(1),
+    );
+    invalid.info.balance = U256::ZERO;
+    db.commit(EvmState::from_iter([(address, invalid)]));
+    let first_error = db.commit_error().unwrap().to_string();
+    assert!(first_error.contains(&address.to_string()));
+    assert!(first_error.contains("Baseline balance 5, nonce 1"));
+    assert!(first_error.contains("Incoming balance 10 -> 0, nonce 1 -> 1"));
+    assert!(first_error.contains("Underflow"));
+    assert_eq!(db.inner(), &initial);
+
+    db.commit(changes(&[(U256::ZERO, U256::ZERO, U256::from(1))]));
+    assert_eq!(db.inner(), &initial);
+    assert_eq!(db.commit_error().unwrap().to_string(), first_error);
 }

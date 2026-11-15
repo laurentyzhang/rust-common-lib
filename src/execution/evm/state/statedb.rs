@@ -1,11 +1,13 @@
 use alloy_evm::revm::{database_interface::EmptyDB, state::EvmState};
 
 use super::overlay::StateOverlay;
+use crate::store::StoreError;
 
 #[derive(Debug)]
 pub struct StateDb<DB = EmptyDB> {
     pub(super) overlay: StateOverlay,
     pub(super) fallback: Option<DB>,
+    pub(super) commit_error: Option<StoreError>,
 }
 
 impl StateDb {
@@ -13,6 +15,7 @@ impl StateDb {
         Self {
             overlay: StateOverlay::new(overlay, StateOverlay::copy_balance_nonce),
             fallback: None,
+            commit_error: None,
         }
     }
 }
@@ -25,7 +28,16 @@ impl Default for StateDb {
 
 impl<DB> StateDb<DB> {
     pub fn with_fallback(overlay: StateOverlay, fallback: Option<DB>) -> Self {
-        Self { overlay, fallback }
+        Self {
+            overlay,
+            fallback,
+            commit_error: None,
+        }
+    }
+
+    /// Returns the first commit error, which prevents subsequent commits.
+    pub fn commit_error(&self) -> Option<&StoreError> {
+        self.commit_error.as_ref()
     }
 
     pub fn inner(&self) -> &EvmState {

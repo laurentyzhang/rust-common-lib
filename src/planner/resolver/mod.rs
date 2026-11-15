@@ -95,4 +95,5 @@ pub trait Checker<K> {
 }
 
 #[cfg(test)]
+#[path = "resolver_tests.rs"]
 mod tests;

@@ -55,6 +55,11 @@ impl<Tx> Block<Tx> {
                 generation.run(factory, config, pool, &mut planner.checker, &block_db)?;
             // Publish accepted changes before executing the next generation.
             block_db.commit(committed);
+            if let Some(error) = block_db.commit_error() {
+                return Err(Error::other(format!(
+                    "failed to commit generation state. {error}"
+                )));
+            }
             results.extend(raws);
         }
 
@@ -68,6 +73,11 @@ impl<Tx> Block<Tx> {
             )
             .map_err(Error::other)?;
         block_db.commit(metadata);
+        if let Some(error) = block_db.commit_error() {
+            return Err(Error::other(format!(
+                "failed to commit planner metadata. {error}"
+            )));
+        }
 
         Ok((
             ArcologyParaBlockExecutor::finish_block(results, set_cumulative),

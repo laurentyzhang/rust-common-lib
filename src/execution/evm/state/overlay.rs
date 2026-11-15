@@ -1,6 +1,6 @@
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, EvmState, EvmStorageSlot},
+    state::{Account, AccountStatus, EvmState, EvmStorageSlot},
 };
 use alloy_primitives::{Address, U256};
 use rayon::prelude::*;
@@ -56,7 +56,11 @@ impl StateOverlay {
                         let original = match fallback {
                             Some(db) => db
                                 .storage_ref(address, key)
-                                .map_err(|error| StoreError::Database(format!("{error:?}")))?,
+                                .map_err(|error| {
+                                    StoreError::Database(format!(
+                                        "failed to read account {address} storage slot {key:#x} while applying EVM state. Cause {error:?}"
+                                    ))
+                                })?,
                             None => slot.original_value(),
                         };
                         current
@@ -88,8 +92,18 @@ impl StateOverlay {
         incoming: Account,
         balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
     ) -> Result<(Address, Account), StoreError> {
-        balance_nonce_handler(&mut current, &incoming).map_err(StoreError::State)?;
-        // Use the incoming account's lifecycle flags.
+        let current_balance = current.info.balance; // For error msgs only
+        let current_nonce = current.info.nonce;
+        balance_nonce_handler(&mut current, &incoming).map_err(|error| {
+            let original = incoming.original_info();
+            StoreError::Transition(format!(
+                "failed to apply balance/nonce transition for account {address}. \
+                 Baseline balance {current_balance}, nonce {current_nonce}. \
+                 Incoming balance {} -> {}, nonce {} -> {}. Cause {error:?}",
+                original.balance, incoming.info.balance, original.nonce, incoming.info.nonce,
+            ))
+        })?;
+        // Merge account status across jobs.
         Self::merge_status(&mut current, &incoming);
         if incoming.info.code_hash != incoming.original_info().code_hash {
             current.info.code_hash = incoming.info.code_hash;
@@ -115,9 +129,22 @@ impl StateOverlay {
         Ok((address, current))
     }
 
-    /// Replaces the current status with the incoming account's status.
+    /// Preserves accumulated account status and updates whether the account exists.
     fn merge_status(current: &mut Account, incoming: &Account) {
-        current.status = incoming.status;
+        // Later reads must retain earlier writes, creation, and deletion markers.
+        let persistent_flags =
+            AccountStatus::Touched | AccountStatus::Created | AccountStatus::SelfDestructed;
+        current.status = (current.status & persistent_flags) | incoming.status;
+
+        // Discard bookkeeping that only applies within one transaction.
+        current.status.remove(
+            AccountStatus::Cold | AccountStatus::CreatedLocal | AccountStatus::SelfDestructedLocal,
+        );
+
+        // A nonempty merged account now exists, even if it was missing when loaded.
+        if !current.is_empty() {
+            current.status.remove(AccountStatus::LoadedAsNotExisting);
+        }
     }
 
     pub(in crate::execution) fn api_slot_delta(key: U256, slot: &EvmStorageSlot) -> Option<U256> {
@@ -144,10 +171,11 @@ impl StateOverlay {
 
         match fallback {
             Some(db) => Ok(
-                match db
-                    .basic_ref(address)
-                    .map_err(|error| StoreError::Database(format!("{error:?}")))?
-                {
+                match db.basic_ref(address).map_err(|error| {
+                    StoreError::Database(format!(
+                        "failed to read account {address} while applying EVM state. Cause {error:?}"
+                    ))
+                })? {
                     Some(info) => Account::from(info),
                     None => Account::default(),
                 },

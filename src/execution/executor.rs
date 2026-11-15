@@ -100,9 +100,9 @@ impl ArcologyParaBlockExecutor {
 }
 
 #[cfg(test)]
-#[path = "tests/executor_generation_tests.rs"]
+#[path = "tests/executor_generation.rs"]
 mod generation_tests;
 
 #[cfg(test)]
-#[path = "tests/fee_settlement_tests.rs"]
+#[path = "tests/fee_settlement.rs"]
 mod fee_settlement_tests;

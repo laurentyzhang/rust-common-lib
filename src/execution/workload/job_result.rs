@@ -43,7 +43,7 @@ pub struct JobResult<R, H = HaltReason> {
 }
 
 #[cfg(test)]
-#[path = "../tests/job_result_tests.rs"]
+#[path = "../tests/job_result.rs"]
 mod tests;
 
 impl<R, H> JobResult<R, H> {

@@ -16,4 +16,5 @@ pub use crate::execution::workload::{
 };
 
 #[cfg(test)]
+#[path = "scheduler_tests.rs"]
 mod tests;

@@ -3,6 +3,7 @@ use crate::crdt::state::CrdtError;
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreError {
     State(CrdtError),
+    Transition(String),
     SetNoneToValue,
     DeleteNonexistingEntry,
     ValueCannotBeRecreated,
@@ -15,7 +16,10 @@ pub enum StoreError {
 
 impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            Self::Transition(message) => f.write_str(message),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }
 

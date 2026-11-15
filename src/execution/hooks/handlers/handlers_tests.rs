@@ -1809,6 +1809,7 @@ fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
         ..ID::new(0, 7)
     };
     let mut outcome = JobResult::<(), _>::new(id, Ok(result), None, evm.drain_reads());
+    outcome.verdict.decision = crate::planner::resolver::CommitDecision::Accepted;
     let records = outcome.to_records(outcome.id);
     assert!(!records.is_empty());
     assert!(records.iter().all(|record| {

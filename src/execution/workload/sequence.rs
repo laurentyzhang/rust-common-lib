@@ -130,6 +130,12 @@ impl<Tx> JobSequence<Tx> {
                 job.run(&mut executor)
             };
 
+            if let Some(error) = seq_db.commit_error() {
+                return Err(Error::other(format!(
+                    "failed to commit job {:?}. {error}",
+                    result.id
+                )));
+            }
             raws.push(result);
         }
 
@@ -186,5 +192,5 @@ impl<Tx> JobSequence<Tx> {
 }
 
 #[cfg(test)]
-#[path = "../tests/sequence_tests.rs"]
+#[path = "../tests/sequence.rs"]
 mod tests;

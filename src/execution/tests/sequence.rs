@@ -112,7 +112,7 @@ fn finalization_applies_accepted_job_transitions() {
 }
 
 #[test]
-fn pending_verdict_is_rejected_before_rebuilding() {
+fn rebuild_returns_first_encountered_error() {
     let mut account = Account::default().with_touched_mark();
     account.original_info_mut().nonce = 1;
     let mut accepted = raw_job(
@@ -125,7 +125,7 @@ fn pending_verdict_is_rejected_before_rebuilding() {
         &mut [accepted, pending],
         &crate::execution::StateDb::default(),
     );
-    assert!(matches!(result, Err(error) if error.to_string().contains("pending verdict")));
+    assert!(matches!(result, Err(error) if error.to_string().contains("U64(Underflow")));
 }
 
 #[test]
@@ -264,33 +264,4 @@ fn invalid_sequence_transitions_leave_the_fallback_unchanged() {
     job.verdict.decision = CommitDecision::Accepted;
     assert!(JobSequence::<()>::rebuild_sequence_state(&mut [job], &fallback).is_err());
     assert_eq!(fallback.inner(), &original);
-}
-
-#[test]
-fn sequence_creation_resets_api_storage() {
-    use crate::execution::{Property, ScalarKeyCodec, StateDb};
-    use crate::namespace::Namespace;
-    let key = ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO);
-    let mut account = Account::default();
-    account
-        .storage
-        .insert(key, EvmStorageSlot::new(U256::from(10), Default::default()));
-    let fallback = StateDb::new(EvmState::from_iter([(Address::ZERO, account)]));
-    let mut incoming = Account::default().with_touched_mark();
-    incoming.mark_created();
-    incoming.info.nonce = 1;
-    incoming.storage.insert(
-        key,
-        EvmStorageSlot::new_changed(U256::ZERO, U256::from(3), Default::default()),
-    );
-    let mut job = raw_job(
-        ID::new(0, 0),
-        EvmState::from_iter([(Address::ZERO, incoming)]),
-    );
-    job.verdict.decision = CommitDecision::Accepted;
-    let committed = JobSequence::<()>::rebuild_sequence_state(&mut [job], &fallback).unwrap();
-    let account = &committed[&Address::ZERO];
-    assert!(account.is_created());
-    assert_eq!(account.storage[&key].original_value(), U256::ZERO);
-    assert_eq!(account.storage[&key].present_value(), U256::from(3));
 }

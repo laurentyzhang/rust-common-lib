@@ -13,4 +13,5 @@ pub mod non_comm {
 }
 
 #[cfg(test)]
+#[path = "types_tests.rs"]
 pub mod tests;
