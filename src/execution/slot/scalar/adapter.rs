@@ -5,7 +5,7 @@ use alloy_primitives::{Address, U256};
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
 use crate::execution::evm::storage::ApiStore;
-use crate::execution::{CallHookError, ScalarKeyCodec};
+use crate::execution::{CallHookError, Recorder, ScalarKeyCodec, key::Key};
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]
@@ -49,6 +49,7 @@ impl ScalarAdapter {
         &self,
         storage: &mut S,
         owner: Address,
+        recorder: &mut Recorder,
     ) -> Result<(crdt::Scalar<T>, Self), CallHookError>
     where
         T: AbiCodec,
@@ -68,6 +69,7 @@ impl ScalarAdapter {
         .into_iter()
         .zip(&mut fields)
         {
+            recorder.log_read(Key::Storage(owner, slot));
             *value = storage
                 .read(owner, slot)
                 .map_err(|error| CallHookError::Handler(error.to_string()))?;
@@ -107,6 +109,7 @@ impl ScalarAdapter {
         storage: &mut S,
         owner: Address,
         state: &crdt::Scalar<T>,
+        recorder: &mut Recorder,
     ) -> Result<(), CallHookError>
     where
         T: AbiCodec,
@@ -133,6 +136,9 @@ impl ScalarAdapter {
             (self.pos_delta, pos_delta), // Still need them, not the final storage.
             (self.neg_delta, neg_delta),
         ] {
+            let key = Key::Storage(owner, slot);
+            recorder.log_write(key);
+
             storage
                 .write(owner, slot, value)
                 .map_err(|error| CallHookError::Handler(error.to_string()))?;

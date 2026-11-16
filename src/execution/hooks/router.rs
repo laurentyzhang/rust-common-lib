@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use super::super::{CallHookError, ReadRecorder, RegisterHookError};
+use super::super::{CallHookError, Recorder, RegisterHookError};
 use super::{CallOutput, ExitStatus, handlers::CallHandler};
 
 /// The EVM call operation that reached the hook.
@@ -83,7 +83,7 @@ impl CallRouter {
         &self,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        api_reads: &mut ReadRecorder,
+        api_reads: &mut Recorder,
     ) -> Result<Option<CallOutput>, CallHookError> {
         let Some(handler) = self.handlers.get(&input.code_address) else {
             return Ok(None);
@@ -124,7 +124,7 @@ impl CallRouter {
 pub fn dispatch_precompile(
     router: &CallRouter,
     mut input: PrecompileInput<'_>,
-    api_reads: &mut ReadRecorder,
+    api_reads: &mut Recorder,
     is_deferred: bool,
 ) -> PrecompileResult {
     let scheme = if input.is_static_call() {

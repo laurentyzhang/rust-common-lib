@@ -14,7 +14,7 @@ use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 
 use super::{CallInput, CallOutput};
-use crate::execution::{CallHookError, ReadRecorder};
+use crate::execution::{CallHookError, Recorder};
 
 /// Handles calls for one reserved address.
 pub trait CallHandler: Send + Sync {
@@ -24,7 +24,7 @@ pub trait CallHandler: Send + Sync {
         key: U256,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        api_reads: &mut ReadRecorder,
+        api_reads: &mut Recorder,
     ) -> Result<CallOutput, CallHookError>;
 
     /// Recognizes storage slots owned by this API, for any handle.
@@ -40,7 +40,7 @@ where
         _key: U256,
         input: &CallInput<'_>,
         _internals: &mut EvmInternals<'_>,
-        _api_reads: &mut ReadRecorder,
+        _api_reads: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         self(input)
     }

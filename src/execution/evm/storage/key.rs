@@ -7,8 +7,8 @@ pub enum Key {
     Account(Address),
     Balance(Address),
     Code(Address),
-    Storage(Address, U256),
-    Block(u64),
+    Storage(Address, U256), // Slot key
+    Block(u64),             // block number
 }
 
 const ACCOUNT_KEY_TAG: u8 = 0x00;

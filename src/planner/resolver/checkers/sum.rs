@@ -50,6 +50,7 @@ impl<K, T: Type> SumChecker<K, T> {
     where
         K: Ord,
     {
+        // diagnostics stores details about detected problems. Each entry contains.
         let mut diagnostics = Vec::new();
         let mut conflicts = BTreeSet::new();
         let mut records = records.into_iter();
@@ -67,6 +68,7 @@ impl<K, T: Type> SumChecker<K, T> {
                 continue;
             };
 
+            // Try to add the delta to the summed value. If it fails, record a conflict and diagnostic.
             if let Err(error) = summed.add_delta(delta) {
                 for &id in &contributors {
                     conflicts.insert((id.min(record.id), id.max(record.id)));

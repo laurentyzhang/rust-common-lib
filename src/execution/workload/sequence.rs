@@ -14,7 +14,7 @@ use alloy_primitives::Address;
 use std::io::Error;
 
 use crate::execution::evm::state::StateOverlay;
-use crate::execution::{ArcologyEvmFactory, ReadRecorder, StateDb};
+use crate::execution::{ArcologyEvmFactory, Recorder, StateDb};
 
 /// Transactions in one sequence execute in order; sequences in a generation may run in parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,7 +124,7 @@ impl<Tx> JobSequence<Tx> {
                 let evm = factory.evm_factory().create_evm_with_inspector(
                     &mut seq_db,
                     env.clone(),
-                    ReadRecorder::new(job.id.global),
+                    Recorder::new(job.id.global),
                 );
                 let mut executor = factory.create_executor(evm, ctx.clone());
                 job.run(&mut executor)

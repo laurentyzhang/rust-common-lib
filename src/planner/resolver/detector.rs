@@ -122,7 +122,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             }),
         );
 
-        // Create a verdict for every recorded job. The first rejection in each
+        // Create a verdict for every inspector_records job. The first rejection in each
         // sequence explains why subsequent jobs in that sequence were rejected.
         let mut verdicts = BTreeMap::new();
         for sequence in &sequences {

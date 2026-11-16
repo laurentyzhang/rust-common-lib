@@ -4,7 +4,7 @@
 //! precompiles. Arcology only validates its addresses and extends the completed OP map.
 
 use super::super::{
-    CallRouter, PrecompileCollisionError, ReadRecorder, StateReads, dispatch_precompile,
+    CallRouter, PrecompileCollisionError, Recorder, RecorderOutput, dispatch_precompile,
 };
 use super::{
     backend::{
@@ -39,7 +39,7 @@ use alloy_primitives::{Address, Bytes};
 pub struct ArcologyEvm<DB: Database, I> {
     // Keep the backend implementation private while exposing Alloy's standard Evm interface.
     base_evm: BaseEvm<DB, I>,
-    api_reads: Rc<RefCell<ReadRecorder>>,
+    api_reads: Rc<RefCell<Recorder>>,
     is_deferred: Rc<Cell<bool>>,
 }
 
@@ -50,18 +50,18 @@ impl<DB: Database, I> ArcologyEvm<DB, I> {
     }
 }
 
-impl<DB: Database> ArcologyEvm<DB, ReadRecorder> {
+impl<DB: Database> ArcologyEvm<DB, Recorder> {
     /// Starts read collection for a transaction, clearing both capture locations.
     pub fn reset_reads(&mut self, id: u64) {
         self.base_evm.components_mut().1.reset(id);
         self.api_reads.borrow_mut().reset(id);
     }
 
-    /// Combines native API and opcode reads under the current transaction ID.
-    pub fn drain_reads(&mut self) -> StateReads {
-        let insepctor_reads = self.base_evm.components_mut().1;
-        insepctor_reads.merge_reads(&mut self.api_reads.borrow_mut());
-        insepctor_reads.drain()
+    /// Combines native API and opcode operations under the current transaction ID.
+    pub fn drain_recorder(&mut self) -> RecorderOutput {
+        let insepctor_records = self.base_evm.components_mut().1;
+        insepctor_records.merge_reads(&mut self.api_reads.borrow_mut());
+        insepctor_records.drain()
     }
 }
 
@@ -198,7 +198,7 @@ impl ArcologyEvmFactory {
     fn try_inject_precompiles(
         &self,
         precompiles: &mut PrecompilesMap,
-        api_reads: &Rc<RefCell<ReadRecorder>>,
+        api_reads: &Rc<RefCell<Recorder>>,
         is_deferred: &Rc<Cell<bool>>,
     ) -> Result<(), PrecompileCollisionError> {
         // This receives the map after the backend factory has populated it.
@@ -258,7 +258,7 @@ impl EvmFactory for ArcologyEvmFactory {
     ) -> Self::Evm<DB, NoOpInspector> {
         let mut evm = ArcologyEvm {
             base_evm: self.base_evm_factory.create_evm(db, input),
-            api_reads: Rc::new(RefCell::new(ReadRecorder::new(0))),
+            api_reads: Rc::new(RefCell::new(Recorder::new(0))),
             is_deferred: Rc::new(Cell::new(false)),
         };
         self.inject_into(&mut evm);
@@ -275,7 +275,7 @@ impl EvmFactory for ArcologyEvmFactory {
             base_evm: self
                 .base_evm_factory
                 .create_evm_with_inspector(db, input, inspector),
-            api_reads: Rc::new(RefCell::new(ReadRecorder::new(0))),
+            api_reads: Rc::new(RefCell::new(Recorder::new(0))),
             is_deferred: Rc::new(Cell::new(false)),
         };
         self.inject_into(&mut evm);

@@ -59,7 +59,7 @@ fn job_returns_raw_state_and_commits_to_database() {
                 Some(&fallback),
             ),
             env,
-            crate::execution::ReadRecorder::new(job.id.global),
+            crate::execution::Recorder::new(job.id.global),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
         let mut raw = job.run(&mut executor);
@@ -172,6 +172,78 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 fn job_detects_deposit_transaction_type() {
     let deposit = job(0, Address::repeat_byte(0x99));
     assert!(deposit.is_l1_deposit);
+}
+
+#[test]
+fn parallel_storage_reads_do_not_conflict() {
+    use alloy_evm::revm::state::EvmStorageSlot;
+
+    let factory = ArcologyBlockExecutorFactory::new(
+        OpAlloyReceiptBuilder::default(),
+        OpChainHardforks::op_mainnet(),
+        ArcologyEvmFactory::try_new(CallRouter::new()).unwrap(),
+    );
+    let mut env = EvmEnv::default();
+    env.cfg_env.spec = OpSpecId::REGOLITH;
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let contract = Address::repeat_byte(0x99);
+    // SLOAD(0), POP, STOP. Neither transaction writes storage.
+    let code = Bytecode::new_raw(Bytes::from_static(&[0x60, 0, 0x54, 0x50, 0]));
+
+    for value in [0, 7] {
+        let mut account = Account::from(AccountInfo {
+            code_hash: code.hash_slow(),
+            code: Some(code.clone()),
+            ..Default::default()
+        });
+        account.storage.insert(
+            U256::ZERO,
+            EvmStorageSlot::new(U256::from(value), Default::default()),
+        );
+        let fallback = StateDb::new(EvmState::from_iter([(contract, account)]));
+        let generation = Generation::new(
+            [0, 1]
+                .into_iter()
+                .map(|id| JobSequence::new(vec![job(id, contract)]))
+                .collect(),
+        );
+        let (mut outcomes, committed) = generation
+            .run(
+                &factory,
+                &config,
+                &pool,
+                &mut ConflictDetector::new(),
+                &fallback,
+            )
+            .unwrap();
+        assert!(outcomes.iter_mut().all(|raw| {
+            raw.result_and_state()
+                .as_ref()
+                .unwrap()
+                .result
+                .is_success()
+        }));
+        assert_eq!(
+            committed[&contract].storage[&U256::ZERO].present_value(),
+            U256::from(value)
+        );
+        assert!(
+            pairs(&outcomes).is_empty(),
+            "read-only slot containing {value} produced conflicts: {:?}",
+            pairs(&outcomes)
+        );
+        assert_eq!(
+            accepted_ids(outcomes.iter().map(|raw| &raw.verdict)).len(),
+            2
+        );
+    }
 }
 
 #[test]

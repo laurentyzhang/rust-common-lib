@@ -6,7 +6,7 @@ use crate::crdt::{
 use crate::execution::evm::storage::ApiStore;
 use crate::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    EvmStateCommitter, ExitStatus, JobResult, ReadRecorder, ScalarAdapter, ScalarKeyCodec, StateDb,
+    EvmStateCommitter, ExitStatus, JobResult, Recorder, ScalarAdapter, ScalarKeyCodec, StateDb,
     key::Key,
 };
 use crate::namespace::Namespace;
@@ -56,7 +56,7 @@ fn invoke(
         .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     router
-        .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
+        .dispatch(&input, &mut internals, &mut Recorder::new(0))
         .unwrap()
         .unwrap()
 }
@@ -171,7 +171,7 @@ fn invalid_scalar_keys_revert_before_state_access() {
         let block = BlockEnv::default();
         let cfg: CfgEnv = CfgEnv::default();
         let tx = TxEnv::default();
-        let mut recorder = ReadRecorder::new(0);
+        let mut recorder = Recorder::new(0);
         {
             let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
             for data in [
@@ -253,7 +253,7 @@ fn scalar_calls_preserve_all_24_instance_key_bytes() {
 }
 
 #[test]
-fn only_get_records_the_value_and_delta_observation() {
+fn native_scalar_calls_record_each_field_access() {
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     let owner = Address::repeat_byte(0x11);
     let handle = Address::with_last_byte(1);
@@ -265,7 +265,7 @@ fn only_get_records_the_value_and_delta_observation() {
     router
         .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
-    let mut recorder = ReadRecorder::new(55);
+    let mut recorder = Recorder::new(55);
     let get = IU256::getCall {
         key: scalar_key(handle),
     }
@@ -317,28 +317,100 @@ fn only_get_records_the_value_and_delta_observation() {
             .unwrap()
             .unwrap();
         assert_eq!(output.status, ExitStatus::Return);
-        if index < 3 {
-            assert!(recorder.drain().is_empty());
-        } else {
+        if index >= 3 {
             assert_eq!(
                 U256::abi_decode_validate(&output.output).unwrap(),
                 U256::from(7)
             );
         }
+        let records = recorder.drain();
+        assert_eq!(records.len(), 5);
+        let slots = slots(handle);
+        for slot in [
+            slots.min,
+            slots.max,
+            slots.value,
+            slots.pos_delta,
+            slots.neg_delta,
+        ] {
+            let record = records
+                .iter()
+                .find(|record| record.key == Key::Storage(owner, slot))
+                .unwrap();
+            assert_eq!(record.id.global, 55);
+            let operations = record.data.operations;
+            assert_eq!(operations.reads.count(), u32::from(index > 0));
+            assert_eq!(operations.deltas.count(), u32::from(index < 3));
+            assert_eq!(operations.removes.count(), 0);
+        }
     }
-    let reads = recorder.drain();
-    assert_eq!(reads.len(), 3);
-    for slot in &[
-        slots(handle).value,
-        slots(handle).pos_delta,
-        slots(handle).neg_delta,
-    ] {
-        let read = reads
-            .iter()
-            .find(|read| read.key == Key::Storage(owner, *slot))
+}
+
+#[test]
+fn signed_scalar_calls_record_reads_and_writes() {
+    let owner = Address::repeat_byte(0x11);
+    let key = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO);
+    let slots = ScalarAdapter::new(key);
+    let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
+    let block = BlockEnv::default();
+    let cfg: CfgEnv = CfgEnv::default();
+    let tx = TxEnv::default();
+    let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
+    let mut recorder = Recorder::new(9);
+    for (index, data) in [
+        II256::initCall {
+            key: key.into(),
+            min: I256::unchecked_from(-100),
+            max: I256::unchecked_from(100),
+        }
+        .abi_encode(),
+        II256::subCall {
+            key: key.into(),
+            delta: U256::from(5),
+        }
+        .abi_encode(),
+        II256::getCall { key: key.into() }.abi_encode(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = CallInput {
+            is_deferred: false,
+            caller: owner,
+            target: ApiAddress::I256.address(),
+            code_address: ApiAddress::I256.address(),
+            value: U256::ZERO,
+            input: &data,
+            gas_limit: 500_000,
+            scheme: CallScheme::Call,
+        };
+        let output = I256Handler
+            .call(key, &input, &mut internals, &mut recorder)
             .unwrap();
-        assert_eq!(read.id.global, 55);
-        assert_eq!(read.data.operations.reads.count(), 2);
+        assert_eq!(output.status, ExitStatus::Return);
+        if index == 2 {
+            assert_eq!(
+                I256::abi_decode_validate(&output.output).unwrap(),
+                I256::unchecked_from(-5)
+            );
+        }
+    }
+    let records = recorder.drain();
+    assert_eq!(records.len(), 5);
+    for slot in [
+        slots.min,
+        slots.max,
+        slots.value,
+        slots.pos_delta,
+        slots.neg_delta,
+    ] {
+        let record = records
+            .iter()
+            .find(|record| record.key == Key::Storage(owner, slot))
+            .unwrap();
+        assert_eq!(record.data.operations.reads.count(), 2);
+        assert_eq!(record.data.operations.deltas.count(), 2);
+        assert_eq!(record.data.operations.removes.count(), 0);
     }
 }
 
@@ -352,16 +424,10 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
         .register(ApiAddress::U256.address(), U256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
-    let mut left = factory.create_evm_with_inspector(
-        EmptyDB::default(),
-        EvmEnv::default(),
-        ReadRecorder::new(7),
-    );
-    let mut right = factory.create_evm_with_inspector(
-        EmptyDB::default(),
-        EvmEnv::default(),
-        ReadRecorder::new(8),
-    );
+    let mut left =
+        factory.create_evm_with_inspector(EmptyDB::default(), EvmEnv::default(), Recorder::new(7));
+    let mut right =
+        factory.create_evm_with_inspector(EmptyDB::default(), EvmEnv::default(), Recorder::new(8));
     for (evm, handles) in [
         (&mut left, &[first][..]),
         (&mut right, &[first, second][..]),
@@ -387,9 +453,11 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
         }
     }
     for (evm, handle, id) in [(&mut left, first, 7), (&mut right, second, 8)] {
-        let reads = evm.drain_reads();
-        assert_eq!(reads.len(), 3);
+        let reads = evm.drain_recorder();
+        assert_eq!(reads.len(), 5);
         for slot in &[
+            slots(handle).min,
+            slots(handle).max,
             slots(handle).value,
             slots(handle).pos_delta,
             slots(handle).neg_delta,
@@ -402,7 +470,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
             assert_eq!(read.data.id, id);
             assert_eq!(read.data.operations.reads.count(), 1);
         }
-        assert!(evm.drain_reads().is_empty());
+        assert!(evm.drain_recorder().is_empty());
     }
     left.reset_reads(99);
     left.transact(ArcologyTx::from(TxEnv {
@@ -418,10 +486,12 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
         ..Default::default()
     }))
     .unwrap();
-    let reads = left.drain_reads();
-    assert_eq!(reads.len(), 3);
+    let reads = left.drain_recorder();
+    assert_eq!(reads.len(), 5);
     assert!(reads.iter().all(|read| read.id.global == 99));
     for slot in &[
+        slots(second).min,
+        slots(second).max,
         slots(second).value,
         slots(second).pos_delta,
         slots(second).neg_delta,
@@ -432,7 +502,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
                 .any(|read| read.key == Key::Storage(owner, *slot))
         );
     }
-    assert!(right.drain_reads().is_empty());
+    assert!(right.drain_recorder().is_empty());
 }
 
 #[test]
@@ -469,8 +539,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .unwrap();
         db.insert_account_storage(owner, slots(handle).pos_delta, U256::from(5))
             .unwrap();
-        let mut evm =
-            factory.create_evm_with_inspector(db, EvmEnv::default(), ReadRecorder::new(33));
+        let mut evm = factory.create_evm_with_inspector(db, EvmEnv::default(), Recorder::new(33));
         let result = evm
             .transact(ArcologyTx::from(TxEnv {
                 caller: Address::repeat_byte(0x11),
@@ -496,7 +565,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             account.storage[&slots(handle).pos_delta].present_value(),
             U256::from(5)
         );
-        let reads = evm.drain_reads();
+        let reads = evm.drain_recorder();
         assert!(
             reads
                 .iter()
@@ -506,7 +575,7 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .iter()
             .filter(|read| matches!(read.key, Key::Storage(..)))
             .collect();
-        assert_eq!(storage.len(), 3);
+        assert_eq!(storage.len(), 5);
         let value_read = storage
             .iter()
             .find(|read| read.key == Key::Storage(owner, slot))
@@ -545,9 +614,11 @@ fn scalar_store_and_load_round_trip() {
         };
         let keys = ScalarAdapter::new(ScalarKeyCodec::encode(Namespace::U256, 2, handle));
         assert_eq!(keys, slots(handle));
-        keys.store(&mut internals, owner, &state).unwrap();
+        keys.store(&mut internals, owner, &state, &mut Recorder::new(0))
+            .unwrap();
         assert_eq!(
-            keys.load::<U256, _>(&mut internals, owner).unwrap(),
+            keys.load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+                .unwrap(),
             (state, keys)
         );
     }
@@ -577,7 +648,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
             )
             .unwrap();
         let (state, loaded_slots) = slots(Address::from_word(call.key))
-            .load::<U256, _>(&mut internals, owner)
+            .load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
             .unwrap();
         assert_eq!(loaded_slots, slots(Address::from_word(call.key)));
         assert_eq!(state.value, U256::from(50));
@@ -587,7 +658,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
     journal.checkpoint_revert(checkpoint);
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let (state, _) = slots(Address::from_word(call.key))
-        .load::<U256, _>(&mut internals, owner)
+        .load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
         .unwrap();
     assert_eq!(state.value, U256::ZERO);
     assert_eq!((state.min, state.max), (call.min, call.max));
@@ -618,9 +689,11 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
             delta: Some(delta),
         };
         let keys = slots(handle);
-        keys.store(&mut internals, owner, &state).unwrap();
+        keys.store(&mut internals, owner, &state, &mut Recorder::new(0))
+            .unwrap();
         assert_eq!(
-            keys.load::<U256, _>(&mut internals, owner).unwrap(),
+            keys.load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+                .unwrap(),
             (state, keys)
         );
         let expected = match delta {
@@ -656,7 +729,7 @@ fn scalar_store_rejects_invalid_pending_arithmetic_before_writing() {
             let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
             assert!(
                 slots(Address::ZERO)
-                    .store(&mut internals, Address::ZERO, &state,)
+                    .store(&mut internals, Address::ZERO, &state, &mut Recorder::new(0))
                     .is_err()
             );
         }
@@ -1352,7 +1425,9 @@ fn get_returns_caller_scoped_journal_values_for_call_and_staticcall() {
                 value,
                 ..Default::default()
             };
-            slots(handle).store(&mut internals, owner, &state).unwrap();
+            slots(handle)
+                .store(&mut internals, owner, &state, &mut Recorder::new(0))
+                .unwrap();
         }
     }
     for (owner, handle, expected) in values {
@@ -1431,7 +1506,7 @@ fn get_rejects_invalid_call_contexts_without_loading_state() {
         let output = {
             let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
             router
-                .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
+                .dispatch(&input, &mut internals, &mut Recorder::new(0))
                 .unwrap()
                 .unwrap()
         };
@@ -1553,7 +1628,7 @@ fn invoke_i256(
         .unwrap();
     let mut internals = EvmInternals::new(journal, &block, &cfg, &tx);
     router
-        .dispatch(&input, &mut internals, &mut ReadRecorder::new(0))
+        .dispatch(&input, &mut internals, &mut Recorder::new(0))
         .unwrap()
         .unwrap()
 }
@@ -1636,6 +1711,7 @@ fn signed_arithmetic_supports_full_width_magnitudes_and_rejects_overflow() {
                 value: I256::MIN,
                 ..Default::default()
             },
+            &mut Recorder::new(0),
         )
         .unwrap();
     assert_eq!(
@@ -1785,7 +1861,7 @@ fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
         .register(ApiAddress::I256.address(), I256Handler)
         .unwrap();
     let factory = ArcologyEvmFactory::try_new(router).unwrap();
-    let mut evm = factory.create_evm_with_inspector(db, EvmEnv::default(), ReadRecorder::new(7));
+    let mut evm = factory.create_evm_with_inspector(db, EvmEnv::default(), Recorder::new(7));
     let result = evm
         .transact(ArcologyTx::from(TxEnv {
             caller: owner,
@@ -1808,7 +1884,7 @@ fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
         job: 4,
         ..ID::new(0, 7)
     };
-    let mut outcome = JobResult::<(), _>::new(id, Ok(result), None, evm.drain_reads());
+    let mut outcome = JobResult::<(), _>::new(id, Ok(result), None, evm.drain_recorder());
     outcome.verdict.decision = crate::planner::resolver::CommitDecision::Accepted;
     let records = outcome.to_records(outcome.id);
     assert!(!records.is_empty());
@@ -1905,7 +1981,7 @@ fn invoke_runtime(
         .dispatch(
             &input,
             &mut EvmInternals::new(journal, &block, &cfg, &tx),
-            &mut ReadRecorder::new(0),
+            &mut Recorder::new(0),
         )
         .unwrap()
         .unwrap()

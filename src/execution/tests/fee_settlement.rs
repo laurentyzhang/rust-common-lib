@@ -1,7 +1,7 @@
 use crate::execution::evm::state::StateOverlay;
 use crate::execution::{
     ArcologyBlockExecutorFactory, ArcologyEvmFactory, ArcologyTx, CallRouter, JobResult,
-    ParaBlockConfig, ReadRecorder, StateDb,
+    ParaBlockConfig, Recorder, StateDb,
     workload::{Generation, ID, Job, JobSequence},
 };
 use crate::planner::resolver::{CommitDecision, CommitVerdict, ConflictDetector};
@@ -218,7 +218,7 @@ fn rejected_creation_and_evm_revert_keep_their_nonce_and_fee() {
                 Some(&fallback),
             ),
             env(Address::repeat_byte(0x88)),
-            ReadRecorder::new(0),
+            Recorder::new(0),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
         let mut outcome = job(
@@ -257,7 +257,7 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
         let evm = factory.evm_factory().create_evm_with_inspector(
             &mut local,
             env(Address::repeat_byte(0x88)),
-            ReadRecorder::new(id as u64),
+            Recorder::new(id as u64),
         );
         let mut executor = factory.create_executor(evm, OpBlockExecutionCtx::default());
         let mut outcome = job(
@@ -290,4 +290,66 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
         committed[&Address::repeat_byte(0x88)].info.balance,
         U256::from(42000 * 7)
     );
+}
+
+#[test]
+fn block_rejects_transactions_exceeding_total_gas_limit() {
+    use crate::execution::ArcologyParaBlockExecutor;
+    use crate::planner::Planner;
+
+    let factory = factory();
+    let callers = [Address::repeat_byte(0x11), Address::repeat_byte(0x22)];
+    let fallback = StateDb::new(EvmState::from_iter(
+        callers.map(|caller| (caller, account(FUNDS, Bytes::new()))),
+    ));
+    let mut env = env(Address::repeat_byte(0x88));
+    env.block_env.gas_limit = 30_000;
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+
+    for count in [1, 2] {
+        let transactions = callers[..count].iter().map(|&caller| {
+            let mut typed = OpTypedTransaction::Legacy(Default::default());
+            let OpTypedTransaction::Legacy(tx) = &mut typed else {
+                unreachable!()
+            };
+            tx.to = TxKind::Call(Address::repeat_byte(0x99));
+            tx.gas_limit = 21_000;
+            tx.gas_price = 10;
+            let tx = OpTxEnvelope::new_unhashed(
+                typed,
+                Signature::new(U256::from(1), U256::from(1), false),
+            );
+            (
+                ArcologyTx::from_recovered_tx(&tx, caller),
+                Recovered { tx, signer: caller },
+            )
+        });
+        let mut planner = Planner::new(StateDb::default(), Default::default());
+        let result = ArcologyParaBlockExecutor::execute_block(
+            &factory,
+            &config,
+            &pool,
+            &|_, _| {},
+            &fallback,
+            &mut planner,
+            transactions,
+        )
+        .map(|(outcomes, _)| outcomes.iter().filter_map(|raw| raw.gas_used()).sum::<u64>());
+
+        if count == 1 {
+            assert_eq!(result.unwrap(), 21_000);
+        } else {
+            assert!(
+                result.is_err(),
+                "expected rejection above the 30000 block gas limit, got {result:?}"
+            );
+        }
+    }
 }

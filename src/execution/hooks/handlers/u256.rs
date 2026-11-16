@@ -1,7 +1,7 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
-use crate::execution::{CallHookError, ReadRecorder, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key};
+use crate::execution::{CallHookError, Recorder, ScalarAdapter, ScalarKeyCodec, ScalarKind};
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -25,16 +25,17 @@ impl U256Handler {
         delta: DeltaOp<U256>,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
+        recorder: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         if input.scheme == CallScheme::StaticCall {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
         let (mut scalar, slots) =
-            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller)?;
+            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller, recorder)?;
         if scalar.add_delta(&delta).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
-        slots.store(internals, input.caller, &scalar)?;
+        slots.store(internals, input.caller, &scalar, recorder)?;
         Ok(CallOutput::returned(0, true.abi_encode()))
     }
 }
@@ -49,7 +50,7 @@ impl CallHandler for U256Handler {
         key: U256,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        api_reads: &mut ReadRecorder,
+        api_reads: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         if !self.is_valid_slot(key) {
             return Ok(CallOutput::reverted(0, Vec::new()));
@@ -64,22 +65,18 @@ impl CallHandler for U256Handler {
                     max: call.max,
                     ..Default::default()
                 };
-                ScalarAdapter::new(key).store(internals, input.caller, &scalar)?;
+                ScalarAdapter::new(key).store(internals, input.caller, &scalar, api_reads)?;
                 Ok(CallOutput::returned(0, call.key.abi_encode()))
             }
             Ok(IU256::IU256Calls::add(call)) => {
-                self.update(key, DeltaOp::Add(call.delta), input, internals)
+                self.update(key, DeltaOp::Add(call.delta), input, internals, api_reads)
             }
             Ok(IU256::IU256Calls::sub(call)) => {
-                self.update(key, DeltaOp::Sub(call.delta), input, internals)
+                self.update(key, DeltaOp::Sub(call.delta), input, internals, api_reads)
             }
             Ok(IU256::IU256Calls::get(_)) => {
-                let (mut scalar, slots) =
-                    ScalarAdapter::new(key).load::<U256, _>(internals, input.caller)?;
-                // Record each field used to compute the observable value.
-                for slot in [slots.value, slots.pos_delta, slots.neg_delta] {
-                    api_reads.record(Key::Storage(input.caller, slot));
-                }
+                let (mut scalar, _) =
+                    ScalarAdapter::new(key).load::<U256, _>(internals, input.caller, api_reads)?;
                 Ok(CallOutput::returned(
                     0,
                     scalar.apply_delta().value.abi_encode(),

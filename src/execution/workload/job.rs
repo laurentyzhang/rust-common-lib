@@ -13,7 +13,7 @@ use op_alloy::consensus::DEPOSIT_TX_TYPE_ID;
 use op_revm::{L1BlockInfo, constants::*};
 use std::ops::DerefMut;
 
-use crate::execution::{ArcologyEvm, ArcologyTx, ReadRecorder};
+use crate::execution::{ArcologyEvm, ArcologyTx, Recorder};
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ID {
@@ -68,7 +68,7 @@ impl<Tx> Job<Tx> {
     pub fn run<E, DB>(self, executor: &mut E) -> JobResult<E::Receipt, <E::Evm as Evm>::HaltReason>
     where
         E: BlockExecutor,
-        E::Evm: Evm<DB = DB, Tx = ArcologyTx> + DerefMut<Target = ArcologyEvm<DB, ReadRecorder>>,
+        E::Evm: Evm<DB = DB, Tx = ArcologyTx> + DerefMut<Target = ArcologyEvm<DB, Recorder>>,
         E::Receipt: Clone,
         DB: Database + DatabaseRef + std::fmt::Debug,
         Tx: ExecutableTx<E>,
@@ -98,7 +98,12 @@ impl<Tx> Job<Tx> {
         let mut l1_info = match execution.and(l1_info) {
             Ok(info) => info,
             Err(error) => {
-                return JobResult::new(self.id, Err(error), None, executor.evm_mut().drain_reads());
+                return JobResult::new(
+                    self.id,
+                    Err(error),
+                    None,
+                    executor.evm_mut().drain_recorder(),
+                );
             }
         };
         let receipt = executor
@@ -106,10 +111,10 @@ impl<Tx> Job<Tx> {
             .last()
             .cloned()
             .expect("a committed transaction has a receipt");
-        let reads = executor.evm_mut().drain_reads();
+        let inspector_records = executor.evm_mut().drain_recorder();
         let executed = result_and_state.expect("a successful execution has a result");
         let gas = U256::from(executed.result.tx_gas_used());
-        let mut raw = JobResult::new(self.id, Ok(executed), Some(receipt), reads);
+        let mut raw = JobResult::new(self.id, Ok(executed), Some(receipt), inspector_records);
         raw.sender = sender;
         if charge_fees {
             let l1_fee = l1_info.calculate_tx_l1_cost(&encoded, spec);

@@ -8,7 +8,7 @@ use op_revm::OpHaltReason as EvmHaltReason;
 use super::ID;
 use crate::crdt::Scalar;
 use crate::execution::{
-    Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, StateReads, key::Key,
+    Property, RecorderOutput, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key,
     output::ExecutionOutput,
 };
 
@@ -29,22 +29,18 @@ pub enum HaltReason {
     Custom(String),
 }
 
-/// A job's execution result, commit verdict, receipt, and recorded state reads.
+/// A job's execution result, commit verdict, receipt, and inspector_record state reads.
 pub struct JobResult<R, H = HaltReason> {
     pub id: ID,
     raw_result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
     commit_result: Option<Result<ResultAndState<H>, BlockExecutionError>>,
+    pub inspector_record: RecorderOutput, // From the inspector.
     pub receipt: Option<R>,
-    pub reads: StateReads, // Combined from opcode inspection and API handlers.
     pub sender: Address,
     pub fee: U256,
     pub fee_recipients: Vec<(Address, U256)>,
     pub verdict: CommitVerdict<Key>, // Commit decision and conflict diagnostics
 }
-
-#[cfg(test)]
-#[path = "../tests/job_result.rs"]
-mod tests;
 
 impl<R, H> JobResult<R, H> {
     /// Returns the execution result and verdict-filtered transitions, or an error for a pending verdict.
@@ -73,7 +69,7 @@ impl<R, H> JobResult<R, H> {
         let executed = self.raw_result_and_state.as_ref().unwrap();
         let result = executed.result.clone();
         self.commit_result = Some(
-            self.fee_nonce_only_state()
+            self.retained_state()
                 .map(|state| ResultAndState::new(result, state))
                 .map_err(BlockExecutionError::other),
         );
@@ -91,14 +87,14 @@ impl<R, H> JobResult<R, H> {
         id: ID,
         result_and_state: Result<ResultAndState<H>, BlockExecutionError>,
         receipt: Option<R>,
-        reads: StateReads,
+        inspector_record: RecorderOutput,
     ) -> Self {
         Self {
             id,
             raw_result_and_state: result_and_state,
             commit_result: None,
             receipt,
-            reads,
+            inspector_record,
             sender: Address::ZERO,
             fee: U256::ZERO,
             fee_recipients: Vec::new(),
@@ -109,28 +105,41 @@ impl<R, H> JobResult<R, H> {
             },
         }
     }
-    /// Merges reads and state changes into checker records with the job's ID and gas.
+    /// Combines inspector_record operations form the inspector with EVM snapshots for the checker.
     pub fn to_records(&self, id: ID) -> Vec<ExecutionOutput<Key, Tracked<Status, Status>>> {
         let Ok(executed) = &self.raw_result_and_state else {
             return Vec::new();
         };
-        let mut unique_records: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
-        for read in &self.reads {
-            let mut tracked = read.data.clone_with_states(ValueSnapshots {
-                original: read.data.original().clone(),
-                current: read.data.current().clone(),
+        let mut unique_accessed: HashMap<Key, Tracked<Status, Status>> = HashMap::new();
+
+        // Add inspector_record operations to the unique accessed map.
+        for item in &self.inspector_record {
+            let mut tracked = item.data.clone_with_states(ValueSnapshots {
+                original: item.data.original().clone(),
+                current: item.data.current().clone(),
             });
             tracked.id = id.global;
-            unique_records.insert(read.key.clone(), tracked);
+            unique_accessed.insert(item.key.clone(), tracked);
         }
 
-        for (key, mut write) in self.delta_records(id.global) {
-            if let Some(read) = unique_records.get(&key) {
-                write.operations.reads = read.operations.reads;
+        // Get unique accessed records from the evmState and
+        // combine them with the inspector_record operations.
+        for (key, mut journal_records) in self.delta_records(id.global) {
+            // At this point, the unique accessed map only
+            // have keys from the inspector_record operations.
+            if let Some(inspector_record) = unique_accessed.get(&key) {
+                // Add inspector_record counts to the journal-derived counts.
+                let (journal, inspector) =
+                    (&mut journal_records.operations, inspector_record.operations);
+                journal.reads = (journal.reads.count() + inspector.reads.count()).into();
+                journal.deltas = (journal.deltas.count() + inspector.deltas.count()).into();
+                journal.removes = (journal.removes.count() + inspector.removes.count()).into();
+                journal.existence_checks =
+                    (journal.existence_checks.count() + inspector.existence_checks.count()).into();
             }
-            unique_records.insert(key, write);
+            unique_accessed.insert(key, journal_records);
         }
-        unique_records
+        unique_accessed
             .into_iter()
             .map(|(key, data)| ExecutionOutput {
                 id,
@@ -144,7 +153,10 @@ impl<R, H> JobResult<R, H> {
 
     /// Exports REVM account and storage accesses without consuming the result.
     fn delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+        // Collect account delta records for the job.
         let mut records = self.account_delta_records(id);
+
+        // Collect storage delta records for the job.
         records.extend(self.slot_delta_records(id));
         records
     }
@@ -171,13 +183,44 @@ impl<R, H> JobResult<R, H> {
             } else if account.is_changed() || account.is_created() {
                 operations.deltas.increment();
                 if account.is_empty() {
-                    Tag::Default
+                    Tag::Default // Two transactions write the same default value with no conflict.
                 } else {
                     Tag::Stripped
                 }
             } else {
                 Tag::Missing
             };
+
+            // Balance changes are exported as a bounded U256 scalar for the sum checker.
+            let after = account.info.balance;
+            if account.original_info().balance != after {
+                let mut operations = Operations::default();
+                operations.deltas.increment();
+                let delta = if after > account.original_info().balance {
+                    DeltaOp::Add(after - account.original_info().balance)
+                } else {
+                    DeltaOp::Sub(account.original_info().balance - after)
+                };
+                records.push((
+                    Key::Balance(*address),
+                    Tracked {
+                        id,
+                        value: ValueSnapshots {
+                            original: Status::Tag(original),
+                            current: Status::Value(
+                                Scalar {
+                                    min: U256::ZERO,
+                                    max: U256::MAX,
+                                    value: account.original_info().balance,
+                                    delta: Some(delta),
+                                }
+                                .into(),
+                            ),
+                        },
+                        operations,
+                    },
+                ));
+            }
 
             records.push((
                 Key::Account(*address),
@@ -214,16 +257,23 @@ impl<R, H> JobResult<R, H> {
                 let current = if let Some((kind, property, _)) = ScalarKeyCodec::decode(*slot_key)
                     && property == Property::Value as u8
                 {
-                    operations.deltas.increment();
                     let slots = ScalarAdapter::new(*slot_key);
-                    let [min, max, base, positive, negative] = [
+                    let keys = [
                         slots.min,
                         slots.max,
                         slots.value,
                         slots.pos_delta,
                         slots.neg_delta,
-                    ]
-                    .map(|key| {
+                    ];
+                    if keys.iter().any(|key| {
+                        account
+                            .storage
+                            .get(key)
+                            .is_some_and(|slot| slot.is_changed())
+                    }) {
+                        operations.deltas.increment();
+                    }
+                    let [min, max, base, positive, negative] = keys.map(|key| {
                         account
                             .storage
                             .get(&key)
@@ -252,7 +302,9 @@ impl<R, H> JobResult<R, H> {
                         }
                         .into()
                     })
-                } else if value.present_value().is_zero() {
+                } else if !value.is_changed() {
+                    Status::Tag(original)
+                } else if !value.original_value().is_zero() && value.present_value().is_zero() {
                     operations.removes.increment();
                     Status::Tag(Tag::Deleted)
                 } else {
@@ -277,7 +329,10 @@ impl<R, H> JobResult<R, H> {
         records
     }
 
-    fn fee_nonce_only_state(&self) -> Result<EvmState, std::io::Error> {
+    // When a transaction is rejected, we only want to keep the fee and
+    // nonce changes in the state. This fn constructs a new EvmState
+    // containing only the fee and nonce updates.
+    fn retained_state(&self) -> Result<EvmState, std::io::Error> {
         let Ok(executed) = &self.raw_result_and_state else {
             return Ok(EvmState::default());
         };
@@ -286,16 +341,7 @@ impl<R, H> JobResult<R, H> {
         // Keep only fee and nonce transitions from the original execution accounts.
         if let Some(sender) = executed.state.get(&self.sender) {
             let mut account = Account::from(sender.original_info()).with_touched_mark();
-            let nonce_delta = sender
-                .info
-                .nonce
-                .checked_sub(sender.original_info().nonce)
-                .ok_or_else(|| std::io::Error::other("sender nonce decreased"))?;
-            account.info.nonce = account
-                .info
-                .nonce
-                .checked_add(nonce_delta)
-                .ok_or_else(|| std::io::Error::other("sender nonce overflow"))?;
+            account.info.nonce = sender.info.nonce;
             account.info.balance = account.info.balance.checked_sub(self.fee).ok_or_else(|| {
                 std::io::Error::other("insufficient balance for rejected transaction fee")
             })?;
@@ -325,3 +371,7 @@ impl<R, H> JobResult<R, H> {
         Ok(state)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/job_result.rs"]
+mod tests;

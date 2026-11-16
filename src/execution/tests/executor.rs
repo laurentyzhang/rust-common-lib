@@ -75,9 +75,9 @@ fn scalar_exports_preserve_snapshots_and_combine_reads_without_stripping_numeric
         Address::ZERO,
     ));
     let mut outcome = successful_job(7, 21_000, scalar_state(original, current));
-    let mut reads = ReadRecorder::new(7);
+    let mut reads = Recorder::new(7);
     for key in [slots.value, slots.pos_delta, slots.neg_delta] {
-        reads.record(Key::Storage(Address::ZERO, key));
+        reads.log_read(Key::Storage(Address::ZERO, key));
     }
     outcome.reads = reads.drain();
     outcome
@@ -137,8 +137,8 @@ fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
     let mut results = (0..2)
         .map(|id| {
             let mut job = successful_job(id, 21_000, scalar_state([0; 5], [0; 5]));
-            let mut reads = ReadRecorder::new(id);
-            reads.record(Key::Storage(Address::ZERO, key));
+            let mut reads = Recorder::new(id);
+            reads.log_read(Key::Storage(Address::ZERO, key));
             let outcome = &mut job;
             outcome.reads = reads.drain();
             assert!(outcome.to_records(outcome.id).iter().any(|record| {
@@ -250,9 +250,9 @@ fn rejected_jobs_report_all_conflicts_and_contribute_no_state_or_gas() {
     }
     let state = EvmState::from_iter([(Address::ZERO, account)]);
     let mut reader = successful_job(0, 21_000, state.clone());
-    let mut reads = ReadRecorder::new(0);
+    let mut reads = Recorder::new(0);
     for slot in slots {
-        reads.record(Key::Storage(Address::ZERO, slot));
+        reads.log_read(Key::Storage(Address::ZERO, slot));
     }
     reader.reads = reads.drain();
 

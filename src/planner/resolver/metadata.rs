@@ -16,7 +16,7 @@ impl<DB: Database, K> Planner<DB, K> {
     /// Builds storage updates for the function conflicts reported by executed jobs.
     ///
     /// Transaction IDs are mapped to their scheduled `(contract, callee)` pairs.
-    /// Each pair of conflicting functions is recorded in both directions for future
+    /// Each pair of conflicting functions is inspector_records in both directions for future
     /// scheduling. Jobs without a callee do not contribute function metadata.
     ///
     /// Existing peers are loaded from the planner database; only new peers are

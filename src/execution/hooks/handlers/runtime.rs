@@ -1,6 +1,7 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
-use crate::execution::{CallHookError, ReadRecorder, evm::storage::ApiStore};
+use crate::execution::key::Key;
+use crate::execution::{CallHookError, Recorder, evm::storage::ApiStore};
 use crate::planner::meta::{MetaKeyCodec, property::Property};
 use alloy_evm::EvmInternals;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
@@ -26,17 +27,23 @@ impl CallHandler for RuntimeHandler {
         _key: U256,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
-        _api_reads: &mut ReadRecorder,
+        api_recorder: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         match IRuntime::IRuntimeCalls::abi_decode_validate(input.input) {
             Ok(IRuntime::IRuntimeCalls::setDeferral(call)) => {
                 if input.scheme != CallScheme::Call {
                     return Ok(CallOutput::reverted(0, Vec::new()));
                 }
-                // Runtime code is installed only after the constructor finishes.
+
+                // No actual read is performed here, we are just logging the intent to read.
+                api_recorder.log_read(Key::Account(input.caller));
+
+                // Make sure the account exists first.
                 let caller = internals
                     .load_account(input.caller)
                     .map_err(|error| CallHookError::Handler(error.to_string()))?;
+
+                // Runtime code is installed only after the constructor finishes.
                 if !caller.data.is_created_locally()
                     || caller.data.info.code_hash != KECCAK256_EMPTY
                 {
@@ -46,6 +53,9 @@ impl CallHandler for RuntimeHandler {
                 callee[..4].copy_from_slice(&input.caller[..4]);
                 callee[4..].copy_from_slice(call.selector.as_slice());
                 let slot = Property::DeferredGas.slot(input.caller, u64::from_le_bytes(callee), 0);
+
+                // Log that we are writing to the caller's account.
+                api_recorder.log_write(Key::Storage(input.caller, slot));
                 internals.write(input.caller, slot, U256::from(call.prepaidGas))?;
                 Ok(CallOutput::returned(0, Vec::new()))
             }

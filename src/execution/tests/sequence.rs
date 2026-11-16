@@ -29,6 +29,71 @@ fn raw_job(id: ID, state: EvmState) -> JobResult<()> {
 }
 
 #[test]
+fn numeric_checks_count_each_job_delta_once() {
+    use crate::execution::{Property, ScalarAdapter, ScalarKeyCodec, key::Key};
+    use crate::namespace::Namespace;
+    use crate::planner::resolver::{Checker, ConflictDetector};
+
+    let owner = Address::with_last_byte(1);
+    let key = ScalarKeyCodec::encode(Namespace::U256, Property::Value as u8, Address::ZERO);
+    let slots = ScalarAdapter::new(key);
+    let mut checker = ConflictDetector::new();
+
+    // Sequence zero adds 2, then 3; sequence one adds 1. Starting at 1 gives 7.
+    for (global, sequence, job, original_positive, positive) in
+        [(0, 0, 0, 0, 2), (1, 0, 1, 2, 5), (2, 1, 0, 0, 1)]
+    {
+        let id = ID {
+            sequence,
+            job,
+            ..ID::new(0, global)
+        };
+        let mut account = Account::from(AccountInfo::default().with_nonce(1));
+        for (key, original, present) in [
+            (slots.min, 0, 0),
+            (slots.max, 7, 7),
+            (slots.value, 1, 1),
+            (slots.pos_delta, original_positive, positive),
+            (slots.neg_delta, 0, 0),
+        ] {
+            account.storage.insert(
+                key,
+                EvmStorageSlot::new_changed(
+                    U256::from(original),
+                    U256::from(present),
+                    Default::default(),
+                ),
+            );
+        }
+        let raw = raw_job(id, EvmState::from_iter([(owner, account)]));
+        // Isolate the numeric value record exported from each job's slot snapshots.
+        checker.import(
+            raw.to_records(id)
+                .into_iter()
+                .filter(|record| record.key == Key::Storage(owner, key))
+                .collect(),
+        );
+    }
+
+    let verdicts = checker.check();
+    let numeric_errors = verdicts
+        .iter()
+        .flat_map(|verdict| &verdict.conflicts)
+        .filter(|(_, reason)| matches!(reason, Reason::NumericError(_, _)))
+        .collect::<Vec<_>>();
+    assert!(
+        numeric_errors.is_empty(),
+        "valid final value 7 was rejected: {numeric_errors:?}"
+    );
+    assert_eq!(verdicts.len(), 3);
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| verdict.decision == CommitDecision::Accepted)
+    );
+}
+
+#[test]
 fn new_job_starts_pending() {
     let id = ID::new(0, 0);
     let job = raw_job(id, EvmState::default());
