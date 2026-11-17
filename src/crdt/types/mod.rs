@@ -1,16 +1,8 @@
-pub mod commutative;
-pub mod non_commutative;
+pub mod scalar;
+pub mod set;
 
-pub use commutative::{Scalar, Set, Type};
-pub use non_commutative::NonComm;
-
-pub mod set {
-    pub use super::commutative::set::Set;
-}
-
-pub mod non_comm {
-    pub use super::non_commutative::NonComm;
-}
+pub use scalar::{Scalar, Type};
+pub use set::Set;
 
 #[cfg(test)]
 #[path = "types_tests.rs"]

@@ -24,9 +24,8 @@ impl ApiAddress {
         Self::from_repr(address).is_some()
     }
 
-    pub fn is_storage_key(key: U256) -> bool {
-        NamespaceCodec::decode(&key.to_be_bytes::<32>())
-            .is_some_and(|(namespace, _)| Self::try_from(namespace).is_ok())
+    pub fn is_api_storage_key(key: U256) -> bool {
+        NamespaceCodec::decode(key).is_some_and(|(namespace, _)| Self::try_from(namespace).is_ok())
     }
 
     /// Builds the canonical low Arcology address for a one-byte suffix.

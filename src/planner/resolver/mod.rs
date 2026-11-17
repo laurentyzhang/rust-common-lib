@@ -65,7 +65,6 @@ pub enum AccessConflict {
     ReadConflict(String),
     DeltaConflict(String),
     RemoveConflict(String),
-    ConcurrentDeltaOnNonCommutative(String),
 }
 
 /// Describes an access conflict, numeric constraint failure, or rejected dependency.

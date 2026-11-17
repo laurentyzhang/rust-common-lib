@@ -19,6 +19,7 @@ use crate::{
         status::{Status, Tag},
         value::ValueSnapshots,
     },
+    namespace::{NamespaceCodec, crdt::CrdtKeyCodec},
     planner::resolver::{CommitDecision, CommitVerdict},
 };
 use alloy_primitives::{Address, I256, U256};
@@ -239,6 +240,7 @@ impl<R, H> JobResult<R, H> {
     }
 
     /// Collects storage records from the result state for access and bound checks.
+    /// It need to handle both original and current storage slot values.
     fn slot_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let Ok(result_and_state) = &self.raw_result_and_state else {
             return Vec::new();
@@ -305,11 +307,20 @@ impl<R, H> JobResult<R, H> {
                     })
                 } else if !value.is_changed() {
                     Status::Tag(original)
-                } else if !value.original_value().is_zero() && value.present_value().is_zero() {
+                } else if !value.original_value().is_zero()
+                    && value.present_value().is_zero()
+                    && NamespaceCodec::decode(*slot_key).is_none()
+                {
+                    // For evm native slot. None zero => Zero is considered a removal.
                     operations.removes.increment();
                     Status::Tag(Tag::Deleted)
                 } else {
-                    operations.deltas.increment();
+                    // All
+                    if CrdtKeyCodec::decode(*slot_key).is_some() {
+                        operations.deltas.increment();
+                    } else {
+                        operations.writes.increment();
+                    }
                     Status::Tag(Tag::Stripped)
                 };
 

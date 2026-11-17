@@ -19,8 +19,7 @@ impl MetaKeyCodec {
 
     /// Returns property, selector, slot index, and host address prefix.
     pub fn decode(key: U256) -> Option<(u8, [u8; 4], u32, [u8; 16])> {
-        let bytes = key.to_be_bytes::<32>();
-        let (namespace, payload) = NamespaceCodec::decode(&bytes)?;
+        let (namespace, payload) = NamespaceCodec::decode(key)?;
         if namespace != Namespace::Meta {
             return None;
         }

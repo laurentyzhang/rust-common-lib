@@ -1,86 +1,103 @@
-#[cfg(test)]
-mod tests {
-    use crate::crdt::crdt::{CacheableCrdt, Crdt};
-    use crate::crdt::types::NonComm;
-    use std::cmp::Ordering;
+use super::Scalar;
+use crate::crdt::{
+    Crdt, Type,
+    state::{CrdtError, DeltaOp, NumericError},
+};
+use alloy_primitives::{I256, U256};
 
-    #[test]
-    fn default_has_no_value_or_delta() {
-        let bytes = NonComm::<[u8]>::default();
+#[test]
+fn constructors_validate_bounds() {
+    assert!(Scalar::<I256>::new(I256::unchecked_from(-10), I256::unchecked_from(10)).is_ok());
+    assert!(Scalar::<I256>::new(I256::unchecked_from(10), I256::unchecked_from(-10)).is_err());
+    assert!(Scalar::<U256>::new(U256::ZERO, U256::from(100)).is_ok());
+    assert!(Scalar::<U256>::new(U256::from(100), U256::ZERO).is_err());
+}
 
-        assert_eq!(bytes.value(), None);
-        assert_eq!(bytes.delta.as_deref(), None);
-        assert_eq!(bytes.limits(), None);
-        assert!(!bytes.is_numeric());
-        assert!(!bytes.is_commutative());
-    }
+#[test]
+fn with_delta_keeps_the_initial_value_until_applied() {
+    let delta = DeltaOp::Sub(U256::from(3));
+    let mut unsigned = Scalar::with_delta(U256::from(10), delta).unwrap();
+    assert_eq!(unsigned.value(), Some(&U256::from(10)));
+    assert_eq!(unsigned.delta(), Some(&delta));
+    assert_eq!(unsigned.limits(), Some((&U256::ZERO, &U256::MAX)));
+    assert_eq!(unsigned.apply_delta().value(), Some(&U256::from(7)));
+    assert_eq!(unsigned.delta(), None);
 
-    #[test]
-    fn delta_is_the_current_value() {
-        let mut bytes = NonComm::<[u8]>::default();
+    let mut signed =
+        Scalar::with_delta(I256::unchecked_from(-2), DeltaOp::Add(U256::from(5))).unwrap();
+    assert_eq!(signed.apply_delta().value(), Some(&I256::unchecked_from(3)));
+}
 
-        bytes.add_delta(&[1, 2, 3]).expect("add delta");
+#[test]
+fn with_delta_rejects_unapplicable_deltas() {
+    let one = U256::from(1);
+    assert!(Scalar::with_delta(U256::MAX, DeltaOp::Add(one)).is_err());
+    assert!(Scalar::with_delta(U256::ZERO, DeltaOp::Sub(one)).is_err());
+    assert!(Scalar::with_delta(I256::MAX, DeltaOp::Add(one)).is_err());
+    assert!(Scalar::with_delta(I256::MIN, DeltaOp::Sub(one)).is_err());
+}
 
-        assert_eq!(bytes.value(), Some(&[1, 2, 3][..]));
-        assert_eq!(bytes.delta.as_deref(), Some(&[1, 2, 3][..]));
-    }
+#[test]
+fn signed_and_unsigned_deltas_share_the_same_operations() {
+    let mut signed = Scalar::<I256>::default();
+    signed.add_delta(&DeltaOp::Add(U256::from(10))).unwrap();
+    signed.add_delta(&DeltaOp::Sub(U256::from(13))).unwrap();
+    assert_eq!(signed.delta(), Some(&DeltaOp::Sub(U256::from(3))));
 
-    #[test]
-    fn setting_delta_again_replaces_the_value() {
-        let mut bytes = NonComm::<[u8]>::default();
-        bytes.add_delta(&[1, 2, 3]).expect("add delta");
+    let mut unsigned = Scalar::<U256>::default();
+    unsigned.add_delta(&DeltaOp::Add(U256::from(10))).unwrap();
+    unsigned.add_delta(&DeltaOp::Sub(U256::from(3))).unwrap();
+    assert_eq!(unsigned.delta(), Some(&DeltaOp::Add(U256::from(7))));
+}
 
-        bytes.add_delta(&[4, 5]).expect("replace delta");
+#[test]
+fn signed_delta_supports_the_full_i256_range() {
+    let mut value = Scalar::<I256>::default();
+    value
+        .add_delta(&DeltaOp::Sub(U256::from(1) << 255))
+        .unwrap();
+    value.apply_delta();
+    assert_eq!(value.value(), Some(&I256::MIN));
 
-        assert_eq!(bytes.value(), Some(&[4, 5][..]));
-        assert_eq!(bytes.delta.as_deref(), Some(&[4, 5][..]));
-    }
+    value.add_delta(&DeltaOp::Add(U256::MAX)).unwrap();
+    value.apply_delta();
+    assert_eq!(value.value(), Some(&I256::MAX));
+}
 
-    #[test]
-    fn apply_delta_is_a_no_op() {
-        let mut bytes = NonComm::<[u8]>::default();
-        bytes.add_delta(&[1, 2, 3]).expect("add delta");
+#[test]
+fn u64_deltas_use_the_full_range_and_reject_overflow_and_underflow() {
+    let mut scalar = Scalar::with_delta(0u64, u64::delta_between(0, u64::MAX)).unwrap();
+    assert_eq!(scalar.value(), Some(&0));
+    assert_eq!(scalar.apply_delta().value(), Some(&u64::MAX));
+    let before = scalar.clone();
+    assert!(matches!(
+        scalar.add_delta(&DeltaOp::Add(1)),
+        Err(CrdtError::U64(NumericError::Overflow(_)))
+    ));
+    assert_eq!(scalar, before);
+    scalar.add_delta(&u64::delta_between(u64::MAX, 0)).unwrap();
+    assert_eq!(scalar.apply_delta().value(), Some(&0));
+    let before = scalar.clone();
+    assert!(matches!(
+        scalar.add_delta(&DeltaOp::Sub(1)),
+        Err(CrdtError::U64(NumericError::Underflow(_)))
+    ));
+    assert_eq!(scalar, before);
+}
 
-        assert_eq!(bytes.apply_delta().value(), Some(&[1, 2, 3][..]));
-        assert_eq!(bytes.delta.as_deref(), Some(&[1, 2, 3][..]));
-    }
+#[test]
+fn u64_nonce_deltas_accumulate_and_respect_limits() {
+    let mut nonce = Scalar::with_delta(7u64, u64::delta_between(7, 8)).unwrap();
+    nonce.add_delta(&u64::delta_between(8, 10)).unwrap();
+    assert_eq!(nonce.delta(), Some(&DeltaOp::Add(3)));
+    assert_eq!(nonce.apply_delta().value(), Some(&10));
 
-    #[test]
-    fn empty_delta_is_preserved() {
-        let mut bytes = NonComm::<[u8]>::default();
-        bytes.add_delta(&[]).expect("add empty delta");
-
-        assert_eq!(bytes.value(), Some(&[][..]));
-        assert_eq!(bytes.delta.as_deref(), Some(&[][..]));
-    }
-
-    #[test]
-    fn cache_weight_counts_struct_and_payload_bytes() {
-        let mut bytes = NonComm::<[u8]>::default();
-        let base = std::mem::size_of::<NonComm<[u8]>>();
-        assert_eq!(bytes.cache_weight(), base);
-
-        bytes.add_delta(&[1, 2, 3]).expect("add delta");
-        assert_eq!(bytes.cache_weight(), base + 3);
-
-        bytes.add_delta(&[4, 5]).expect("replace delta");
-        assert_eq!(bytes.cache_weight(), base + 2);
-    }
-
-    #[test]
-    fn compare_uses_length_then_lexicographic_order() {
-        let short = NonComm::<[u8]>::new(vec![b'z']).unwrap();
-        let long = NonComm::<[u8]>::new(vec![b'a', b'a']).unwrap();
-        let left = NonComm::<[u8]>::new(vec![b'a', b'b']).unwrap();
-        let right = NonComm::<[u8]>::new(vec![b'a', b'c']).unwrap();
-        let no_delta = NonComm::<[u8]>::default();
-
-        assert_eq!(short.compare(&long), Ordering::Less);
-        assert_eq!(left.compare(&right), Ordering::Less);
-        assert_eq!(right.compare(&left), Ordering::Greater);
-        assert_eq!(left.compare(&left), Ordering::Equal);
-        assert_eq!(left.compare(&no_delta), Ordering::Less);
-        assert_eq!(no_delta.compare(&left), Ordering::Greater);
-        assert_eq!(no_delta.compare(&no_delta), Ordering::Equal);
-    }
+    let mut bounded = Scalar::<u64>::new(0, 10).unwrap();
+    bounded.add_delta(&DeltaOp::Add(8)).unwrap();
+    let before = bounded.clone();
+    assert!(matches!(
+        bounded.add_delta(&DeltaOp::Add(3)),
+        Err(CrdtError::U64(NumericError::AboveUpperLimit(_)))
+    ));
+    assert_eq!(bounded, before);
 }

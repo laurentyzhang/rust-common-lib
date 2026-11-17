@@ -575,7 +575,7 @@ fn contract_metadata_keys_encode_field_selector_index_and_host() {
         MetaKeyCodec::decode(deferred).unwrap(),
         (4, selector, index, host_prefix)
     );
-    assert!(!ApiAddress::is_storage_key(count));
+    assert!(!ApiAddress::is_api_storage_key(count));
     assert!(!U256Handler.is_valid_slot(count));
     assert!(!U256Handler.is_valid_slot(entry));
     assert!(ApiAddress::try_from(Namespace::Meta).is_err());

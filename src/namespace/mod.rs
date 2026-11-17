@@ -1,6 +1,7 @@
 use strum_macros::{EnumIter, FromRepr};
 
 pub mod codec;
+pub mod crdt;
 
 pub use codec::NamespaceCodec;
 

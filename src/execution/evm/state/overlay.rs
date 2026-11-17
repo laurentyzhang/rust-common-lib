@@ -117,7 +117,7 @@ impl StateOverlay {
         // Combine API deltas; ordinary storage slots take the incoming values.
         for (key, mut value) in incoming.storage {
             if let Some(slot) = current.storage.get(&key) {
-                if ApiAddress::is_storage_key(key)
+                if ApiAddress::is_api_storage_key(key)
                     && let Some(change) = Self::api_slot_delta(key, &value)
                 {
                     value.present_value = slot.present_value().wrapping_add(change);

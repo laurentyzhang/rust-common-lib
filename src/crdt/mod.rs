@@ -4,9 +4,7 @@ pub use self::crdt::Crdt;
 pub mod state;
 pub mod types;
 
-pub use types::set;
-pub use types::{NonComm, Scalar, Set, Type};
-pub use types::{commutative, non_commutative};
+pub use types::{Scalar, Set, Type, scalar, set};
 
 #[cfg(test)]
 pub use types::tests;

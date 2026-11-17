@@ -6,6 +6,59 @@ use alloy_evm::revm::{
 use alloy_primitives::Bytes;
 
 #[test]
+fn zero_deletes_only_ordinary_evm_slots() {
+    use crate::{namespace::Namespace, planner::meta::property::Property as MetaProperty};
+
+    let owner = Address::with_last_byte(1);
+    let slots = [
+        (U256::ZERO, true),
+        (
+            ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO),
+            false,
+        ),
+        (
+            ScalarKeyCodec::encode(Namespace::I256, Property::NegDelta as u8, Address::ZERO),
+            false,
+        ),
+        (MetaProperty::DeferredGas.slot(owner, 0, 0), false),
+    ];
+    let mut account = Account::from(AccountInfo::default().with_nonce(1));
+    for &(slot, _) in &slots {
+        account.storage.insert(
+            slot,
+            EvmStorageSlot::new_changed(U256::from(2), U256::ZERO, Default::default()),
+        );
+    }
+    let job = JobResult::<()>::new(
+        ID::new(0, 0),
+        Ok(ResultAndState::new(
+            ExecutionResult::Success {
+                reason: SuccessReason::Stop,
+                gas: ResultGas::default(),
+                logs: Vec::new(),
+                output: Output::Call(Bytes::new()),
+            },
+            EvmState::from_iter([(owner, account)]),
+        )),
+        None,
+        Vec::new(),
+    );
+    let records = job.to_records(job.id);
+    for (slot, deleted) in slots {
+        let record = records
+            .iter()
+            .find(|record| record.key == Key::Storage(owner, slot))
+            .unwrap();
+        assert_eq!(
+            matches!(record.data.current(), Status::Tag(Tag::Deleted)),
+            deleted
+        );
+        assert_eq!(record.data.operations.removes.count(), u32::from(deleted));
+        assert_eq!(record.data.operations.deltas.count(), u32::from(!deleted));
+    }
+}
+
+#[test]
 fn rejected_result_is_built_on_demand_from_original_accounts() {
     let sender = Address::with_last_byte(1);
     let recipient = Address::with_last_byte(2);

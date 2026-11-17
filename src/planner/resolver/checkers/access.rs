@@ -1,9 +1,5 @@
 use super::util::run_parallel;
-use crate::crdt::state::{
-    Tracked,
-    status::{Status, Tag},
-    value::CrdtValue,
-};
+use crate::crdt::state::{Tracked, status::Status};
 use crate::execution::output::ExecutionOutput;
 use crate::planner::resolver::{AccessConflict, Diagnostic, Reason};
 use std::collections::{BTreeSet, HashMap};
@@ -129,22 +125,6 @@ impl Tracked<Status, Status> {
         self.creation_conflict(other, "Creation".to_string())?;
         self.read_conflict(other, "Delta".to_string())?;
         self.remove_conflict(other, "Remove".to_string())?;
-
-        // Bytes do not support commutative delta writes.
-        // Only idempotent delta writes are allowed for Bytes.
-        // Without access to the previous state, we can only
-        // safely assume that the default state or deleting the value
-        // are actually idempotent.
-        if matches!(&other.value.current, Status::Value(CrdtValue::Bytes(_)))
-            && !matches!(
-                &self.value.current,
-                Status::Tag(Tag::Missing) | Status::Tag(Tag::Default) | Status::Tag(Tag::Deleted)
-            )
-        {
-            return Err(AccessConflict::ConcurrentDeltaOnNonCommutative(
-                "Deltas conflict detected with Deltas".to_string(),
-            ));
-        }
 
         Ok(())
     }

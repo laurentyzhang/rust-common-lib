@@ -131,9 +131,9 @@ fn codecs_reject_other_namespaces_and_invalid_properties() {
 fn api_routing_uses_only_the_shared_prefix() {
     let scalar = ScalarKeyCodec::encode(Namespace::U256, 2, Address::ZERO);
     let meta = Property::ConflictCount.slot(Address::ZERO, 0, 0);
-    assert!(ApiAddress::is_storage_key(scalar));
+    assert!(ApiAddress::is_api_storage_key(scalar));
     assert!(U256Handler.is_valid_slot(scalar));
-    assert!(!ApiAddress::is_storage_key(meta));
+    assert!(!ApiAddress::is_api_storage_key(meta));
     assert!(!U256Handler.is_valid_slot(meta));
     assert!(ScalarKeyCodec::decode(meta).is_none());
     assert!(MetaKeyCodec::decode(scalar).is_none());

@@ -30,8 +30,7 @@ impl ScalarKeyCodec {
 
     /// Rejects other namespaces and undefined scalar properties.
     pub fn decode(key: U256) -> Option<(ScalarKind, u8, [u8; 24])> {
-        let bytes = key.to_be_bytes::<32>();
-        let (namespace, payload) = NamespaceCodec::decode(&bytes)?;
+        let (namespace, payload) = NamespaceCodec::decode(key)?;
         let kind = ScalarKind::try_from(namespace).ok()?;
         let (&property, instance) = payload.split_first()?;
         Property::from_repr(property)?;
