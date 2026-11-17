@@ -7,7 +7,7 @@ use crate::{
     execution::output::ExecutionOutput,
     planner::resolver::checkers::util::run_parallel,
     planner::resolver::{Diagnostic, Reason},
-    planner::scheduler::ID,
+    planner::scheduler::{ID, ScheduleKey},
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -18,6 +18,7 @@ pub struct SumChecker<K, T: Type> {
 }
 
 impl<K, T: Type> SumChecker<K, T> {
+    /// Creates an empty numeric bounds checker.
     pub fn new() -> Self {
         Self {
             entries: BTreeSet::new(),
@@ -25,6 +26,7 @@ impl<K, T: Type> SumChecker<K, T> {
         }
     }
 
+    /// Collects numeric snapshots, retaining each job's record for cutoff selection.
     pub fn import(&mut self, records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>)
     where
         K: Clone + Ord + std::hash::Hash,
@@ -35,7 +37,8 @@ impl<K, T: Type> SumChecker<K, T> {
         }
     }
 
-    pub fn check_bounds(&mut self) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
+    /// Consumes the imported records and checks each key in parallel.
+    pub fn check_bounds(&mut self) -> Vec<Diagnostic<K>>
     where
         K: Ord + std::hash::Hash + Send + Sync,
         T: Send,
@@ -44,44 +47,85 @@ impl<K, T: Type> SumChecker<K, T> {
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
+    /// Orders one key's records by sequence/job, then checks negative and positive
+    /// changes independently from the same initial value.
     fn do_check(
-        records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
-    ) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
+        mut records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
+    ) -> Vec<Diagnostic<K>>
     where
         K: Ord,
     {
-        // diagnostics stores details about detected problems. Each entry contains.
         let mut diagnostics = Vec::new();
-        let mut conflicts = BTreeSet::new();
-        let mut records = records.into_iter();
-        let Some(first) = records.next() else {
-            return (diagnostics, conflicts);
+        records.sort_unstable_by_key(|record| ScheduleKey(record.id));
+        let Some(first) = records.first() else {
+            return diagnostics;
         };
-        let mut contributors = Vec::new();
-        if first.data.current().delta().is_some() {
-            contributors.push(first.id);
-        }
-        let mut summed = first.data.into_current();
+        let mut initial = first.data.current().clone();
+        initial.delta = None;
 
-        for record in records {
-            let Some(delta) = record.data.current().delta() else {
-                continue;
-            };
+        Self::check_sum_bounds(
+            &mut records,
+            initial.clone(),
+            |before, after| after < before,
+            &mut diagnostics,
+        );
+        Self::check_sum_bounds(
+            &mut records,
+            initial,
+            |before, after| after > before,
+            &mut diagnostics,
+        );
+        diagnostics
+    }
 
-            // Try to add the delta to the summed value. If it fails, record a conflict and diagnostic.
-            if let Err(error) = summed.add_delta(delta) {
-                for &id in &contributors {
-                    conflicts.insert((id.min(record.id), id.max(record.id)));
-                }
-                diagnostics.push((
-                    record.id,
-                    contributors.clone(),
-                    Reason::NumericError(record.key, error.into()),
-                ));
-            } else {
-                contributors.push(record.id);
+    /// Accumulates job changes accepted by `select(before, after)`.
+    /// Cuts each failing job's sequence suffix and records its diagnostic and peers.
+    fn check_sum_bounds(
+        records: &mut Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
+        mut summed: Scalar<T>,
+        select: impl Fn(T, T) -> bool,
+        diagnostics: &mut Vec<Diagnostic<K>>,
+    ) {
+        let mut previous_sequence = None;
+        let mut previous_value = summed.value;
+        let mut contributors = Vec::<ID>::new();
+        let mut index = 0;
+
+        while index < records.len() {
+            let record = &records[index];
+            let sequence = (record.id.block, record.id.generation, record.id.sequence);
+            let scalar = record.data.current();
+            if previous_sequence != Some(sequence) {
+                previous_sequence = Some(sequence);
+                previous_value = scalar.value;
             }
+
+            // Consecutive snapshots give this job's change, including a return to zero.
+            let before = previous_value;
+            previous_value = scalar.clone().apply_delta().value;
+            if !select(before, previous_value) {
+                index += 1;
+                continue;
+            }
+            let delta = T::delta_between(before, previous_value);
+
+            if let Err(error) = summed.add_delta(&delta) {
+                let failed = records.remove(index);
+                diagnostics.push(Diagnostic {
+                    id: failed.id,
+                    peers: contributors.clone(),
+                    reason: Reason::NumericError(failed.key, error.into()),
+                });
+
+                // Drop this sequence's suffix and continue with the next sequence.
+                records.retain(|record| {
+                    (record.id.block, record.id.generation, record.id.sequence) != sequence
+                        || record.id.job < failed.id.job
+                });
+                continue;
+            }
+            contributors.push(record.id);
+            index += 1;
         }
-        (diagnostics, conflicts)
     }
 }

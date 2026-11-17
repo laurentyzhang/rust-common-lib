@@ -1,7 +1,9 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
-use crate::execution::{CallHookError, Recorder, ScalarAdapter, ScalarKeyCodec, ScalarKind};
+use crate::execution::{
+    CallHookError, Recorder, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key,
+};
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -19,7 +21,7 @@ sol! {
 pub struct U256Handler;
 
 impl U256Handler {
-    fn update(
+    fn update_delta(
         &self,
         key: U256,
         delta: DeltaOp<U256>,
@@ -35,6 +37,7 @@ impl U256Handler {
         if scalar.add_delta(&delta).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
+        recorder.log_delta(Key::Storage(input.caller, slots.value));
         slots.store(internals, input.caller, &scalar, recorder)?;
         Ok(CallOutput::returned(0, true.abi_encode()))
     }
@@ -69,14 +72,15 @@ impl CallHandler for U256Handler {
                 Ok(CallOutput::returned(0, call.key.abi_encode()))
             }
             Ok(IU256::IU256Calls::add(call)) => {
-                self.update(key, DeltaOp::Add(call.delta), input, internals, api_reads)
+                self.update_delta(key, DeltaOp::Add(call.delta), input, internals, api_reads)
             }
             Ok(IU256::IU256Calls::sub(call)) => {
-                self.update(key, DeltaOp::Sub(call.delta), input, internals, api_reads)
+                self.update_delta(key, DeltaOp::Sub(call.delta), input, internals, api_reads)
             }
             Ok(IU256::IU256Calls::get(_)) => {
-                let (mut scalar, _) =
+                let (mut scalar, slots) =
                     ScalarAdapter::new(key).load::<U256, _>(internals, input.caller, api_reads)?;
+                api_reads.log_write(Key::Storage(input.caller, slots.value));
                 Ok(CallOutput::returned(
                     0,
                     scalar.apply_delta().value.abi_encode(),

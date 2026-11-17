@@ -324,7 +324,7 @@ fn native_scalar_calls_record_each_field_access() {
             );
         }
         let records = recorder.drain();
-        assert_eq!(records.len(), 5);
+        assert_eq!(records.len(), if index < 3 { 5 } else { 1 });
         let slots = slots(handle);
         for slot in [
             slots.min,
@@ -332,22 +332,29 @@ fn native_scalar_calls_record_each_field_access() {
             slots.value,
             slots.pos_delta,
             slots.neg_delta,
-        ] {
+        ]
+        .into_iter()
+        .filter(|slot| index < 3 || *slot == slots.value)
+        {
             let record = records
                 .iter()
                 .find(|record| record.key == Key::Storage(owner, slot))
                 .unwrap();
             assert_eq!(record.id.global, 55);
             let operations = record.data.operations;
-            assert_eq!(operations.reads.count(), u32::from(index > 0));
-            assert_eq!(operations.deltas.count(), u32::from(index < 3));
+            assert_eq!(operations.reads.count(), 0);
+            assert_eq!(operations.writes.count(), 1);
+            assert_eq!(
+                operations.deltas.count(),
+                u32::from((index == 1 || index == 2) && slot == slots.value)
+            );
             assert_eq!(operations.removes.count(), 0);
         }
     }
 }
 
 #[test]
-fn signed_scalar_calls_record_reads_and_writes() {
+fn signed_scalar_calls_record_writes_and_deltas() {
     let owner = Address::repeat_byte(0x11);
     let key = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO);
     let slots = ScalarAdapter::new(key);
@@ -364,9 +371,14 @@ fn signed_scalar_calls_record_reads_and_writes() {
             max: I256::unchecked_from(100),
         }
         .abi_encode(),
+        II256::addCall {
+            key: key.into(),
+            delta: U256::from(7),
+        }
+        .abi_encode(),
         II256::subCall {
             key: key.into(),
-            delta: U256::from(5),
+            delta: U256::from(12),
         }
         .abi_encode(),
         II256::getCall { key: key.into() }.abi_encode(),
@@ -388,7 +400,7 @@ fn signed_scalar_calls_record_reads_and_writes() {
             .call(key, &input, &mut internals, &mut recorder)
             .unwrap();
         assert_eq!(output.status, ExitStatus::Return);
-        if index == 2 {
+        if index == 3 {
             assert_eq!(
                 I256::abi_decode_validate(&output.output).unwrap(),
                 I256::unchecked_from(-5)
@@ -408,14 +420,21 @@ fn signed_scalar_calls_record_reads_and_writes() {
             .iter()
             .find(|record| record.key == Key::Storage(owner, slot))
             .unwrap();
-        assert_eq!(record.data.operations.reads.count(), 2);
-        assert_eq!(record.data.operations.deltas.count(), 2);
+        assert_eq!(record.data.operations.reads.count(), 0);
+        assert_eq!(
+            record.data.operations.writes.count(),
+            3 + u32::from(slot == slots.value)
+        );
+        assert_eq!(
+            record.data.operations.deltas.count(),
+            2 * u32::from(slot == slots.value)
+        );
         assert_eq!(record.data.operations.removes.count(), 0);
     }
 }
 
 #[test]
-fn native_reads_are_isolated_between_evms_and_transactions() {
+fn native_records_are_isolated_between_evms_and_transactions() {
     let owner = Address::repeat_byte(0x11);
     let first = Address::with_last_byte(1);
     let second = Address::with_last_byte(2);
@@ -454,21 +473,17 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     }
     for (evm, handle, id) in [(&mut left, first, 7), (&mut right, second, 8)] {
         let reads = evm.drain_recorder();
-        assert_eq!(reads.len(), 5);
-        for slot in &[
-            slots(handle).min,
-            slots(handle).max,
-            slots(handle).value,
-            slots(handle).pos_delta,
-            slots(handle).neg_delta,
-        ] {
+        assert_eq!(reads.len(), 1);
+        for slot in &[slots(handle).value] {
             let read = reads
                 .iter()
                 .find(|read| read.key == Key::Storage(owner, *slot))
                 .unwrap();
             assert_eq!(read.id.global, id);
             assert_eq!(read.data.id, id);
-            assert_eq!(read.data.operations.reads.count(), 1);
+            assert_eq!(read.data.operations.reads.count(), 0);
+            assert_eq!(read.data.operations.writes.count(), 1);
+            assert_eq!(read.data.operations.deltas.count(), 0);
         }
         assert!(evm.drain_recorder().is_empty());
     }
@@ -487,15 +502,9 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
     }))
     .unwrap();
     let reads = left.drain_recorder();
-    assert_eq!(reads.len(), 5);
+    assert_eq!(reads.len(), 1);
     assert!(reads.iter().all(|read| read.id.global == 99));
-    for slot in &[
-        slots(second).min,
-        slots(second).max,
-        slots(second).value,
-        slots(second).pos_delta,
-        slots(second).neg_delta,
-    ] {
+    for slot in &[slots(second).value] {
         assert!(
             reads
                 .iter()
@@ -506,7 +515,7 @@ fn native_reads_are_isolated_between_evms_and_transactions() {
 }
 
 #[test]
-fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
+fn native_writes_and_opcode_reads_merge_even_when_the_contract_reverts() {
     let owner = Address::repeat_byte(0x22);
     let handle = Address::with_last_byte(1);
     let slot = slots(handle).value;
@@ -575,17 +584,24 @@ fn native_and_opcode_reads_merge_even_when_the_contract_reverts() {
             .iter()
             .filter(|read| matches!(read.key, Key::Storage(..)))
             .collect();
-        assert_eq!(storage.len(), 5);
+        assert_eq!(storage.len(), 1);
         let value_read = storage
             .iter()
             .find(|read| read.key == Key::Storage(owner, slot))
             .unwrap();
-        assert_eq!(value_read.data.operations.reads.count(), 2);
-        let delta_read = storage
+        assert_eq!(value_read.data.operations.reads.count(), 1);
+        assert_eq!(value_read.data.operations.writes.count(), 1);
+        assert_eq!(value_read.data.operations.deltas.count(), 0);
+
+        let outcome = JobResult::<(), _>::new(ID::new(0, 33), Ok(result), None, reads);
+        let records = outcome.to_records(outcome.id);
+        let value = records
             .iter()
-            .find(|read| read.key == Key::Storage(owner, slots(handle).pos_delta))
+            .find(|record| record.key == Key::Storage(owner, slot))
             .unwrap();
-        assert_eq!(delta_read.data.operations.reads.count(), 1);
+        assert_eq!(value.data.operations.reads.count(), 1);
+        assert_eq!(value.data.operations.writes.count(), 1);
+        assert_eq!(value.data.operations.deltas.count(), 0);
     }
 }
 

@@ -132,6 +132,7 @@ impl<R, H> JobResult<R, H> {
                 let (journal, inspector) =
                     (&mut journal_records.operations, inspector_record.operations);
                 journal.reads = (journal.reads.count() + inspector.reads.count()).into();
+                journal.writes = (journal.writes.count() + inspector.writes.count()).into();
                 journal.deltas = (journal.deltas.count() + inspector.deltas.count()).into();
                 journal.removes = (journal.removes.count() + inspector.removes.count()).into();
                 journal.existence_checks =

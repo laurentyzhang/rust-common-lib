@@ -30,6 +30,7 @@ impl From<u32> for Counter {
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Operations {
     pub(crate) reads: Counter,
+    pub(crate) writes: Counter,
     pub(crate) existence_checks: Counter,
     pub(crate) deltas: Counter,
     pub(crate) removes: Counter,

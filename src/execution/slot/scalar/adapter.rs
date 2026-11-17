@@ -69,7 +69,6 @@ impl ScalarAdapter {
         .into_iter()
         .zip(&mut fields)
         {
-            recorder.log_read(Key::Storage(owner, slot));
             *value = storage
                 .read(owner, slot)
                 .map_err(|error| CallHookError::Handler(error.to_string()))?;

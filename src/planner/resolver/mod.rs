@@ -85,8 +85,12 @@ pub struct TransactionConflictReport {
     pub access_conflicts: Vec<AccessConflict>,
 }
 
-// Checker diagnostics retain the affected job, peers, and keyed reason until selection.
-type Diagnostic<K> = (ID, Vec<ID>, Reason<K>);
+/// Affected job, related peers, and keyed reason used for selection and reporting.
+pub struct Diagnostic<K> {
+    pub id: ID,
+    pub peers: Vec<ID>,
+    pub reason: Reason<K>,
+}
 
 /// Collects execution records and returns complete per-job verdicts for a generation.
 pub trait Checker<K> {

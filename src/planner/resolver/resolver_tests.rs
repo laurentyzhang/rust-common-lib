@@ -196,6 +196,144 @@ fn checks_numeric_bounds_across_multiple_imports() {
 }
 
 #[test]
+fn numeric_checks_use_job_differences_and_independent_directions() {
+    // Snapshots contain global ID, sequence, job, base value, and accumulated delta.
+    let cases = [
+        (
+            "cumulative additions in job order",
+            7,
+            &[(30, 0, 0, 1, 2), (10, 0, 2, 1, 5), (20, 1, 0, 1, 1)][..],
+            &[][..],
+        ),
+        (
+            "cumulative subtractions",
+            10,
+            &[(1, 0, 0, 7, -2), (2, 0, 1, 7, -5), (3, 1, 0, 7, -2)][..],
+            &[][..],
+        ),
+        (
+            "zero accumulated delta retains the subtraction",
+            10,
+            &[(1, 0, 0, 5, 4), (2, 0, 1, 5, 0), (3, 1, 0, 5, -2)][..],
+            &[3][..],
+        ),
+        (
+            "negative changes cannot cover an upper-bound failure",
+            10,
+            &[(1, 0, 0, 5, -5), (2, 1, 0, 5, 5), (3, 2, 0, 5, 5)][..],
+            &[3][..],
+        ),
+        (
+            "positive changes cannot cover a lower-bound failure",
+            10,
+            &[(1, 0, 0, 5, 5), (2, 1, 0, 5, -5), (3, 2, 0, 5, -5)][..],
+            &[3][..],
+        ),
+        (
+            "positive to negative accumulated delta",
+            10,
+            &[(1, 0, 0, 5, 2), (2, 0, 1, 5, -2), (3, 1, 0, 5, -2)][..],
+            &[3][..],
+        ),
+        (
+            "negative to positive accumulated delta",
+            10,
+            &[(1, 0, 0, 5, -2), (2, 0, 1, 5, 2), (3, 1, 0, 5, 2)][..],
+            &[3][..],
+        ),
+        (
+            "cutoff excludes the suffix from both passes",
+            10,
+            &[
+                (1, 0, 0, 5, 2),
+                (2, 0, 1, 5, 0),
+                (3, 1, 0, 5, 3),
+                (4, 1, 1, 5, 5),
+                (5, 1, 2, 5, 0),
+                (6, 2, 0, 5, -3),
+            ][..],
+            &[4, 5][..],
+        ),
+        (
+            "balance snapshots advance their base value",
+            15,
+            &[(1, 0, 0, 10, 2), (2, 0, 1, 12, 3), (3, 1, 0, 10, 1)][..],
+            &[3][..],
+        ),
+        (
+            "mixed changes fit independently",
+            10,
+            &[
+                (1, 0, 0, 5, 2),
+                (2, 0, 1, 5, 1),
+                (3, 1, 0, 5, 1),
+                (4, 1, 1, 5, -1),
+            ][..],
+            &[][..],
+        ),
+    ];
+
+    for signed in [false, true] {
+        for (name, upper, jobs, expected_rejected) in cases {
+            let jobs: &[(u64, u64, u64, i64, i64)] = jobs;
+            for reverse in [false, true] {
+                let mut records = Vec::new();
+                for &(global, sequence, job, base, accumulated) in jobs {
+                    let delta = match accumulated.cmp(&0) {
+                        std::cmp::Ordering::Greater => {
+                            Some(DeltaOp::Add(U256::from(accumulated as u64)))
+                        }
+                        std::cmp::Ordering::Less => {
+                            Some(DeltaOp::Sub(U256::from(accumulated.unsigned_abs())))
+                        }
+                        std::cmp::Ordering::Equal => None,
+                    };
+                    let scalar = if signed {
+                        CrdtValue::from(Scalar::<I256> {
+                            value: I256::unchecked_from(base),
+                            delta,
+                            min: I256::ZERO,
+                            max: I256::unchecked_from(upper),
+                        })
+                    } else {
+                        CrdtValue::from(Scalar::<U256> {
+                            value: U256::from(base as u64),
+                            delta,
+                            min: U256::ZERO,
+                            max: U256::from(upper as u64),
+                        })
+                    };
+                    let mut record = transition(7, Tracked::new_owned_existing(scalar, global));
+                    record.id.sequence = sequence;
+                    record.id.job = job;
+                    record.gas_used = 100 - global;
+                    records.push(record);
+                }
+
+                if reverse {
+                    records.reverse();
+                }
+                let mut checker = ConflictDetector::new();
+                for record in records {
+                    checker.import(vec![record]);
+                }
+                let result = checker.check();
+                assert_eq!(result.len(), jobs.len(), "{name}, signed {signed}");
+                assert_eq!(
+                    rejected_ids(&result)
+                        .iter()
+                        .map(|id| id.global)
+                        .collect::<Vec<_>>(),
+                    expected_rejected,
+                    "{name}, signed {signed}, reverse {reverse}"
+                );
+                assert!(checker.check().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn clears_previous_generation_metadata() {
     let mut checker = ConflictDetector::new();
     for generation in 0..2 {

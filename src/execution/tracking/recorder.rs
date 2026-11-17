@@ -1,4 +1,4 @@
-//! Read, write, and delete operation collection shared by inspectors and native call handlers.
+//! Read, write, delta, and delete operation collection shared by inspectors and native call handlers.
 
 use std::collections::HashMap;
 
@@ -16,7 +16,7 @@ pub type RecorderOutput = Vec<ExecutionOutput<Key, Tracked<Status, Status>>>;
 
 pub(in crate::execution) const MIN_PARALLEL_MERGE_ENTRIES_PER_WORKER: usize = 1_024;
 
-/// Counts state reads, writes, and delete attempts for one transaction.
+/// Counts state reads, writes, deltas, and delete attempts for one transaction.
 pub struct Recorder {
     id: u64,
     access: HashMap<Key, Operations>,
@@ -49,6 +49,11 @@ impl Recorder {
 
     /// Records one storage write attempt.
     pub fn log_write(&mut self, key: Key) {
+        self.access.entry(key).or_default().writes.increment();
+    }
+
+    /// Records one delta update attempt.
+    pub fn log_delta(&mut self, key: Key) {
         self.access.entry(key).or_default().deltas.increment();
     }
 
@@ -76,6 +81,7 @@ impl Recorder {
         for (key, operations) in other.access.drain() {
             let current = self.access.entry(key).or_default();
             current.reads = (current.reads.count() + operations.reads.count()).into();
+            current.writes = (current.writes.count() + operations.writes.count()).into();
             current.deltas = (current.deltas.count() + operations.deltas.count()).into();
             current.removes = (current.removes.count() + operations.removes.count()).into();
             current.existence_checks =
@@ -114,6 +120,7 @@ impl Recorder {
             };
             let current = access.entry(key).or_default();
             current.reads = (current.reads.count() + operations.reads.count()).into();
+            current.writes = (current.writes.count() + operations.writes.count()).into();
             current.deltas = (current.deltas.count() + operations.deltas.count()).into();
             current.removes = (current.removes.count() + operations.removes.count()).into();
             current.existence_checks =
@@ -248,7 +255,7 @@ mod tests {
                 .copied()
                 .unwrap_or_default();
             assert_eq!(
-                operations.deltas.count(),
+                operations.writes.count(),
                 writes,
                 "original {original}, code {code:?}"
             );
@@ -266,10 +273,13 @@ mod tests {
         let mut transaction = Recorder::new(17);
         transaction.log_read(key.clone());
         transaction.log_write(key.clone());
+        transaction.log_delta(key.clone());
         let mut native = Recorder::new(0);
         native.log_read(key.clone());
         native.log_read(key.clone());
         native.log_write(key.clone());
+        native.log_delta(key.clone());
+        native.log_delta(key.clone());
         native.log_delete(key.clone());
         transaction.merge_reads(&mut native);
         assert!(native.drain().is_empty());
@@ -279,7 +289,8 @@ mod tests {
         assert_eq!(reads[0].data.id, 17);
         assert_eq!(reads[0].key, key);
         assert_eq!(reads[0].data.operations.reads.count(), 3);
-        assert_eq!(reads[0].data.operations.deltas.count(), 2);
+        assert_eq!(reads[0].data.operations.writes.count(), 2);
+        assert_eq!(reads[0].data.operations.deltas.count(), 3);
         assert_eq!(reads[0].data.operations.removes.count(), 1);
         assert!(transaction.drain().is_empty());
     }
@@ -306,10 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn drain_preserves_write_only_and_delete_only_keys_and_groups_account_reads() {
+    fn drain_preserves_write_delta_and_delete_keys_and_groups_account_reads() {
         let owner = Address::with_last_byte(1);
         let write = Key::Storage(owner, U256::from(7));
         let delete = Key::Storage(owner, U256::from(8));
+        let delta = Key::Storage(owner, U256::from(9));
         let mut recorder = Recorder::new(3);
         recorder.log_read(Key::Balance(owner));
         recorder.log_read(Key::Code(owner));
@@ -317,20 +329,26 @@ mod tests {
         recorder.log_write(write.clone());
         recorder.log_write(write.clone());
         recorder.log_delete(delete.clone());
+        recorder.log_delta(delta.clone());
         let records = recorder
             .drain()
             .into_iter()
             .map(|record| (record.key, record.data.operations))
             .collect::<HashMap<_, _>>();
 
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
         assert_eq!(records[&Key::Account(owner)].reads.count(), 3);
         assert_eq!(records[&write].reads.count(), 0);
-        assert_eq!(records[&write].deltas.count(), 2);
+        assert_eq!(records[&write].writes.count(), 2);
+        assert_eq!(records[&write].deltas.count(), 0);
         assert_eq!(records[&write].removes.count(), 0);
         assert_eq!(records[&delete].reads.count(), 0);
         assert_eq!(records[&delete].deltas.count(), 0);
         assert_eq!(records[&delete].removes.count(), 1);
+        assert_eq!(records[&delta].reads.count(), 0);
+        assert_eq!(records[&delta].writes.count(), 0);
+        assert_eq!(records[&delta].deltas.count(), 1);
+        assert_eq!(records[&delta].removes.count(), 0);
         assert!(recorder.drain().is_empty());
     }
 }

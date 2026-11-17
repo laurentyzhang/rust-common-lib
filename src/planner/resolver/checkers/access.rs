@@ -6,7 +6,6 @@ use crate::crdt::state::{
 };
 use crate::execution::output::ExecutionOutput;
 use crate::planner::resolver::{AccessConflict, Diagnostic, Reason};
-use crate::planner::scheduler::ID;
 use std::collections::{BTreeSet, HashMap};
 
 /// Checks access conflicts for both numeric and nonnumeric records.
@@ -33,7 +32,7 @@ impl<K> AccessChecker<K> {
         }
     }
 
-    pub fn check(&mut self) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
+    pub fn check(&mut self) -> Vec<Diagnostic<K>>
     where
         K: Clone + Ord + std::hash::Hash + Send + Sync,
     {
@@ -42,12 +41,11 @@ impl<K> AccessChecker<K> {
 
     pub fn do_check(
         mut records: Vec<ExecutionOutput<K, Tracked<Status, Status>>>,
-    ) -> (Vec<Diagnostic<K>>, BTreeSet<(ID, ID)>)
+    ) -> Vec<Diagnostic<K>>
     where
         K: Clone + Ord,
     {
         let mut diagnostics = Vec::new();
-        let mut conflicts = BTreeSet::new();
         records.retain(|record| {
             let operations = &record.data.operations;
             operations.reads.count() > 0
@@ -82,15 +80,22 @@ impl<K> AccessChecker<K> {
                 };
 
                 if let Err(error) = result {
-                    conflicts.insert((first.id.min(record.id), first.id.max(record.id)));
                     // Either endpoint may be rejected by selection.
                     let reason = Reason::AccessConflict(record.key.clone(), error);
-                    diagnostics.push((record.id, vec![first.id], reason.clone()));
-                    diagnostics.push((first.id, vec![record.id], reason));
+                    diagnostics.push(Diagnostic {
+                        id: record.id,
+                        peers: vec![first.id],
+                        reason: reason.clone(),
+                    });
+                    diagnostics.push(Diagnostic {
+                        id: first.id,
+                        peers: vec![record.id],
+                        reason,
+                    });
                 }
             }
         }
-        (diagnostics, conflicts)
+        diagnostics
     }
 }
 

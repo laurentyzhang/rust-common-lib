@@ -1,5 +1,5 @@
 use super::{
-    Checker, CommitDecision, CommitVerdict, Reason,
+    Checker, CommitDecision, CommitVerdict, Diagnostic, Reason,
     checkers::{access::AccessChecker, sum::SumChecker},
     selection,
 };
@@ -11,7 +11,7 @@ use crate::crdt::state::{
 use crate::execution::output::ExecutionOutput;
 use crate::planner::scheduler::{ID, ScheduleKey};
 use alloy_primitives::{I256, U256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Coordinates access and numeric conflict checks and combines their results.
 pub struct ConflictDetector<K> {
@@ -99,7 +99,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         }
 
         // Check general accesses and signed/unsigned numeric bounds concurrently.
-        let ((mut diagnostics, pairs), ((i256, _), (u256, _))) = rayon::join(
+        let (mut diagnostics, (i256, u256)) = rayon::join(
             || self.access_checker.check(),
             || {
                 rayon::join(
@@ -112,13 +112,25 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         // Keep all diagnostic types for selecting accepted sequence prefixes.
         diagnostics.extend(i256.into_iter().chain(u256));
 
+        // Only access conflicts allow selection to reject either endpoint.
+        let pairs: BTreeSet<_> = diagnostics
+            .iter()
+            .filter(|diagnostic| matches!(&diagnostic.reason, Reason::AccessConflict(_, _)))
+            .flat_map(|diagnostic| {
+                diagnostic
+                    .peers
+                    .iter()
+                    .map(move |&peer| (diagnostic.id.min(peer), diagnostic.id.max(peer)))
+            })
+            .collect();
+
         // Numeric failures are mandatory rejections; access pairs are resolved
         // by selecting compatible prefixes from the affected sequences.
         let accepted = selection::select(
             &sequences,
             &pairs,
-            diagnostics.iter().filter_map(|(id, _, reason)| {
-                matches!(reason, Reason::NumericError(_, _)).then_some(*id)
+            diagnostics.iter().filter_map(|diagnostic| {
+                matches!(&diagnostic.reason, Reason::NumericError(_, _)).then_some(diagnostic.id)
             }),
         );
 
@@ -151,7 +163,12 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
         }
 
         // Merge duplicate reasons, retaining their distinct associated peers.
-        for (id, mut related, reason) in diagnostics {
+        for Diagnostic {
+            id,
+            peers: mut related,
+            reason,
+        } in diagnostics
+        {
             related.sort_unstable();
             related.dedup();
             let conflicts = &mut verdicts.get_mut(&id).unwrap().conflicts;

@@ -244,7 +244,7 @@ fn invalid_pending_arithmetic_does_not_write_any_slots() {
 }
 
 #[test]
-fn scalar_accesses_count_repeated_reads_writes_and_zero_writes() {
+fn scalar_store_records_writes_without_internal_reads() {
     let owner = Address::repeat_byte(0x11);
     let slots = ScalarAdapter::new(ScalarKeyCodec::encode(
         Namespace::U256,
@@ -281,8 +281,9 @@ fn scalar_accesses_count_repeated_reads_writes_and_zero_writes() {
             .find(|record| record.key == Key::Storage(owner, slot))
             .unwrap();
         assert_eq!(record.id.global, 7);
-        assert_eq!(record.data.operations.reads.count(), 3);
-        assert_eq!(record.data.operations.deltas.count(), 3);
+        assert_eq!(record.data.operations.reads.count(), 0);
+        assert_eq!(record.data.operations.writes.count(), 3);
+        assert_eq!(record.data.operations.deltas.count(), 0);
         assert_eq!(record.data.operations.removes.count(), 0);
     }
     assert!(recorder.drain().is_empty());
