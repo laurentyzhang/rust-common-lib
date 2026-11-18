@@ -7,6 +7,11 @@ use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 pub struct MetaKeyCodec;
 
 impl MetaKeyCodec {
+    /// Recognizes metadata fields with CRDT updates.
+    pub fn is_crdt(key: U256) -> bool {
+        matches!(Self::decode(key), Some((property, _, _, _)) if property == Property::DeferredGas as u8)
+    }
+
     pub fn encode(property: u8, host: Address, callee: u64, index: u32) -> U256 {
         let mut bytes = [0; 32];
         bytes[..PREFIX_LEN].copy_from_slice(&NamespaceCodec::encode(Namespace::Meta));

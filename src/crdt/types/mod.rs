@@ -1,8 +1,8 @@
+pub mod collections;
 pub mod scalar;
-pub mod set;
 
+pub use collections::Set;
 pub use scalar::{Scalar, Type};
-pub use set::Set;
 
 #[cfg(test)]
 #[path = "types_tests.rs"]

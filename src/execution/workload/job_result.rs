@@ -20,7 +20,10 @@ use crate::{
         value::ValueSnapshots,
     },
     namespace::{NamespaceCodec, crdt::CrdtKeyCodec},
-    planner::resolver::{CommitDecision, CommitVerdict},
+    planner::{
+        meta::MetaKeyCodec,
+        resolver::{CommitDecision, CommitVerdict},
+    },
 };
 use alloy_primitives::{Address, I256, U256};
 
@@ -316,7 +319,8 @@ impl<R, H> JobResult<R, H> {
                     Status::Tag(Tag::Deleted)
                 } else {
                     // All
-                    if CrdtKeyCodec::decode(*slot_key).is_some() {
+                    if CrdtKeyCodec::decode(*slot_key).is_some() || MetaKeyCodec::is_crdt(*slot_key)
+                    {
                         operations.deltas.increment();
                     } else {
                         operations.writes.increment();
