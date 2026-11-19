@@ -1,4 +1,5 @@
-mod codec;
-pub mod property;
+mod key_codec;
+mod meta;
 
-pub use codec::MetaKeyCodec;
+pub use key_codec::{MetaFieldId, MetaKeyCodec};
+pub use meta::Meta;

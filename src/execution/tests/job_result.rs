@@ -7,7 +7,7 @@ use alloy_primitives::Bytes;
 
 #[test]
 fn zero_deletes_only_ordinary_evm_slots() {
-    use crate::{namespace::Namespace, planner::meta::property::Property as MetaProperty};
+    use crate::{namespace::Namespace, planner::meta::MetaFieldId as MetaProperty};
 
     let owner = Address::with_last_byte(1);
     let slots = [

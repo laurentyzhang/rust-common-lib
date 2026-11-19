@@ -55,7 +55,7 @@ impl<'a, Tx> DraftTransaction<'a, Tx> {
     /// Copies the planned deferral flag into the job and drops its resolved policy.
     fn finalize(self) -> Job<Tx> {
         let mut transaction = self.job.job;
-        transaction.is_deferred = self.is_deferred;
+        transaction.meta.is_deferred = self.is_deferred;
         transaction
     }
 }
@@ -117,7 +117,7 @@ impl<'a, Tx> DraftGeneration<'a, Tx> {
                     .transactions
                     .iter()
                     .enumerate()
-                    .find(|(_, current)| current.job.job.callee == Some(callee))
+                    .find(|(_, current)| current.job.job.meta.callee == Some(callee))
                     .map(|(transaction_index, _)| (sequence_index, transaction_index))
             })
     }
@@ -274,7 +274,7 @@ impl<'a, Tx> DraftPlan<'a, Tx> {
                 }
 
                 let repeated = if config.deferral_enabled && job.deferrable {
-                    generations[generation_index].repeated_callee(job.job.callee)
+                    generations[generation_index].repeated_callee(job.job.meta.callee)
                 } else {
                     None
                 };

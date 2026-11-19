@@ -13,7 +13,7 @@ use crate::namespace::Namespace;
 use crate::namespace::codec::VERSION;
 use crate::planner::{
     Planner,
-    meta::property::Property,
+    meta::MetaFieldId as Property,
     scheduler::{ID, Job},
 };
 use crate::store::traits::Committer;
@@ -2102,7 +2102,9 @@ fn constructor_configuration_persists_and_drives_scheduling() {
             )])
             .unwrap();
         assert_eq!(
-            scheduled.generations[0].sequences[0].jobs[0].is_deferred,
+            scheduled.generations[0].sequences[0].jobs[0]
+                .meta
+                .is_deferred,
             expected
         );
     }

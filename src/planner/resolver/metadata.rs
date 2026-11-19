@@ -10,7 +10,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, U256};
 
 use super::CommitVerdict;
-use crate::planner::{Planner, meta::property::Property};
+use crate::planner::{Planner, meta::MetaFieldId};
 
 impl<DB: Database, K> Planner<DB, K> {
     /// Builds storage updates for the function conflicts reported by executed jobs.
@@ -92,7 +92,7 @@ impl<DB: Database, K> Planner<DB, K> {
                 let index = (position / 4)
                     .try_into()
                     .map_err(|_| BlockExecutionError::msg("conflict slot index exceeds u32"))?;
-                let slot = Property::ConflictIndex.slot(host, callee, index);
+                let slot = MetaFieldId::ConflictIndex.slot(host, callee, index);
                 let original = self
                     .db
                     .storage(host, slot)
@@ -116,7 +116,7 @@ impl<DB: Database, K> Planner<DB, K> {
                 );
             }
             account.storage.insert(
-                Property::ConflictCount.slot(host, callee, 0),
+                MetaFieldId::ConflictCount.slot(host, callee, 0),
                 EvmStorageSlot::new_changed(
                     U256::from(existing.len()),
                     U256::from(position),

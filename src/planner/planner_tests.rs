@@ -7,7 +7,7 @@ use crate::{
     execution::{EvmStateCommitter, StateDb, output::ExecutionOutput},
     namespace::Namespace,
     planner::{
-        meta::property::Property,
+        meta::{Meta, MetaFieldId as Property},
         resolver::{Checker, CommitDecision, CommitVerdict, Reason, accepted_ids, rejected_ids},
         scheduler::ID,
     },
@@ -46,10 +46,11 @@ fn job(id: u64, contract: Address, selector: u32) -> Job<()> {
         sender: Address::with_last_byte(id as u8).into_array(),
         nonce: 0,
         is_l1_deposit: false,
-        callee: Some(callee(contract, selector)),
         contract: Some(contract),
-        is_deferred: false,
-        fully_parallelizable: false,
+        meta: Meta {
+            callee: Some(callee(contract, selector)),
+            ..Meta::default()
+        },
     }
 }
 
@@ -438,10 +439,13 @@ fn metadata_combines_generation_diagnostics_and_preserves_deleted_accounts() {
                 ..ID::new(0, 3)
             },
             decision: CommitDecision::Accepted,
-            conflicts: vec![(vec![ID {
-                generation: 1,
-                ..ID::new(0, 4)
-            }], Reason::None)],
+            conflicts: vec![(
+                vec![ID {
+                    generation: 1,
+                    ..ID::new(0, 4)
+                }],
+                Reason::None,
+            )],
         },
     ];
     let mut deleted = Account::default().with_touched_mark();

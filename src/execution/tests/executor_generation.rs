@@ -121,7 +121,7 @@ fn scheduled_jobs_expose_their_own_deferred_phase() {
         .into_iter()
         .map(|(id, is_deferred)| {
             let mut job = job(id, contract);
-            job.is_deferred = is_deferred;
+            job.meta.is_deferred = is_deferred;
             job
         })
         .collect();
@@ -223,13 +223,11 @@ fn parallel_storage_reads_do_not_conflict() {
                 &fallback,
             )
             .unwrap();
-        assert!(outcomes.iter_mut().all(|raw| {
-            raw.result_and_state()
-                .as_ref()
-                .unwrap()
-                .result
-                .is_success()
-        }));
+        assert!(
+            outcomes
+                .iter_mut()
+                .all(|raw| { raw.result_and_state().as_ref().unwrap().result.is_success() })
+        );
         assert_eq!(
             committed[&contract].storage[&U256::ZERO].present_value(),
             U256::from(value)
@@ -499,9 +497,9 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             BTreeSet::from([outcomes[0].id, outcomes[1].id])
         );
         assert!(pairs(&outcomes).is_empty());
-        let callee = job(1, contract).callee.unwrap();
+        let callee = job(1, contract).meta.callee.unwrap();
         let count =
-            crate::planner::meta::property::Property::ConflictCount.slot(contract, callee, 0);
+            crate::planner::meta::MetaFieldId::ConflictCount.slot(contract, callee, 0);
         assert!(!committed[&contract].storage.contains_key(&count));
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
         assert_eq!(
@@ -622,7 +620,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
 
 #[test]
 fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
-    use crate::planner::meta::property::Property;
+    use crate::planner::meta::MetaFieldId;
     use alloy_evm::revm::state::EvmStorageSlot;
 
     let factory = ArcologyBlockExecutorFactory::new(
@@ -638,7 +636,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
         ctx: OpBlockExecutionCtx::default(),
     };
     let contract = Address::repeat_byte(0x99);
-    let callee = job(1, contract).callee.unwrap();
+    let callee = job(1, contract).meta.callee.unwrap();
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0,
     ]));
@@ -649,7 +647,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
     });
     // Deposits remain in one ordered sequence even when the callee is deferrable.
     account.storage.insert(
-        Property::DeferredGas.slot(contract, callee, 0),
+        MetaFieldId::DeferredGas.slot(contract, callee, 0),
         EvmStorageSlot::new(U256::from(1), Default::default()),
     );
     let state = EvmState::from_iter([(contract, account)]);

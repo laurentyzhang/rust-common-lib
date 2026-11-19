@@ -8,7 +8,7 @@ use crate::execution::workload::{Block, Generation, JobSequence};
 use alloy_evm::{block::BlockExecutionError, revm::Database};
 use alloy_primitives::{Address, U256};
 
-use meta::property::Property;
+use meta::MetaFieldId;
 use resolver::ConflictDetector;
 use scheduler::{GreedyScheduler, Job, Scheduler, SchedulerConfig};
 
@@ -39,7 +39,7 @@ impl<DB: Database, K> Planner<DB, K> {
     ) -> Result<(bool, BTreeSet<u64>), BlockExecutionError> {
         let count = self
             .db
-            .storage(host, Property::ConflictCount.slot(host, callee, 0))
+            .storage(host, MetaFieldId::ConflictCount.slot(host, callee, 0))
             .map_err(BlockExecutionError::other)?;
         if count == U256::MAX {
             return Ok((true, BTreeSet::new()));
@@ -56,7 +56,7 @@ impl<DB: Database, K> Planner<DB, K> {
                 .db
                 .storage(
                     host,
-                    Property::ConflictIndex.slot(host, callee, index as u32),
+                    MetaFieldId::ConflictIndex.slot(host, callee, index as u32),
                 )
                 .map_err(BlockExecutionError::other)?;
             for peer in value
@@ -79,12 +79,12 @@ impl<DB: Database, K> Planner<DB, K> {
         let jobs = jobs.into_iter().collect::<Vec<_>>();
         let callees = jobs
             .iter()
-            .filter_map(|job| job.contract.zip(job.callee))
+            .filter_map(|job| job.contract.zip(job.meta.callee))
             .collect::<BTreeSet<_>>();
         for (host, callee) in callees {
             let deferred_gas = self
                 .db
-                .storage(host, Property::DeferredGas.slot(host, callee, 0))
+                .storage(host, MetaFieldId::DeferredGas.slot(host, callee, 0))
                 .map_err(BlockExecutionError::other)?;
             let deferred_gas: u64 = deferred_gas
                 .try_into()
@@ -99,7 +99,7 @@ impl<DB: Database, K> Planner<DB, K> {
 
         self.callees = jobs
             .iter()
-            .map(|job| (job.id.global, job.contract.zip(job.callee)))
+            .map(|job| (job.id.global, job.contract.zip(job.meta.callee)))
             .collect();
 
         let (mut deposits, other): (Vec<_>, Vec<_>) =

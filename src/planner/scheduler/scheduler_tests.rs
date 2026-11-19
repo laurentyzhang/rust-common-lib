@@ -1,5 +1,6 @@
 use super::sender::{Sender, SenderNonceOffset};
 use super::*;
+use crate::planner::meta::Meta;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
@@ -11,10 +12,11 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         sender: address,
         nonce,
         is_l1_deposit: false,
-        callee: Some(callee),
         contract: None,
-        is_deferred: false,
-        fully_parallelizable: false,
+        meta: Meta {
+            callee: Some(callee),
+            ..Meta::default()
+        },
     }
 }
 
@@ -129,7 +131,7 @@ fn repeated_deferrable_callee_places_one_call_in_next_generation() {
     assert_eq!(plan.len(), 2);
     assert_eq!(ids(&plan[0]), vec![1]);
     assert_eq!(ids(&plan[1]), vec![2]);
-    assert!(plan[1].sequences[0].jobs[0].is_deferred);
+    assert!(plan[1].sequences[0].jobs[0].meta.is_deferred);
     assert_eq!(plan[0].sequences[0].jobs[0].id.generation, 0);
     assert_eq!(plan[1].sequences[0].jobs[0].id.generation, 1);
 }
@@ -157,7 +159,7 @@ fn disabling_deferral_keeps_repeated_deferrable_calls_in_current_generation() {
             .sequences
             .iter()
             .flat_map(|sequence| &sequence.jobs)
-            .all(|transaction| !transaction.is_deferred)
+            .all(|transaction| !transaction.meta.is_deferred)
     );
 }
 
@@ -264,7 +266,7 @@ fn fully_parallelizable_overrides_its_own_isolation_and_conflicts() {
         },
     );
     let mut parallel = transaction(1, 1, 0, 1);
-    parallel.fully_parallelizable = true;
+    parallel.meta.fully_parallelizable = true;
 
     let plan = scheduler.schedule([parallel, transaction(2, 2, 0, 2)]);
 
@@ -284,7 +286,7 @@ fn isolated_transaction_stays_alone_regardless_of_parallel_peer_seed_order() {
             },
         );
         let mut parallel = transaction(parallel_id, 2, 0, 2);
-        parallel.fully_parallelizable = true;
+        parallel.meta.fully_parallelizable = true;
 
         let plan = scheduler.schedule([transaction(isolated_id, 1, 0, 1), parallel]);
 
@@ -440,7 +442,7 @@ fn deferral_preserves_sender_order_when_ids_disagree_with_nonces() {
         .iter()
         .flat_map(|generation| &generation.sequences)
         .flat_map(|sequence| &sequence.jobs)
-        .filter(|transaction| transaction.is_deferred)
+        .filter(|transaction| transaction.meta.is_deferred)
         .map(|transaction| transaction.id.global)
         .collect::<Vec<_>>();
     assert_eq!(marked_deferred, vec![20]);
@@ -535,10 +537,8 @@ fn schedulers_preserve_transaction_payloads() {
             sender: [1; 20],
             nonce: 0,
             is_l1_deposit: false,
-            callee: None,
             contract: None,
-            is_deferred: false,
-            fully_parallelizable: false,
+            meta: Meta::default(),
         },
         Job {
             tx: "second",
@@ -546,10 +546,8 @@ fn schedulers_preserve_transaction_payloads() {
             sender: [2; 20],
             nonce: 0,
             is_l1_deposit: false,
-            callee: None,
             contract: None,
-            is_deferred: false,
-            fully_parallelizable: false,
+            meta: Meta::default(),
         },
     ];
     let plan = GreedyScheduler::new().schedule(jobs);
@@ -608,13 +606,14 @@ fn assert_plan_invariants(
                 let original = inputs_by_id[&scheduled.id.global];
                 assert_eq!(scheduled.sender, original.sender);
                 assert_eq!(scheduled.nonce, original.nonce);
-                assert_eq!(scheduled.callee, original.callee);
+                assert_eq!(scheduled.meta.callee, original.meta.callee);
                 sender_order
                     .entry(scheduled.sender)
                     .or_default()
                     .push((scheduled.nonce, scheduled.id.global));
-                if !original.fully_parallelizable
+                if !original.meta.fully_parallelizable
                     && original
+                        .meta
                         .callee
                         .and_then(|callee| profiles.get(&callee))
                         .is_some_and(|profile| profile.sequential_only)
@@ -665,10 +664,11 @@ fn assert_plan_invariants(
                     for right in &other_sequence.jobs {
                         let left = inputs_by_id[&left.id.global];
                         let right = inputs_by_id[&right.id.global];
-                        if left.fully_parallelizable || right.fully_parallelizable {
+                        if left.meta.fully_parallelizable || right.meta.fully_parallelizable {
                             continue;
                         }
-                        if let (Some(left_callee), Some(right_callee)) = (left.callee, right.callee)
+                        if let (Some(left_callee), Some(right_callee)) =
+                            (left.meta.callee, right.meta.callee)
                         {
                             let conflict = profiles.get(&left_callee).is_some_and(|profile| {
                                 profile.conflict_peers.contains(&right_callee)
@@ -728,7 +728,7 @@ fn small_profile_combinations_preserve_public_plan_invariants() {
                             transaction(4, 3, 0, 3),
                             transaction(3, 3, 1, 1),
                         ];
-                        input[1].fully_parallelizable = fully_parallelizable;
+                        input[1].meta.fully_parallelizable = fully_parallelizable;
                         let plan = scheduler.schedule(input.clone());
                         assert_plan_invariants(&input, &profiles, &plan);
                     }
@@ -739,8 +739,9 @@ fn small_profile_combinations_preserve_public_plan_invariants() {
 }
 
 mod model_tests {
-    use crate::planner::scheduler::sender::SenderNonceOffset;
     use crate::execution::workload::{Generation, ID, Job, JobSequence};
+    use crate::planner::meta::Meta;
+    use crate::planner::scheduler::sender::SenderNonceOffset;
 
     fn transaction(sender: u8, nonce: u64, id: u64) -> Job<()> {
         Job {
@@ -749,10 +750,11 @@ mod model_tests {
             sender: [sender; 20],
             nonce,
             is_l1_deposit: false,
-            callee: None,
             contract: None,
-            is_deferred: false,
-            fully_parallelizable: true,
+            meta: Meta {
+                fully_parallelizable: true,
+                ..Meta::default()
+            },
         }
     }
 
@@ -792,6 +794,7 @@ mod model_tests {
 }
 
 mod policy_tests {
+    use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::{ExecutionMode, JobResolver};
     use crate::planner::scheduler::{CalleeProfile, ID, Job};
     use std::collections::{BTreeMap, BTreeSet};
@@ -803,10 +806,12 @@ mod policy_tests {
             sender: [0; 20],
             nonce: 0,
             is_l1_deposit: false,
-            callee: Some(callee),
             contract: None,
-            is_deferred: false,
-            fully_parallelizable,
+            meta: Meta {
+                fully_parallelizable,
+                callee: Some(callee),
+                is_deferred: false,
+            },
         }
     }
 
@@ -863,6 +868,7 @@ mod policy_tests {
 }
 
 mod queue_tests {
+    use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::JobResolver;
     use crate::planner::scheduler::sender_batcher::SenderBatcher;
     use crate::planner::scheduler::{CalleeProfile, ID, Job};
@@ -875,10 +881,11 @@ mod queue_tests {
             sender: [sender; 20],
             nonce,
             is_l1_deposit: false,
-            callee: Some(callee),
             contract: None,
-            is_deferred: false,
-            fully_parallelizable: false,
+            meta: Meta {
+                callee: Some(callee),
+                ..Meta::default()
+            },
         }
     }
 

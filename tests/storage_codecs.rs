@@ -2,7 +2,7 @@ use alloy_primitives::{Address, U256};
 use rust_common_lib::{
     execution::{ApiAddress, CallHandler, ScalarKeyCodec, ScalarKind, U256Handler},
     namespace::{Namespace, NamespaceCodec},
-    planner::meta::{MetaKeyCodec, property::Property},
+    planner::meta::{MetaFieldId as Property, MetaKeyCodec},
 };
 use strum::IntoEnumIterator;
 

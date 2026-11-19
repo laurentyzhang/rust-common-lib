@@ -1,4 +1,5 @@
 use super::JobResult;
+use crate::planner::meta::Meta;
 use crate::planner::scheduler::sender::Sender;
 use alloy_evm::{
     Evm,
@@ -53,14 +54,9 @@ pub struct Job<Tx> {
     pub nonce: u64,
     /// L1-originated OP deposit transaction.
     pub is_l1_deposit: bool,
-    pub callee: Option<u64>,
     /// Full destination address used for contract metadata storage.
     pub contract: Option<Address>,
-    /// Set by the scheduler in the generated execution plan.
-    pub is_deferred: bool,
-    /// Bypass this transaction's callee restrictions, while respecting another
-    /// transaction's isolated execution. Deferral remains profile-driven.
-    pub fully_parallelizable: bool,
+    pub meta: Meta,
 }
 
 impl<Tx> Job<Tx> {
@@ -74,7 +70,7 @@ impl<Tx> Job<Tx> {
         Tx: ExecutableTx<E>,
     {
         executor.evm_mut().reset_reads(self.id.global);
-        executor.evm_mut().set_deferred(self.is_deferred);
+        executor.evm_mut().set_deferred(self.meta.is_deferred);
         let (tx, recovered) = self.tx.into_parts();
         let evm = executor.evm_mut().deref_mut();
         let block = evm.block().clone();
@@ -154,13 +150,14 @@ impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
             sender: tx_env.caller().0.0,
             nonce: tx_env.nonce(),
             is_l1_deposit: tx_env.tx_type() == DEPOSIT_TX_TYPE_ID,
-            callee,
             contract: match tx_env.kind() {
                 TxKind::Call(address) => Some(address),
                 TxKind::Create => None,
             },
-            is_deferred: false,
-            fully_parallelizable: false,
+            meta: Meta {
+                callee,
+                ..Meta::default()
+            },
             tx: (tx_env, recovered),
         }
     }
