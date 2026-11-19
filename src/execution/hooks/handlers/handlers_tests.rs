@@ -1967,10 +1967,7 @@ fn factory() -> ArcologyEvmFactory {
 }
 
 fn deferral_slot(host: Address, selector: [u8; 4]) -> U256 {
-    let mut callee = [0; 8];
-    callee[..4].copy_from_slice(&host[..4]);
-    callee[4..].copy_from_slice(&selector);
-    Property::DeferredGas.slot(host, u64::from_le_bytes(callee), 0)
+    Property::DeferredGas.slot(host, selector, 0)
 }
 
 fn invoke_runtime(

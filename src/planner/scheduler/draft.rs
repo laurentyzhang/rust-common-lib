@@ -117,7 +117,9 @@ impl<'a, Tx> DraftGeneration<'a, Tx> {
                     .transactions
                     .iter()
                     .enumerate()
-                    .find(|(_, current)| current.job.job.meta.callee == Some(callee))
+                    .find(|(_, current)| {
+                        current.job.job.meta.id.map(|id| id.compact()) == Some(callee)
+                    })
                     .map(|(transaction_index, _)| (sequence_index, transaction_index))
             })
     }
@@ -274,7 +276,8 @@ impl<'a, Tx> DraftPlan<'a, Tx> {
                 }
 
                 let repeated = if config.deferral_enabled && job.deferrable {
-                    generations[generation_index].repeated_callee(job.job.meta.callee)
+                    generations[generation_index]
+                        .repeated_callee(job.job.meta.id.map(|callee| callee.compact()))
                 } else {
                     None
                 };

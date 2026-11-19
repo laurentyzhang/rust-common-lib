@@ -20,7 +20,7 @@ fn zero_deletes_only_ordinary_evm_slots() {
             ScalarKeyCodec::encode(Namespace::I256, Property::NegDelta as u8, Address::ZERO),
             false,
         ),
-        (MetaProperty::DeferredGas.slot(owner, 0, 0), false),
+        (MetaProperty::DeferredGas.slot(owner, [0; 4], 0), false),
     ];
     let mut account = Account::from(AccountInfo::default().with_nonce(1));
     for &(slot, _) in &slots {

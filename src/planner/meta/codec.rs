@@ -26,28 +26,28 @@ pub enum MetaFieldId {
 // slot index 1 → peers 4–7
 // slot index 2 → peers 8–11
 impl MetaFieldId {
-    /// Selects this property for the host function and packed slot index.
-    pub fn slot(self, host: Address, callee: u64, index: u32) -> U256 {
-        MetaKeyCodec::encode(self as u8, host, callee, index)
+    /// Selects this metadata field for the host function and packed slot index.
+    pub fn slot(self, contract: Address, selector: [u8; 4], index: u32) -> U256 {
+        MetaCodec::encode(self as u8, contract, selector, index)
     }
 }
 
 /// Layout: [namespace prefix:7][selector:4][property:1][slot index:4][host prefix:16].
-pub struct MetaKeyCodec;
+pub struct MetaCodec;
 
-impl MetaKeyCodec {
+impl MetaCodec {
     /// Recognizes metadata fields with CRDT updates.
     pub fn is_crdt(key: U256) -> bool {
-        matches!(Self::decode(key), Some((property, _, _, _))         if property == MetaFieldId::DeferredGas as u8)
+        matches!(Self::decode(key), Some((property, _, _, _)) if property == MetaFieldId::DeferredGas as u8)
     }
 
-    pub fn encode(property: u8, host: Address, callee: u64, index: u32) -> U256 {
+    pub fn encode(property: u8, contract: Address, selector: [u8; 4], index: u32) -> U256 {
         let mut bytes = [0; 32];
         bytes[..PREFIX_LEN].copy_from_slice(&NamespaceCodec::encode(Namespace::Meta));
-        bytes[7..11].copy_from_slice(&callee.to_le_bytes()[4..]);
+        bytes[7..11].copy_from_slice(&selector);
         bytes[11] = property;
         bytes[12..16].copy_from_slice(&index.to_be_bytes());
-        bytes[16..].copy_from_slice(&host[..16]);
+        bytes[16..].copy_from_slice(&contract[..16]);
         U256::from_be_bytes(bytes)
     }
 
@@ -65,5 +65,30 @@ impl MetaKeyCodec {
             u32::from_be_bytes(payload[5..9].try_into().ok()?),
             payload[9..].try_into().ok()?,
         ))
+    }
+
+    pub(crate) fn encode_u64(value: u64) -> U256 {
+        U256::from(value)
+    }
+
+    pub(crate) fn decode_u64(value: U256) -> Option<u64> {
+        value.try_into().ok()
+    }
+
+    /// Encodes four little-endian `u64` peer IDs into one storage value.
+    pub(crate) fn encode_peer_slot(peers: [u64; 4]) -> U256 {
+        let mut bytes = [0; 32];
+        for (chunk, peer) in bytes.chunks_exact_mut(8).zip(peers) {
+            chunk.copy_from_slice(&peer.to_le_bytes());
+        }
+        U256::from_be_bytes(bytes)
+    }
+
+    /// Decodes four little-endian `u64` peer IDs from one storage value.
+    pub(crate) fn decode_peer_slot(value: U256) -> [u64; 4] {
+        let bytes = value.to_be_bytes::<32>();
+        std::array::from_fn(|index| {
+            u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap())
+        })
     }
 }

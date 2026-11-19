@@ -1,5 +1,7 @@
-mod key_codec;
+mod callee_id;
+mod codec;
 mod meta;
 
-pub use key_codec::{MetaFieldId, MetaKeyCodec};
+pub use callee_id::CalleeId;
+pub use codec::{MetaCodec, MetaFieldId};
 pub use meta::Meta;

@@ -1,6 +1,5 @@
 pub mod checkers;
 pub mod detector;
-mod metadata;
 mod selection;
 pub mod verdict;
 

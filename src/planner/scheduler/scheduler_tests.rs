@@ -1,7 +1,14 @@
 use super::sender::{Sender, SenderNonceOffset};
 use super::*;
-use crate::planner::meta::Meta;
+use crate::planner::meta::{CalleeId, Meta};
 use std::collections::{BTreeMap, BTreeSet};
+
+fn callee_id(callee: u64) -> CalleeId {
+    let bytes = callee.to_le_bytes();
+    let mut account = [0; 20];
+    account[..4].copy_from_slice(&bytes[..4]);
+    CalleeId::new(account.into(), bytes[4..].try_into().unwrap())
+}
 
 fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
     let mut address = [0; 20];
@@ -14,7 +21,7 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         is_l1_deposit: false,
         contract: None,
         meta: Meta {
-            callee: Some(callee),
+            id: Some(callee_id(callee)),
             ..Meta::default()
         },
     }
@@ -606,7 +613,7 @@ fn assert_plan_invariants(
                 let original = inputs_by_id[&scheduled.id.global];
                 assert_eq!(scheduled.sender, original.sender);
                 assert_eq!(scheduled.nonce, original.nonce);
-                assert_eq!(scheduled.meta.callee, original.meta.callee);
+                assert_eq!(scheduled.meta.id, original.meta.id);
                 sender_order
                     .entry(scheduled.sender)
                     .or_default()
@@ -614,8 +621,8 @@ fn assert_plan_invariants(
                 if !original.meta.fully_parallelizable
                     && original
                         .meta
-                        .callee
-                        .and_then(|callee| profiles.get(&callee))
+                        .id
+                        .and_then(|callee| profiles.get(&callee.compact()))
                         .is_some_and(|profile| profile.sequential_only)
                 {
                     assert_eq!(ids(generation), vec![scheduled.id.global]);
@@ -668,13 +675,16 @@ fn assert_plan_invariants(
                             continue;
                         }
                         if let (Some(left_callee), Some(right_callee)) =
-                            (left.meta.callee, right.meta.callee)
+                            (left.meta.id, right.meta.id)
                         {
-                            let conflict = profiles.get(&left_callee).is_some_and(|profile| {
-                                profile.conflict_peers.contains(&right_callee)
-                            }) || profiles.get(&right_callee).is_some_and(
-                                |profile| profile.conflict_peers.contains(&left_callee),
-                            );
+                            let conflict =
+                                profiles.get(&left_callee.compact()).is_some_and(|profile| {
+                                    profile.conflict_peers.contains(&right_callee.compact())
+                                }) || profiles.get(&right_callee.compact()).is_some_and(
+                                    |profile| {
+                                        profile.conflict_peers.contains(&left_callee.compact())
+                                    },
+                                );
                             assert!(!conflict, "conflicting callees run in parallel: {plan:?}");
                         }
                     }
@@ -794,6 +804,7 @@ mod model_tests {
 }
 
 mod policy_tests {
+    use super::callee_id;
     use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::{ExecutionMode, JobResolver};
     use crate::planner::scheduler::{CalleeProfile, ID, Job};
@@ -809,8 +820,8 @@ mod policy_tests {
             contract: None,
             meta: Meta {
                 fully_parallelizable,
-                callee: Some(callee),
-                is_deferred: false,
+                id: Some(callee_id(callee)),
+                ..Meta::default()
             },
         }
     }
@@ -868,6 +879,7 @@ mod policy_tests {
 }
 
 mod queue_tests {
+    use super::callee_id;
     use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::JobResolver;
     use crate::planner::scheduler::sender_batcher::SenderBatcher;
@@ -883,7 +895,7 @@ mod queue_tests {
             is_l1_deposit: false,
             contract: None,
             meta: Meta {
-                callee: Some(callee),
+                id: Some(callee_id(callee)),
                 ..Meta::default()
             },
         }

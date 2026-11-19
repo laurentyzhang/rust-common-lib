@@ -34,8 +34,8 @@ impl<'a, Tx> ResolvedJob<'a, Tx> {
         if self.mode == ExecutionMode::FullyParallel || other.mode == ExecutionMode::FullyParallel {
             return true;
         }
-        match (self.job.meta.callee, other.job.meta.callee) {
-            (Some(_), Some(other)) => !self.conflict_peers.contains(&other),
+        match (self.job.meta.id, other.job.meta.id) {
+            (Some(_), Some(other)) => !self.conflict_peers.contains(&other.compact()),
             _ => true,
         }
     }
@@ -76,8 +76,8 @@ impl<'a> JobResolver<'a> {
     ) -> ResolvedJob<'resolver, Tx> {
         let profile = job
             .meta
-            .callee
-            .and_then(|callee| self.profiles.get(&callee));
+            .id
+            .and_then(|callee| self.profiles.get(&callee.compact()));
         let mode = if job.meta.fully_parallelizable {
             ExecutionMode::FullyParallel
         } else if profile.is_some_and(|profile| profile.sequential_only) {
@@ -88,8 +88,8 @@ impl<'a> JobResolver<'a> {
         let deferrable = profile.is_some_and(|profile| profile.deferrable);
         let conflict_peers = job
             .meta
-            .callee
-            .and_then(|callee| self.peers.get(&callee))
+            .id
+            .and_then(|callee| self.peers.get(&callee.compact()))
             .unwrap_or(&self.empty_peers);
         ResolvedJob {
             job,

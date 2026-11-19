@@ -7,7 +7,7 @@ use crate::{
     execution::{EvmStateCommitter, StateDb, output::ExecutionOutput},
     namespace::Namespace,
     planner::{
-        meta::{Meta, MetaFieldId as Property},
+        meta::{CalleeId, Meta, MetaCodec, MetaFieldId as Property},
         resolver::{Checker, CommitDecision, CommitVerdict, Reason, accepted_ids, rejected_ids},
         scheduler::ID,
     },
@@ -39,6 +39,55 @@ fn callee(contract: Address, selector: u32) -> u64 {
     u64::from_le_bytes(bytes)
 }
 
+#[test]
+fn meta_loads_all_stored_fields_for_a_function() {
+    let host = Address::repeat_byte(0x11);
+    let selector = 10u32.to_be_bytes();
+    let mut account = Account::default();
+    account.storage.insert(
+        Property::ConflictCount.slot(host, selector, 0),
+        EvmStorageSlot::new(MetaCodec::encode_u64(5), Default::default()),
+    );
+    account.storage.insert(
+        Property::ConflictIndex.slot(host, selector, 0),
+        EvmStorageSlot::new(
+            MetaCodec::encode_peer_slot([1, 2, 3, 4]),
+            Default::default(),
+        ),
+    );
+    account.storage.insert(
+        Property::ConflictIndex.slot(host, selector, 1),
+        EvmStorageSlot::new(
+            MetaCodec::encode_peer_slot([5, 0, 0, 0]),
+            Default::default(),
+        ),
+    );
+    account.storage.insert(
+        Property::DeferredCount.slot(host, selector, 0),
+        EvmStorageSlot::new(MetaCodec::encode_u64(2), Default::default()),
+    );
+    account.storage.insert(
+        Property::DeferredIndex.slot(host, selector, 0),
+        EvmStorageSlot::new(
+            MetaCodec::encode_peer_slot([6, 7, 0, 0]),
+            Default::default(),
+        ),
+    );
+    account.storage.insert(
+        Property::DeferredGas.slot(host, selector, 0),
+        EvmStorageSlot::new(MetaCodec::encode_u64(123), Default::default()),
+    );
+    let mut db = StateDb::new(EvmState::from_iter([(host, account)]));
+
+    let meta = Meta::load(&mut db, host, selector).unwrap();
+
+    assert_eq!(meta.id, Some(CalleeId::new(host, 10u32.to_be_bytes())));
+    assert_eq!(meta.conflict_peers, BTreeSet::from([1, 2, 3, 4, 5]));
+    assert_eq!(meta.deferred_peers, BTreeSet::from([6, 7]));
+    assert_eq!(meta.deferred_gas, 123);
+    assert!(!meta.sequential_only);
+}
+
 fn job(id: u64, contract: Address, selector: u32) -> Job<()> {
     Job {
         tx: (),
@@ -48,7 +97,7 @@ fn job(id: u64, contract: Address, selector: u32) -> Job<()> {
         is_l1_deposit: false,
         contract: Some(contract),
         meta: Meta {
-            callee: Some(callee(contract, selector)),
+            id: Some(CalleeId::new(contract, selector.to_be_bytes())),
             ..Meta::default()
         },
     }
@@ -164,7 +213,9 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             BTreeSet::from([record(1, 7, true).id])
         );
         assert_eq!(
-            planner.load_conflicts(a, callee(a, 10)).unwrap().1,
+            Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
+                .unwrap()
+                .conflict_peers,
             if round == 0 {
                 BTreeSet::new()
             } else {
@@ -172,7 +223,9 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             }
         );
         assert_eq!(
-            planner.load_conflicts(b, callee(b, 20)).unwrap().1,
+            Meta::load(&mut planner.db, b, 20u32.to_be_bytes())
+                .unwrap()
+                .conflict_peers,
             if round == 0 {
                 BTreeSet::new()
             } else {
@@ -193,17 +246,21 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
         db = StateDb::new(committer.into_inner());
         let mut planner = Planner::<_, u64>::new(&mut db, config);
         assert_eq!(
-            planner.load_conflicts(a, callee(a, 10)).unwrap().1,
+            Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
+                .unwrap()
+                .conflict_peers,
             BTreeSet::from([callee(b, 20)])
         );
         assert_eq!(
-            planner.load_conflicts(b, callee(b, 20)).unwrap().1,
+            Meta::load(&mut planner.db, b, 20u32.to_be_bytes())
+                .unwrap()
+                .conflict_peers,
             BTreeSet::from([callee(a, 10)])
         );
         assert_eq!(
             planner
                 .db
-                .storage(a, Property::ConflictCount.slot(a, callee(a, 10), 0))
+                .storage(a, Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0))
                 .unwrap(),
             U256::from(1)
         );
@@ -226,17 +283,18 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
     let conflicts = planner.checker.check();
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert_eq!(
-        planner.load_conflicts(a, callee(a, 10)).unwrap().1,
+        Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
+            .unwrap()
+            .conflict_peers,
         BTreeSet::from([callee(b, 20)])
     );
     assert!(
-        planner
-            .load_conflicts(c, callee(c, 30))
+        Meta::load(&mut planner.db, c, 30u32.to_be_bytes())
             .unwrap()
-            .1
+            .conflict_peers
             .is_empty()
     );
-    let count = &result[&a].storage[&Property::ConflictCount.slot(a, callee(a, 10), 0)];
+    let count = &result[&a].storage[&Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0)];
     assert_eq!(count.original_value(), U256::from(1));
     assert_eq!(count.present_value(), U256::from(2));
     drop(planner);
@@ -247,11 +305,15 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
     committer.flush().unwrap();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
-        planner.load_conflicts(a, callee(a, 10)).unwrap().1,
+        Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
+            .unwrap()
+            .conflict_peers,
         BTreeSet::from([callee(b, 20), callee(c, 30)])
     );
     assert_eq!(
-        planner.load_conflicts(c, callee(c, 30)).unwrap().1,
+        Meta::load(&mut planner.db, c, 30u32.to_be_bytes())
+            .unwrap()
+            .conflict_peers,
         BTreeSet::from([callee(a, 10)])
     );
     assert_eq!(planner.db.basic(a).unwrap().unwrap().nonce, 9);
@@ -276,10 +338,9 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
     let conflicts = planner.checker.check();
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
     assert!(
-        planner
-            .load_conflicts(a, callee(a, 10))
+        Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
             .unwrap()
-            .1
+            .conflict_peers
             .is_empty()
     );
 
@@ -289,11 +350,15 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
     committer.flush().unwrap();
     let mut planner = Planner::<_, u64>::new(StateDb::new(committer.into_inner()), config);
     assert_eq!(
-        planner.load_conflicts(a, callee(a, 10)).unwrap().1,
+        Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
+            .unwrap()
+            .conflict_peers,
         BTreeSet::from([callee(a, 11)])
     );
     assert_eq!(
-        planner.load_conflicts(a, callee(a, 11)).unwrap().1,
+        Meta::load(&mut planner.db, a, 11u32.to_be_bytes())
+            .unwrap()
+            .conflict_peers,
         BTreeSet::from([callee(a, 10)])
     );
     assert_eq!(
@@ -334,16 +399,21 @@ fn resolve_returns_metadata_with_a_read_only_database() {
     );
     assert_eq!(rejected_ids(&conflicts).len(), 1);
     assert_eq!(result.len(), 2);
-    for (contract, selector, peer) in [(a, 10, callee(b, 20)), (b, 20, callee(a, 10))] {
-        let host = callee(contract, selector);
+    for (contract, selector, peer) in [(a, 10u32, callee(b, 20)), (b, 20, callee(a, 10))] {
+        let selector = selector.to_be_bytes();
         assert_eq!(planner.db.basic(contract).unwrap(), None);
-        assert!(planner.load_conflicts(contract, host).unwrap().1.is_empty());
+        assert!(
+            Meta::load(&mut planner.db, contract, selector)
+                .unwrap()
+                .conflict_peers
+                .is_empty()
+        );
         let account = &result[&contract];
         assert!(account.is_touched());
-        let count = &account.storage[&Property::ConflictCount.slot(contract, host, 0)];
+        let count = &account.storage[&Property::ConflictCount.slot(contract, selector, 0)];
         assert_eq!(count.original_value(), U256::ZERO);
         assert_eq!(count.present_value(), U256::from(1));
-        let entry = &account.storage[&Property::ConflictIndex.slot(contract, host, 0)];
+        let entry = &account.storage[&Property::ConflictIndex.slot(contract, selector, 0)];
         assert_eq!(entry.original_value(), U256::ZERO);
         let mut bytes = [0; 32];
         bytes[..8].copy_from_slice(&peer.to_le_bytes());
@@ -377,7 +447,7 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
             .collect::<Vec<_>>(),
         vec![1, 3]
     );
-    let deferred = Property::DeferredCount.slot(a, callee(a, 11), 0);
+    let deferred = Property::DeferredCount.slot(a, 11u32.to_be_bytes(), 0);
     let mut accepted = Account::default().with_touched_mark();
     accepted.info.nonce = 9;
     accepted.info.balance = U256::from(42);
@@ -402,9 +472,9 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
     assert_eq!(db.basic(a).unwrap().unwrap().balance, U256::from(42));
     assert_eq!(db.storage(a, deferred).unwrap(), U256::from(2));
     assert_eq!(db.storage(a, U256::from(7)).unwrap(), U256::ZERO);
-    for (host, function) in [(a, callee(a, 10)), (b, callee(b, 20))] {
+    for (host, selector) in [(a, 10u32.to_be_bytes()), (b, 20u32.to_be_bytes())] {
         assert_eq!(
-            db.storage(host, Property::ConflictCount.slot(host, function, 0))
+            db.storage(host, Property::ConflictCount.slot(host, selector, 0))
                 .unwrap(),
             U256::from(1)
         );
@@ -457,18 +527,18 @@ fn metadata_combines_generation_diagnostics_and_preserves_deleted_accounts() {
     assert!(current.inner()[&c].is_selfdestructed());
     assert_eq!(
         current
-            .storage(a, Property::ConflictCount.slot(a, callee(a, 10), 0))
+            .storage(a, Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0))
             .unwrap(),
         U256::from(2)
     );
     assert_eq!(
         current
-            .storage(b, Property::ConflictCount.slot(b, callee(b, 20), 0))
+            .storage(b, Property::ConflictCount.slot(b, 20u32.to_be_bytes(), 0))
             .unwrap(),
         U256::from(1)
     );
     let packed = current
-        .storage(a, Property::ConflictIndex.slot(a, callee(a, 10), 0))
+        .storage(a, Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 0))
         .unwrap()
         .to_be_bytes::<32>();
     let peers = packed
@@ -493,17 +563,15 @@ fn shared_reads_do_not_create_contract_metadata() {
     assert!(pairs(&conflicts).is_empty());
     assert!(result.is_empty());
     assert!(
-        planner
-            .load_conflicts(a, callee(a, 10))
+        Meta::load(&mut planner.db, a, 10u32.to_be_bytes())
             .unwrap()
-            .1
+            .conflict_peers
             .is_empty()
     );
     assert!(
-        planner
-            .load_conflicts(b, callee(b, 20))
+        Meta::load(&mut planner.db, b, 20u32.to_be_bytes())
             .unwrap()
-            .1
+            .conflict_peers
             .is_empty()
     );
 }
@@ -551,18 +619,18 @@ fn numeric_conflicts_report_contributing_transactions() {
 
 #[test]
 fn contract_metadata_keys_encode_field_selector_index_and_host() {
-    use super::meta::MetaKeyCodec;
+    use super::meta::MetaCodec;
     use crate::execution::{ApiAddress, CallHandler, U256Handler};
     let host = Address::repeat_byte(0x11);
-    let function = callee(host, 0x12345678);
-    let count = Property::ConflictCount.slot(host, function, 0);
-    let entry = Property::ConflictIndex.slot(host, function, 42);
-    let (field, selector, index, host_prefix) = MetaKeyCodec::decode(count).unwrap();
+    let function_selector = 0x12345678_u32.to_be_bytes();
+    let count = Property::ConflictCount.slot(host, function_selector, 0);
+    let entry = Property::ConflictIndex.slot(host, function_selector, 42);
+    let (field, selector, index, host_prefix) = MetaCodec::decode(count).unwrap();
     assert_eq!(field, 1);
     assert_eq!(selector, 0x12345678_u32.to_be_bytes());
     assert_eq!(index, 0);
     assert_eq!(host_prefix, host[..16]);
-    let (field, selector, index, host_prefix) = MetaKeyCodec::decode(entry).unwrap();
+    let (field, selector, index, host_prefix) = MetaCodec::decode(entry).unwrap();
     assert_eq!(field, 2);
     assert_eq!(selector, 0x12345678_u32.to_be_bytes());
     assert_eq!(index, 42);
@@ -574,9 +642,9 @@ fn contract_metadata_keys_encode_field_selector_index_and_host() {
     assert_eq!(Property::Reserved as u8, 0);
     assert_eq!(Property::DeferredCount as u8, 3);
     assert_eq!(Property::DeferredIndex as u8, 4);
-    let deferred = Property::DeferredIndex.slot(host, function, 42);
+    let deferred = Property::DeferredIndex.slot(host, function_selector, 42);
     assert_eq!(
-        MetaKeyCodec::decode(deferred).unwrap(),
+        MetaCodec::decode(deferred).unwrap(),
         (4, selector, index, host_prefix)
     );
     assert!(!ApiAddress::is_api_storage_key(count));
@@ -618,11 +686,11 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
         conflicts: vec![((20..26).map(|id| ID::new(0, id)).collect(), Reason::None)],
     }];
     let result = planner.resolve(&conflicts, &EvmState::default()).unwrap();
-    let function = callee(a, 10);
-    let count = &result[&a].storage[&Property::ConflictCount.slot(a, function, 0)];
+    let selector = 10u32.to_be_bytes();
+    let count = &result[&a].storage[&Property::ConflictCount.slot(a, selector, 0)];
     assert_eq!(count.original_value(), U256::from(3));
     assert_eq!(count.present_value(), U256::from(6));
-    let first = &result[&a].storage[&Property::ConflictIndex.slot(a, function, 0)];
+    let first = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 0)];
     let mut expected = [0; 32];
     for (index, selector) in (20..23).enumerate() {
         expected[index * 8..index * 8 + 8].copy_from_slice(&callee(b, selector).to_le_bytes());
@@ -630,7 +698,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     assert_eq!(first.original_value(), U256::from_be_bytes(expected));
     expected[24..].copy_from_slice(&callee(b, 23).to_le_bytes());
     assert_eq!(first.present_value(), U256::from_be_bytes(expected));
-    let second = &result[&a].storage[&Property::ConflictIndex.slot(a, function, 1)];
+    let second = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 1)];
     assert_eq!(second.original_value(), U256::ZERO);
     let mut expected = [0; 32];
     expected[..8].copy_from_slice(&callee(b, 24).to_le_bytes());
@@ -646,20 +714,23 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
         SchedulerConfig::default(),
     );
     assert_eq!(
-        planner.load_conflicts(a, function).unwrap().1,
+        Meta::load(&mut planner.db, a, selector)
+            .unwrap()
+            .conflict_peers,
         (20..26).map(|selector| callee(b, selector)).collect()
     );
-    for selector in 20..26 {
+    for selector in 20u32..26 {
         assert_eq!(
-            planner.load_conflicts(b, callee(b, selector)).unwrap().1,
-            BTreeSet::from([function])
+            Meta::load(&mut planner.db, b, selector.to_be_bytes())
+                .unwrap()
+                .conflict_peers,
+            BTreeSet::from([callee(a, 10)])
         );
     }
     assert!(
-        planner
-            .load_conflicts(a, callee(a, 11))
+        Meta::load(&mut planner.db, a, 11u32.to_be_bytes())
             .unwrap()
-            .1
+            .conflict_peers
             .is_empty()
     );
 }
@@ -668,8 +739,8 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
 fn max_conflict_count_means_sequential_only() {
     let a = Address::repeat_byte(0x11);
     let b = Address::repeat_byte(0x22);
-    let function = callee(a, 10);
-    let slot = Property::ConflictCount.slot(a, function, 0);
+    let selector = 10u32.to_be_bytes();
+    let slot = Property::ConflictCount.slot(a, selector, 0);
     let mut account = Account::default().with_touched_mark();
     account
         .storage
@@ -681,10 +752,9 @@ fn max_conflict_count_means_sequential_only() {
             ..Default::default()
         },
     );
-    assert_eq!(
-        planner.load_conflicts(a, function).unwrap(),
-        (true, BTreeSet::new())
-    );
+    let meta = Meta::load(&mut planner.db, a, selector).unwrap();
+    assert!(meta.sequential_only);
+    assert!(meta.conflict_peers.is_empty());
     assert_eq!(
         planner
             .plan([job(1, a, 10), job(2, b, 20)])

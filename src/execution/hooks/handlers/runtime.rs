@@ -2,7 +2,7 @@ use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::execution::key::Key;
 use crate::execution::{CallHookError, Recorder, evm::storage::ApiStore};
-use crate::planner::meta::{MetaFieldId, MetaKeyCodec};
+use crate::planner::meta::{MetaCodec, MetaFieldId};
 use alloy_evm::EvmInternals;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -19,7 +19,7 @@ pub struct RuntimeHandler;
 
 impl CallHandler for RuntimeHandler {
     fn is_valid_slot(&self, slot: U256) -> bool {
-        matches!(MetaKeyCodec::decode(slot), Some((property, _, _, _)) if property == MetaFieldId::DeferredGas as u8)
+        matches!(MetaCodec::decode(slot), Some((property, _, _, _)) if property == MetaFieldId::DeferredGas as u8)
     }
 
     fn call(
@@ -49,11 +49,7 @@ impl CallHandler for RuntimeHandler {
                 {
                     return Ok(CallOutput::reverted(0, Vec::new()));
                 }
-                let mut callee = [0; 8];
-                callee[..4].copy_from_slice(&input.caller[..4]);
-                callee[4..].copy_from_slice(call.selector.as_slice());
-                let slot =
-                    MetaFieldId::DeferredGas.slot(input.caller, u64::from_le_bytes(callee), 0);
+                let slot = MetaFieldId::DeferredGas.slot(input.caller, call.selector.0, 0);
 
                 // Log that we are writing to the caller's account.
                 api_recorder.log_write(Key::Storage(input.caller, slot));

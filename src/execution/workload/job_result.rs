@@ -22,7 +22,7 @@ use crate::{
     },
     namespace::{NamespaceCodec, crdt::CrdtKeyCodec},
     planner::{
-        meta::MetaKeyCodec,
+        meta::MetaCodec,
         resolver::{CommitDecision, CommitVerdict},
     },
 };
@@ -359,7 +359,7 @@ impl<R, H> JobResult<R, H> {
                     Status::Tag(Tag::Deleted)
                 } else {
                     // All
-                    if CrdtKeyCodec::decode(*slot_key).is_some() || MetaKeyCodec::is_crdt(*slot_key)
+                    if CrdtKeyCodec::decode(*slot_key).is_some() || MetaCodec::is_crdt(*slot_key)
                     {
                         operations.deltas.increment();
                     } else {

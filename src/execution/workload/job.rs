@@ -1,5 +1,5 @@
 use super::JobResult;
-use crate::planner::meta::Meta;
+use crate::planner::meta::{CalleeId, Meta};
 use crate::planner::scheduler::sender::Sender;
 use alloy_evm::{
     Evm,
@@ -131,17 +131,15 @@ impl<Tx> Job<Tx> {
 }
 
 impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
-    /// Builds a job from an executable transaction. `callee` is the target's first
-    /// 4 address bytes plus the 4-byte selector.
+    /// Builds a job from an executable transaction.
     pub fn new(id: ID, (tx_env, recovered): (TxEnv, R)) -> Self {
         let callee = match tx_env.kind() {
             TxKind::Call(to) => {
-                let mut key = [0u8; 8];
-                key[..4].copy_from_slice(&to[..4]);
+                let mut selector = [0u8; 4];
                 let input = tx_env.input();
                 let n = input.len().min(4);
-                key[4..4 + n].copy_from_slice(&input[..n]);
-                Some(u64::from_le_bytes(key))
+                selector[..n].copy_from_slice(&input[..n]);
+                Some(CalleeId::new(to, selector))
             }
             TxKind::Create => None,
         };
@@ -155,7 +153,7 @@ impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
                 TxKind::Create => None,
             },
             meta: Meta {
-                callee,
+                id: callee,
                 ..Meta::default()
             },
             tx: (tx_env, recovered),

@@ -169,6 +169,24 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
 }
 
 #[test]
+fn job_callee_contains_full_address_and_padded_selector() {
+    use alloy_evm::revm::context::TxEnv;
+
+    let contract = Address::with_last_byte(42);
+    let tx = TxEnv {
+        kind: TxKind::Call(contract),
+        data: vec![0x12, 0x34].into(),
+        ..Default::default()
+    };
+    let mut callee = Job::new(ID::new(0, 0), (tx, ())).meta.id.unwrap();
+    assert_eq!(callee.account, contract);
+    assert_eq!(callee.selector, [0x12, 0x34, 0, 0]);
+    assert_eq!(callee.series, 0);
+    callee.series = 7;
+    assert_eq!(callee.series, 7);
+}
+
+#[test]
 fn job_detects_deposit_transaction_type() {
     let deposit = job(0, Address::repeat_byte(0x99));
     assert!(deposit.is_l1_deposit);
@@ -497,9 +515,8 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             BTreeSet::from([outcomes[0].id, outcomes[1].id])
         );
         assert!(pairs(&outcomes).is_empty());
-        let callee = job(1, contract).meta.callee.unwrap();
-        let count =
-            crate::planner::meta::MetaFieldId::ConflictCount.slot(contract, callee, 0);
+        let selector = job(1, contract).meta.id.unwrap().selector;
+        let count = crate::planner::meta::MetaFieldId::ConflictCount.slot(contract, selector, 0);
         assert!(!committed[&contract].storage.contains_key(&count));
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
         assert_eq!(
@@ -636,7 +653,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
         ctx: OpBlockExecutionCtx::default(),
     };
     let contract = Address::repeat_byte(0x99);
-    let callee = job(1, contract).meta.callee.unwrap();
+    let selector = job(1, contract).meta.id.unwrap().selector;
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0,
     ]));
@@ -647,7 +664,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
     });
     // Deposits remain in one ordered sequence even when the callee is deferrable.
     account.storage.insert(
-        MetaFieldId::DeferredGas.slot(contract, callee, 0),
+        MetaFieldId::DeferredGas.slot(contract, selector, 0),
         EvmStorageSlot::new(U256::from(1), Default::default()),
     );
     let state = EvmState::from_iter([(contract, account)]);

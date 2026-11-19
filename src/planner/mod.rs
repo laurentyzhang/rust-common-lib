@@ -5,12 +5,15 @@ pub mod scheduler;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::execution::workload::{Block, Generation, JobSequence};
-use alloy_evm::{block::BlockExecutionError, revm::Database};
-use alloy_primitives::{Address, U256};
+use alloy_evm::{
+    block::BlockExecutionError,
+    revm::{Database, state::EvmState},
+};
+use alloy_primitives::Address;
 
-use meta::MetaFieldId;
-use resolver::ConflictDetector;
-use scheduler::{GreedyScheduler, Job, Scheduler, SchedulerConfig};
+use meta::Meta;
+use resolver::{CommitVerdict, ConflictDetector};
+use scheduler::{CalleeProfile, GreedyScheduler, Job, Scheduler, SchedulerConfig};
 
 /// Scheduling and conflict detection state for one generation.
 pub struct Planner<DB: Database, K> {
@@ -31,45 +34,6 @@ impl<DB: Database, K> Planner<DB, K> {
         }
     }
 
-    /// Loads one function's compact conflict peers or its sequential-only marker.
-    fn load_conflicts(
-        &mut self,
-        host: Address,
-        callee: u64,
-    ) -> Result<(bool, BTreeSet<u64>), BlockExecutionError> {
-        let count = self
-            .db
-            .storage(host, MetaFieldId::ConflictCount.slot(host, callee, 0))
-            .map_err(BlockExecutionError::other)?;
-        if count == U256::MAX {
-            return Ok((true, BTreeSet::new()));
-        }
-        let count: u64 = count
-            .try_into()
-            .map_err(|_| BlockExecutionError::msg("conflict count exceeds u64"))?;
-        if count.div_ceil(4) > u64::from(u32::MAX) + 1 {
-            return Err(BlockExecutionError::msg("conflict slot index exceeds u32"));
-        }
-        let mut peers = BTreeSet::new();
-        for index in 0..count.div_ceil(4) {
-            let value = self
-                .db
-                .storage(
-                    host,
-                    MetaFieldId::ConflictIndex.slot(host, callee, index as u32),
-                )
-                .map_err(BlockExecutionError::other)?;
-            for peer in value
-                .to_be_bytes::<32>()
-                .chunks_exact(8)
-                .take((count - index * 4).min(4) as usize)
-            {
-                peers.insert(u64::from_le_bytes(peer.try_into().unwrap()));
-            }
-        }
-        Ok((false, peers))
-    }
-
     /// Schedules deposits first in block order, then schedules the remaining jobs.
     /// Loads each function's contract metadata before building the plan.
     pub fn plan<Tx>(
@@ -79,27 +43,29 @@ impl<DB: Database, K> Planner<DB, K> {
         let jobs = jobs.into_iter().collect::<Vec<_>>();
         let callees = jobs
             .iter()
-            .filter_map(|job| job.contract.zip(job.meta.callee))
+            .filter_map(|job| job.contract.zip(job.meta.id.map(|callee| callee.compact())))
             .collect::<BTreeSet<_>>();
         for (host, callee) in callees {
-            let deferred_gas = self
-                .db
-                .storage(host, MetaFieldId::DeferredGas.slot(host, callee, 0))
-                .map_err(BlockExecutionError::other)?;
-            let deferred_gas: u64 = deferred_gas
-                .try_into()
-                .map_err(|_| BlockExecutionError::msg("deferred gas exceeds u64"))?;
-            self.scheduler.set_defer(callee, deferred_gas > 0);
-            let (sequential_only, peers) = self.load_conflicts(host, callee)?;
-            self.scheduler.add_conflict_peers(callee, peers);
-            if sequential_only {
-                self.scheduler.set_sequential_only(callee);
-            }
+            let selector = callee.to_le_bytes()[4..].try_into().unwrap();
+            let meta = Meta::load(&mut self.db, host, selector)?;
+            self.scheduler.set_profile(
+                callee,
+                CalleeProfile {
+                    conflict_peers: meta.conflict_peers,
+                    sequential_only: meta.sequential_only,
+                    deferrable: meta.deferred_gas > 0,
+                },
+            );
         }
 
         self.callees = jobs
             .iter()
-            .map(|job| (job.id.global, job.contract.zip(job.meta.callee)))
+            .map(|job| {
+                (
+                    job.id.global,
+                    job.contract.zip(job.meta.id.map(|callee| callee.compact())),
+                )
+            })
             .collect();
 
         let (mut deposits, other): (Vec<_>, Vec<_>) =
@@ -113,6 +79,44 @@ impl<DB: Database, K> Planner<DB, K> {
             }
         }
         Ok(Block { generations })
+    }
+
+    /// Maps job conflicts to scheduled callees and returns metadata updates for the caller to commit.
+    pub fn resolve<'a>(
+        &mut self,
+        verdicts: impl IntoIterator<Item = &'a CommitVerdict<K>>,
+        current: &EvmState,
+    ) -> Result<EvmState, BlockExecutionError>
+    where
+        K: 'a,
+    {
+        // Deduplicate peers across verdicts and record each conflict in both directions.
+        let mut peers = BTreeMap::<(Address, [u8; 4]), BTreeSet<u64>>::new();
+        for verdict in verdicts {
+            let left = self.callees.get(&verdict.id.global).ok_or_else(|| {
+                BlockExecutionError::msg("conflicting transaction was not scheduled")
+            })?;
+            for right in verdict.conflicts.iter().flat_map(|(peers, _)| peers) {
+                let right = self.callees.get(&right.global).ok_or_else(|| {
+                    BlockExecutionError::msg("conflicting transaction was not scheduled")
+                })?;
+                if let (Some((left_contract, left)), Some((right_contract, right))) =
+                    (*left, *right)
+                {
+                    let left_selector = left.to_le_bytes()[4..].try_into().unwrap();
+                    let right_selector = right.to_le_bytes()[4..].try_into().unwrap();
+                    peers
+                        .entry((left_contract, left_selector))
+                        .or_default()
+                        .insert(right);
+                    peers
+                        .entry((right_contract, right_selector))
+                        .or_default()
+                        .insert(left);
+                }
+            }
+        }
+        Meta::updates(&mut self.db, peers, current)
     }
 }
 
