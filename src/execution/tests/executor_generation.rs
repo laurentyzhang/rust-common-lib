@@ -391,14 +391,19 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect::<Vec<_>>(),
             order
         );
-        assert!(outcomes.iter_mut().all(|result| {
-            result
-                .result_and_state()
-                .as_ref()
-                .unwrap()
-                .result
-                .is_success()
-        }));
+        for result in &mut outcomes {
+            let accepted = result.verdict.decision == CommitDecision::Accepted;
+            assert_eq!(
+                result
+                    .result_and_state()
+                    .as_ref()
+                    .unwrap()
+                    .result
+                    .is_success(),
+                accepted
+            );
+            assert_eq!(result.receipt.as_ref().unwrap().status(), accepted);
+        }
         assert_eq!(
             accepted_ids(outcomes.iter().map(|raw| &raw.verdict))
                 .into_iter()

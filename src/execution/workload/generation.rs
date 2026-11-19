@@ -1,4 +1,4 @@
-use super::{JobResult, JobSequence};
+use super::{JobResult, JobSequence, ReceiptStatus};
 use crate::execution::evm::state::StateOverlay;
 use crate::planner::scheduler::sender::{Sender, SenderNonceOffset};
 use alloy_evm::{
@@ -31,7 +31,7 @@ impl<Tx> Default for Generation<Tx> {
 }
 
 impl<Tx> Generation<Tx> {
-    /// Executes sequences in parallel, attaches verdicts, and returns accepted state changes.
+    /// Executes sequences in parallel, finalizes job results, and merges sequence states.
     pub fn run<F, Fallback>(
         self,
         factory: &F,
@@ -54,42 +54,46 @@ impl<Tx> Generation<Tx> {
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
-        F::Receipt: Clone + Send,
+        F::Receipt: Clone + Send + ReceiptStatus,
         Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        // Generate a state database for the sequences, using the provided fallback as the base.
+        // Use previously committed state as the base for this generation.
         let gen_db = StateDb::with_fallback(
             StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
             Some(fallback),
         );
 
-        // Indexed collection preserves plan order across parallel workers.
+        // Execute sequences in parallel while preserving their planned order.
         let results: Result<Vec<_>, Error> = pool.install(|| {
             self.sequences
                 .into_par_iter()
                 .map(|sequence| {
-                    // Sharing the same fallback is fine because each sequence will operate on its own
-                    // isolated state view and will not interfere with other sequences.
+                    // Each sequence applies its changes to its own state overlay.
                     sequence.execute(factory, &gen_db, config.env.clone(), config.ctx.clone())
                 })
                 .collect()
         });
         let sequences = results?;
+        // Export each job's accesses and state changes to the checker.
         for (raws, _) in &sequences {
             for raw in raws {
                 checker.import(raw.to_records(raw.id));
             }
         }
 
+        // Check gas limits, numeric bounds, and conflicts between sequences.
         let verdicts = checker.check();
         let mut committer = EvmStateCommitter::with_target(gen_db.into_inner());
         let mut raws = Vec::new();
         for (mut results, mut committed) in sequences {
+            // Attach checker decisions, then reject jobs dependent on an earlier rejection.
             for raw in &mut results {
                 if let Ok(index) = verdicts.binary_search_by_key(&raw.id, |verdict| verdict.id) {
                     raw.verdict = verdicts[index].clone();
                 }
             }
+            JobSequence::<Tx>::assign_verdicts(results.iter_mut().map(|raw| &mut raw.verdict));
+            // Rebuild affected sequences using finalized job results.
             if !JobSequence::<Tx>::is_all_accepted(&results) {
                 committed = JobSequence::<Tx>::rebuild_sequence_state(&mut results, fallback)?;
             }
@@ -98,6 +102,7 @@ impl<Tx> Generation<Tx> {
             }
             raws.extend(results);
         }
+        // Merge finalized sequence states in their scheduled order.
         Ok((raws, committer.commit(fallback)?))
     }
 

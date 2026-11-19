@@ -1,4 +1,4 @@
-use super::{Generation, JobResult};
+use super::{Generation, JobResult, ReceiptStatus};
 use crate::execution::evm::state::StateOverlay;
 use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
@@ -42,7 +42,7 @@ impl<Tx> Block<Tx> {
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         PDB: Database,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
-        F::Receipt: Clone + Send,
+        F::Receipt: Clone + Send + ReceiptStatus,
         Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         let mut block_db = StateDb::with_fallback(
@@ -50,9 +50,12 @@ impl<Tx> Block<Tx> {
             Some(fallback),
         );
         let mut results = Vec::new();
+        let mut remaining_gas = config.env.block_env.gas_limit;
         for generation in self.generations {
+            planner.checker.set_gas_limit(remaining_gas);
             let (raws, committed) =
                 generation.run(factory, config, pool, &mut planner.checker, &block_db)?;
+            remaining_gas -= raws.iter().filter_map(|raw| raw.gas_used()).sum::<u64>();
             // Publish accepted changes before executing the next generation.
             block_db.commit(committed);
             if let Some(error) = block_db.commit_error() {

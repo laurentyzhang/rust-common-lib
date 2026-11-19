@@ -889,7 +889,7 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
 }
 
 #[test]
-fn suffix_rejections_identify_the_earlier_rejected_job() {
+fn rejected_jobs_preserve_their_direct_conflicts() {
     let mut records = vec![
         record(1, 0, 0, 1, 10),
         record(2, 0, 1, 7, 5),
@@ -921,7 +921,8 @@ fn suffix_rejections_identify_the_earlier_rejected_job() {
     assert!(
         result[2]
             .conflicts
-            .contains(&(Vec::new(), Reason::Dependency(rejected)))
+            .iter()
+            .all(|(_, reason)| !matches!(reason, Reason::Dependency(_)))
     );
     assert!(
         result[2]

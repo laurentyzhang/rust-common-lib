@@ -12,7 +12,7 @@ use super::{
     ArcologyEvmFactory, ParaBlockConfig,
     key::Key,
     op::backend::PostExecEvmFactoryAdapter,
-    workload::{ID, Job, JobResult},
+    workload::{ID, Job, JobResult, ReceiptStatus},
 };
 use crate::planner::Planner;
 
@@ -78,7 +78,7 @@ impl ArcologyParaBlockExecutor {
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         PDB: Database,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
-        F::Receipt: Clone + Send,
+        F::Receipt: Clone + Send + ReceiptStatus,
         TxEnv: Transaction,
         (TxEnv, R): Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use alloy_evm::block::BlockExecutionError;
-use alloy_evm::revm::context_interface::result::ResultAndState;
+use alloy_evm::revm::context_interface::result::{ExecutionResult, ResultAndState};
 use alloy_evm::revm::state::{Account, EvmState};
+use op_alloy::consensus::OpReceiptEnvelope;
 use op_revm::OpHaltReason as EvmHaltReason;
 
 use super::ID;
@@ -25,7 +26,28 @@ use crate::{
         resolver::{CommitDecision, CommitVerdict},
     },
 };
-use alloy_primitives::{Address, I256, U256};
+use alloy_primitives::{Address, Bytes, I256, U256};
+
+pub trait ReceiptStatus {
+    fn mark_failed(&mut self);
+}
+
+impl ReceiptStatus for OpReceiptEnvelope {
+    fn mark_failed(&mut self) {
+        *self = Self::from_parts(
+            false,
+            self.cumulative_gas_used(),
+            std::iter::empty(),
+            self.tx_type(),
+            self.deposit_nonce(),
+            self.deposit_receipt_version(),
+        );
+    }
+}
+
+impl ReceiptStatus for () {
+    fn mark_failed(&mut self) {}
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HaltReason {
@@ -51,6 +73,7 @@ impl<R, H> JobResult<R, H> {
     pub fn result_and_state(&mut self) -> &Result<ResultAndState<H>, BlockExecutionError>
     where
         H: Clone,
+        R: ReceiptStatus,
     {
         if self.raw_result_and_state.is_err() {
             return &self.raw_result_and_state;
@@ -71,16 +94,38 @@ impl<R, H> JobResult<R, H> {
         }
 
         let executed = self.raw_result_and_state.as_ref().unwrap();
-        let result = executed.result.clone();
+        let result = match &executed.result {
+            ExecutionResult::Success { gas, .. }
+                if self.verdict.decision == CommitDecision::Rejected =>
+            {
+                if let Some(receipt) = &mut self.receipt {
+                    receipt.mark_failed();
+                }
+                ExecutionResult::Revert {
+                    gas: *gas,
+                    logs: Vec::new(),
+                    output: Bytes::new(),
+                }
+            }
+            _ => executed.result.clone(),
+        };
         self.commit_result = Some(
-            self.retained_state()
-                .map(|state| ResultAndState::new(result, state))
-                .map_err(BlockExecutionError::other),
+            (if self.verdict.decision == CommitDecision::Dropped {
+                self.receipt = None;
+                Ok(EvmState::default())
+            } else {
+                self.retained_state()
+            })
+            .map(|state| ResultAndState::new(result, state))
+            .map_err(BlockExecutionError::other),
         );
         self.commit_result.as_ref().unwrap()
     }
 
     pub(crate) fn gas_used(&self) -> Option<u64> {
+        if self.verdict.decision == CommitDecision::Dropped {
+            return None;
+        }
         self.raw_result_and_state
             .as_ref()
             .ok()
@@ -133,14 +178,9 @@ impl<R, H> JobResult<R, H> {
             // have keys from the inspector_record operations.
             if let Some(inspector_record) = unique_accessed.get(&key) {
                 // Add inspector_record counts to the journal-derived counts.
-                let (journal, inspector) =
-                    (&mut journal_records.operations, inspector_record.operations);
-                journal.reads = (journal.reads.count() + inspector.reads.count()).into();
-                journal.writes = (journal.writes.count() + inspector.writes.count()).into();
-                journal.deltas = (journal.deltas.count() + inspector.deltas.count()).into();
-                journal.removes = (journal.removes.count() + inspector.removes.count()).into();
-                journal.existence_checks =
-                    (journal.existence_checks.count() + inspector.existence_checks.count()).into();
+                journal_records
+                    .operations
+                    .merge(inspector_record.operations);
             }
             unique_accessed.insert(key, journal_records);
         }

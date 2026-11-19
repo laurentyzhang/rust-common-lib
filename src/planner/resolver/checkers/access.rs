@@ -28,10 +28,24 @@ impl<K> AccessChecker<K> {
         }
     }
 
-    pub fn check(&mut self) -> Vec<Diagnostic<K>>
+    pub fn check(&mut self, diagnostics: Vec<Diagnostic<K>>) -> Vec<Diagnostic<K>>
     where
         K: Clone + Ord + std::hash::Hash + Send + Sync,
     {
+        self.entries.retain(|record| {
+            if !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.id == record.id)
+            {
+                return true;
+            }
+            let count = self.counts.get_mut(&record.key).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                self.counts.remove(&record.key);
+            }
+            false
+        });
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 

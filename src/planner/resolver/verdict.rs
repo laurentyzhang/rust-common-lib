@@ -8,6 +8,7 @@ pub enum CommitDecision {
     Pending,
     Accepted,
     Rejected,
+    Dropped, // The job was dropped, no state changes applied, not even nonce or fee updates.
 }
 
 /// A job's commit decision and complete diagnostics, including dependency rejections.

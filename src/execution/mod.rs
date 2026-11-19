@@ -20,4 +20,4 @@ pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use slot::{Property, ScalarAdapter, ScalarKeyCodec, ScalarKind};
 pub use tracking::{Recorder, RecorderOutput, recorder};
-pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig};
+pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig, ReceiptStatus};

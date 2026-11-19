@@ -1,6 +1,6 @@
 use super::{
     Checker, CommitDecision, CommitVerdict, Diagnostic, Reason,
-    checkers::{access::AccessChecker, sum::SumChecker},
+    checkers::{access::AccessChecker, gas_limit::GasLimitChecker, sum::SumChecker},
     selection,
 };
 use crate::crdt::state::{
@@ -13,8 +13,9 @@ use crate::planner::scheduler::{ID, ScheduleKey};
 use alloy_primitives::{I256, U256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Coordinates access and numeric conflict checks and combines their results.
+/// Coordinates gas-limit, access, and numeric checks and combines their results.
 pub struct ConflictDetector<K> {
+    gas_limit_checker: GasLimitChecker,
     access_checker: AccessChecker<K>,
     i256_checker: SumChecker<K, I256>,
     u256_checker: SumChecker<K, U256>,
@@ -24,11 +25,33 @@ pub struct ConflictDetector<K> {
 impl<K> ConflictDetector<K> {
     pub fn new() -> Self {
         Self {
+            gas_limit_checker: GasLimitChecker::new(u64::MAX),
             access_checker: AccessChecker::new(),
             i256_checker: SumChecker::new(),
             u256_checker: SumChecker::new(),
             gas_lookup: BTreeMap::new(),
         }
+    }
+
+    pub fn set_gas_limit(&mut self, remaining_gas: u64) {
+        self.gas_limit_checker.gas_limit = remaining_gas;
+    }
+
+    fn accept_all(&mut self, sequences: Vec<Vec<(ID, u64)>>) -> Vec<CommitVerdict<K>> {
+        let gas_limit = self.gas_limit_checker.gas_limit;
+        *self = Self::new();
+        self.set_gas_limit(gas_limit);
+        let mut verdicts: Vec<_> = sequences
+            .into_iter()
+            .flatten()
+            .map(|(id, _)| CommitVerdict {
+                id,
+                decision: CommitDecision::Accepted,
+                conflicts: Vec::new(),
+            })
+            .collect();
+        verdicts.sort_unstable_by_key(|verdict| verdict.id);
+        verdicts
     }
 
     fn accumulate(&mut self) -> Vec<Vec<(ID, u64)>> {
@@ -52,6 +75,7 @@ impl<K> ConflictDetector<K> {
 
 impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDetector<K> {
     fn import(&mut self, executed_jobs: Vec<ExecutionOutput<K, Tracked<Status, Status>>>) {
+        self.gas_limit_checker.import(&executed_jobs);
         let mut i256_records = Vec::new();
         let mut u256_records = Vec::new();
         for job in &executed_jobs {
@@ -79,38 +103,29 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
     }
 
     /// Consumes the batch and returns job verdicts with conflict diagnostics.
-    /// Accepts a single sequence directly; otherwise checks conflicts and selects sequence prefixes.
+    /// Accepts a single sequence directly; otherwise checks gas and conflicts.
     fn check(&mut self) -> Vec<CommitVerdict<K>> {
         let sequences = self.accumulate();
-        // A single sequence already ran in order; accept its jobs and clear the batch.
         if sequences.len() == 1 {
-            *self = Self::new();
-            let mut verdicts: Vec<_> = sequences
-                .into_iter()
-                .flatten()
-                .map(|(id, _)| CommitVerdict {
-                    id,
-                    decision: CommitDecision::Accepted,
-                    conflicts: Vec::new(),
-                })
-                .collect();
-            verdicts.sort_unstable_by_key(|verdict| verdict.id);
-            return verdicts;
+            return self.accept_all(sequences);
         }
 
+        let mut diagnostics = self.gas_limit_checker.check::<K>();
+        let dropped: BTreeSet<_> = diagnostics.iter().map(|diagnostic| diagnostic.id).collect();
+
         // Check general accesses and signed/unsigned numeric bounds concurrently.
-        let (mut diagnostics, (i256, u256)) = rayon::join(
-            || self.access_checker.check(),
+        let (access, (i256, u256)) = rayon::join(
+            || self.access_checker.check(diagnostics.clone()),
             || {
                 rayon::join(
-                    || self.i256_checker.check_bounds(),
-                    || self.u256_checker.check_bounds(),
+                    || self.i256_checker.check_bounds(diagnostics.clone()),
+                    || self.u256_checker.check_bounds(diagnostics.clone()),
                 )
             },
         );
 
         // Keep all diagnostic types for selecting accepted sequence prefixes.
-        diagnostics.extend(i256.into_iter().chain(u256));
+        diagnostics.extend(access.into_iter().chain(i256).chain(u256));
 
         // Only access conflicts allow selection to reject either endpoint.
         let pairs: BTreeSet<_> = diagnostics
@@ -124,43 +139,38 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             })
             .collect();
 
-        // Numeric failures are mandatory rejections; access pairs are resolved
-        // by selecting compatible prefixes from the affected sequences.
-        let accepted = selection::select(
+        // resolve conflicts and dependencies to determine accepted jobs in each sequence.
+        // downstream jobs in each sequence may be rejected based on the first failure.
+        let accepted = selection::resolve_conflicts_and_dependencies(
             &sequences,
             &pairs,
-            diagnostics.iter().filter_map(|diagnostic| {
-                matches!(&diagnostic.reason, Reason::NumericError(_, _)).then_some(diagnostic.id)
-            }),
+            dropped
+                .iter()
+                .copied()
+                .chain(diagnostics.iter().filter_map(|diagnostic| {
+                    matches!(&diagnostic.reason, Reason::NumericError(_, _))
+                        .then_some(diagnostic.id)
+                })),
         );
 
-        // Create a verdict for every inspector_records job. The first rejection in each
-        // sequence explains why subsequent jobs in that sequence were rejected.
-        let mut verdicts = BTreeMap::new();
-        for sequence in &sequences {
-            let mut dependency = None;
-            for &(id, _) in sequence {
-                let mut verdict = CommitVerdict {
+        let mut verdicts: BTreeMap<_, _> = sequences
+            .iter()
+            .flatten()
+            .map(|&(id, _)| {
+                let verdict = CommitVerdict {
                     id,
-                    decision: if accepted.contains(&id) {
+                    decision: if dropped.contains(&id) {
+                        CommitDecision::Dropped
+                    } else if accepted.contains(&id) {
                         CommitDecision::Accepted
                     } else {
                         CommitDecision::Rejected
                     },
                     conflicts: Vec::new(),
                 };
-                if verdict.decision == CommitDecision::Rejected {
-                    if let Some(cause) = dependency {
-                        verdict
-                            .conflicts
-                            .push((Vec::new(), Reason::Dependency(cause)));
-                    } else {
-                        dependency = Some(id);
-                    }
-                }
-                verdicts.insert(id, verdict);
-            }
-        }
+                (id, verdict)
+            })
+            .collect();
 
         // Merge duplicate reasons, retaining their distinct associated peers.
         for Diagnostic {

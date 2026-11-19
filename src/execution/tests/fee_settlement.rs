@@ -101,7 +101,10 @@ fn account(balance: u64, code: Bytes) -> Account {
     })
 }
 
-fn reject<R, H: Clone>(mut outcome: JobResult<R, H>, fallback: &impl DatabaseRef) -> EvmState {
+fn reject<R: crate::execution::ReceiptStatus, H: Clone>(
+    mut outcome: JobResult<R, H>,
+    fallback: &impl DatabaseRef,
+) -> EvmState {
     outcome.verdict = CommitVerdict {
         id: outcome.id,
         decision: CommitDecision::Rejected,
@@ -293,7 +296,7 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
 }
 
 #[test]
-fn block_rejects_transactions_exceeding_total_gas_limit() {
+fn block_drops_transactions_exceeding_total_gas_limit() {
     use crate::execution::ArcologyParaBlockExecutor;
     use crate::planner::Planner;
 
@@ -343,13 +346,6 @@ fn block_rejects_transactions_exceeding_total_gas_limit() {
         )
         .map(|(outcomes, _)| outcomes.iter().filter_map(|raw| raw.gas_used()).sum::<u64>());
 
-        if count == 1 {
-            assert_eq!(result.unwrap(), 21_000);
-        } else {
-            assert!(
-                result.is_err(),
-                "expected rejection above the 30000 block gas limit, got {result:?}"
-            );
-        }
+        assert_eq!(result.unwrap(), 21_000);
     }
 }

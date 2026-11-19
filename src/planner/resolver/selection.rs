@@ -1,8 +1,8 @@
 use crate::planner::scheduler::ID;
 use std::collections::{BTreeSet, HashMap};
 
-/// Keeps sequence prefixes, rolling back the cheaper remaining suffix per conflict.
-pub(super) fn select(
+/// Keeps jobs before the first rejection in each sequence.
+pub(super) fn resolve_conflicts_and_dependencies(
     sequences: &[Vec<(ID, u64)>],
     pairs: &BTreeSet<(ID, ID)>,
     rejected: impl IntoIterator<Item = ID>,
@@ -75,7 +75,10 @@ mod tests {
         let (a, b, c) = (id(1, 0, 0), id(2, 1, 0), id(3, 2, 0));
         let sequences = vec![vec![(a, 5)], vec![(b, 10)], vec![(c, 20)]];
         let pairs = BTreeSet::from([(a, b), (a, c)]);
-        assert_eq!(select(&sequences, &pairs, []), BTreeSet::from([b, c]));
+        assert_eq!(
+            resolve_conflicts_and_dependencies(&sequences, &pairs, []),
+            BTreeSet::from([b, c])
+        );
         assert_eq!(pairs.len(), 2);
     }
 
@@ -84,7 +87,7 @@ mod tests {
         let (a, b, tail) = (id(1, 0, 0), id(2, 1, 0), id(3, 0, 1));
         let sequences = vec![vec![(a, 1), (tail, 101)], vec![(b, 50)]];
         assert_eq!(
-            select(&sequences, &BTreeSet::from([(a, b)]), []),
+            resolve_conflicts_and_dependencies(&sequences, &BTreeSet::from([(a, b)]), []),
             BTreeSet::from([a, tail])
         );
     }
@@ -94,7 +97,10 @@ mod tests {
         let (a, tail, b, c) = (id(2, 0, 0), id(1, 0, 1), id(3, 1, 0), id(4, 2, 0));
         let sequences = vec![vec![(a, 20), (tail, 120)], vec![(b, 1_000)], vec![(c, 50)]];
         let pairs = BTreeSet::from([(tail, b), (a, c)]);
-        assert_eq!(select(&sequences, &pairs, []), BTreeSet::from([b, c]));
+        assert_eq!(
+            resolve_conflicts_and_dependencies(&sequences, &pairs, []),
+            BTreeSet::from([b, c])
+        );
     }
 
     #[test]
@@ -102,7 +108,7 @@ mod tests {
         let (a, tail, b) = (id(1, 0, 0), id(2, 0, 1), id(3, 1, 0));
         let sequences = vec![vec![(a, 10), (tail, 110)], vec![(b, 1)]];
         assert_eq!(
-            select(&sequences, &BTreeSet::from([(tail, b)]), [tail]),
+            resolve_conflicts_and_dependencies(&sequences, &BTreeSet::from([(tail, b)]), [tail]),
             BTreeSet::from([a, b])
         );
     }
@@ -113,10 +119,10 @@ mod tests {
         let sequences = vec![vec![(a, 0)], vec![(b, 0)]];
         for pair in [(a, b), (b, a)] {
             assert_eq!(
-                select(&sequences, &BTreeSet::from([pair]), []),
+                resolve_conflicts_and_dependencies(&sequences, &BTreeSet::from([pair]), []),
                 BTreeSet::from([a])
             );
         }
-        assert!(select(&[], &BTreeSet::new(), []).is_empty());
+        assert!(resolve_conflicts_and_dependencies(&[], &BTreeSet::new(), []).is_empty());
     }
 }

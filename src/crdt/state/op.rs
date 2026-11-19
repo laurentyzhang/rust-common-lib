@@ -35,3 +35,13 @@ pub struct Operations {
     pub(crate) deltas: Counter,
     pub(crate) removes: Counter,
 }
+
+impl Operations {
+    pub(crate) fn merge(&mut self, other: Self) {
+        self.reads.count += other.reads.count;
+        self.writes.count += other.writes.count;
+        self.deltas.count += other.deltas.count;
+        self.removes.count += other.removes.count;
+        self.existence_checks.count += other.existence_checks.count;
+    }
+}

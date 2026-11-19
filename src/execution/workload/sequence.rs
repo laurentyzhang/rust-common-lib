@@ -1,6 +1,9 @@
-use super::{Job, JobResult};
+use super::{Job, JobResult, ReceiptStatus};
 use crate::planner::scheduler::sender::SenderNonceOffset;
-use crate::{crdt::state, planner::resolver::CommitDecision};
+use crate::{
+    crdt::state,
+    planner::resolver::{CommitDecision, CommitVerdict, Reason},
+};
 use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
@@ -32,6 +35,39 @@ impl<Tx> JobSequence<Tx> {
         Self {
             jobs,
             nonce_offsets: Vec::new(),
+        }
+    }
+
+    /// Preserves direct conflicts and rejects downstream jobs due to the first rejection.
+    pub(crate) fn assign_verdicts<'a, K: 'a>(
+        verdicts: impl IntoIterator<Item = &'a mut CommitVerdict<K>>,
+    ) {
+        let mut dependency = None;
+        for verdict in verdicts {
+            if matches!(
+                verdict.decision,
+                CommitDecision::Pending | CommitDecision::Dropped
+            ) {
+                continue;
+            }
+            if let Some(cause) = dependency {
+                verdict.decision = CommitDecision::Rejected;
+                verdict
+                    .conflicts
+                    .retain(|(_, reason)| !matches!(reason, Reason::Dependency(_)));
+                if !verdict.conflicts.iter().any(|(_, reason)| {
+                    matches!(
+                        reason,
+                        Reason::AccessConflict(_, _) | Reason::NumericError(_, _)
+                    )
+                }) {
+                    verdict
+                        .conflicts
+                        .push((Vec::new(), Reason::Dependency(cause)));
+                }
+            } else if verdict.decision == CommitDecision::Rejected {
+                dependency = Some(verdict.id);
+            }
         }
     }
 
@@ -70,7 +106,7 @@ impl<Tx> JobSequence<Tx> {
     where
         F: BlockExecutorFactory<EvmFactory = PostExecEvmFactoryAdapter<ArcologyEvmFactory>>,
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
-        F::Receipt: Clone,
+        F::Receipt: Clone + ReceiptStatus,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
@@ -150,7 +186,7 @@ impl<Tx> JobSequence<Tx> {
     /// values, so their deltas can be applied to the rebuilt sequence state.
     ///
     /// `fallback` supplies the starting account and storage values.
-    pub(crate) fn rebuild_sequence_state<R, H: Clone, DB: DatabaseRef>(
+    pub(crate) fn rebuild_sequence_state<R: ReceiptStatus, H: Clone, DB: DatabaseRef>(
         raws: &mut [JobResult<R, H>],
         fallback: &DB,
     ) -> Result<EvmState, Error> {

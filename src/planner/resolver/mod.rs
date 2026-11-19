@@ -70,6 +70,7 @@ pub enum AccessConflict {
 /// Describes an access conflict, numeric constraint failure, or rejected dependency.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason<K = ()> {
+    GasLimitExceeded,
     NumericError(K, NumericError),
     AccessConflict(K, AccessConflict),
     /// A rejected job that this job depends on.
@@ -85,6 +86,7 @@ pub struct TransactionConflictReport {
 }
 
 /// Affected job, related peers, and keyed reason used for selection and reporting.
+#[derive(Clone)]
 pub struct Diagnostic<K> {
     pub id: ID,
     pub peers: Vec<ID>,

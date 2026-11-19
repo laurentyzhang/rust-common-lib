@@ -37,13 +37,27 @@ impl<K, T: Type> SumChecker<K, T> {
         }
     }
 
-    /// Consumes the imported records and checks each key in parallel.
-    pub fn check_bounds(&mut self) -> Vec<Diagnostic<K>>
+    /// Removes diagnosed jobs, then consumes and checks the remaining records.
+    pub fn check_bounds(&mut self, diagnostics: Vec<Diagnostic<K>>) -> Vec<Diagnostic<K>>
     where
         K: Ord + std::hash::Hash + Send + Sync,
         T: Send,
         T::Magnitude: Send,
     {
+        self.entries.retain(|record| {
+            if !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.id == record.id)
+            {
+                return true;
+            }
+            let count = self.counts.get_mut(&record.key).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                self.counts.remove(&record.key);
+            }
+            false
+        });
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
