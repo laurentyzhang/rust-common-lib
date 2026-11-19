@@ -75,12 +75,9 @@ impl<Tx> Block<Tx> {
                 block_db.inner(),
             )
             .map_err(Error::other)?;
-        block_db.commit(metadata);
-        if let Some(error) = block_db.commit_error() {
-            return Err(Error::other(format!(
-                "failed to commit planner metadata. {error}"
-            )));
-        }
+        block_db
+            .commit_with_original_slots(metadata)
+            .map_err(|error| Error::other(format!("failed to commit planner metadata. {error}")))?;
 
         Ok((
             ArcologyParaBlockExecutor::finish_block(results, set_cumulative),

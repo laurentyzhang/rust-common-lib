@@ -17,7 +17,7 @@ use alloy_evm::revm::{
     DatabaseCommit,
     state::{Account, EvmState, EvmStorageSlot},
 };
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 
 fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
     verdicts
@@ -81,7 +81,7 @@ fn meta_loads_all_stored_fields_for_a_function() {
 
     let meta = Meta::load(&mut db, host, selector).unwrap();
 
-    assert_eq!(meta.id, Some(CalleeId::new(host, 10u32.to_be_bytes())));
+    assert_eq!(meta.id, CalleeId::new(host, 10u32.to_be_bytes()));
     assert_eq!(meta.conflict_peers, BTreeSet::from([1, 2, 3, 4, 5]));
     assert_eq!(meta.deferred_peers, BTreeSet::from([6, 7]));
     assert_eq!(meta.deferred_gas, 123);
@@ -97,7 +97,7 @@ fn job(id: u64, contract: Address, selector: u32) -> Job<()> {
         is_l1_deposit: false,
         contract: Some(contract),
         meta: Meta {
-            id: Some(CalleeId::new(contract, selector.to_be_bytes())),
+            id: CalleeId::new(contract, selector.to_be_bytes()),
             ..Meta::default()
         },
     }

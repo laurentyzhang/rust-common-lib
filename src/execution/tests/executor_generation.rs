@@ -178,7 +178,7 @@ fn job_callee_contains_full_address_and_padded_selector() {
         data: vec![0x12, 0x34].into(),
         ..Default::default()
     };
-    let mut callee = Job::new(ID::new(0, 0), (tx, ())).meta.id.unwrap();
+    let mut callee = Job::new(ID::new(0, 0), (tx, ())).meta.id;
     assert_eq!(callee.account, contract);
     assert_eq!(callee.selector, [0x12, 0x34, 0, 0]);
     assert_eq!(callee.series, 0);
@@ -515,7 +515,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             BTreeSet::from([outcomes[0].id, outcomes[1].id])
         );
         assert!(pairs(&outcomes).is_empty());
-        let selector = job(1, contract).meta.id.unwrap().selector;
+        let selector = job(1, contract).meta.id.selector;
         let count = crate::planner::meta::MetaFieldId::ConflictCount.slot(contract, selector, 0);
         assert!(!committed[&contract].storage.contains_key(&count));
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
@@ -653,7 +653,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
         ctx: OpBlockExecutionCtx::default(),
     };
     let contract = Address::repeat_byte(0x99);
-    let selector = job(1, contract).meta.id.unwrap().selector;
+    let selector = job(1, contract).meta.id.selector;
     let code = Bytecode::new_raw(Bytes::from_static(&[
         0x60, 0, 0x54, 0x60, 1, 0x01, 0x60, 0, 0x55, 0,
     ]));

@@ -21,7 +21,7 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         is_l1_deposit: false,
         contract: None,
         meta: Meta {
-            id: Some(callee_id(callee)),
+            id: callee_id(callee),
             ..Meta::default()
         },
     }
@@ -620,8 +620,7 @@ fn assert_plan_invariants(
                     .push((scheduled.nonce, scheduled.id.global));
                 if !original.meta.fully_parallelizable
                     && original
-                        .meta
-                        .id
+                        .callee_id()
                         .and_then(|callee| profiles.get(&callee.compact()))
                         .is_some_and(|profile| profile.sequential_only)
                 {
@@ -675,7 +674,7 @@ fn assert_plan_invariants(
                             continue;
                         }
                         if let (Some(left_callee), Some(right_callee)) =
-                            (left.meta.id, right.meta.id)
+                            (left.callee_id(), right.callee_id())
                         {
                             let conflict =
                                 profiles.get(&left_callee.compact()).is_some_and(|profile| {
@@ -820,7 +819,7 @@ mod policy_tests {
             contract: None,
             meta: Meta {
                 fully_parallelizable,
-                id: Some(callee_id(callee)),
+                id: callee_id(callee),
                 ..Meta::default()
             },
         }
@@ -895,7 +894,7 @@ mod queue_tests {
             is_l1_deposit: false,
             contract: None,
             meta: Meta {
-                id: Some(callee_id(callee)),
+                id: callee_id(callee),
                 ..Meta::default()
             },
         }

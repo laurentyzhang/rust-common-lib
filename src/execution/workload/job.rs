@@ -60,6 +60,10 @@ pub struct Job<Tx> {
 }
 
 impl<Tx> Job<Tx> {
+    pub(crate) fn callee_id(&self) -> Option<CalleeId> {
+        (self.contract.is_some() || self.meta.id != CalleeId::default()).then_some(self.meta.id)
+    }
+
     /// Executes one transaction, commits it to the database, and returns its raw outcome.
     pub fn run<E, DB>(self, executor: &mut E) -> JobResult<E::Receipt, <E::Evm as Evm>::HaltReason>
     where
@@ -133,25 +137,22 @@ impl<Tx> Job<Tx> {
 impl<TxEnv: Transaction, R> Job<(TxEnv, R)> {
     /// Builds a job from an executable transaction.
     pub fn new(id: ID, (tx_env, recovered): (TxEnv, R)) -> Self {
-        let callee = match tx_env.kind() {
+        let (contract, callee) = match tx_env.kind() {
             TxKind::Call(to) => {
                 let mut selector = [0u8; 4];
                 let input = tx_env.input();
                 let n = input.len().min(4);
                 selector[..n].copy_from_slice(&input[..n]);
-                Some(CalleeId::new(to, selector))
+                (Some(to), CalleeId::new(to, selector))
             }
-            TxKind::Create => None,
+            TxKind::Create => (None, CalleeId::default()),
         };
         Self {
             id,
             sender: tx_env.caller().0.0,
             nonce: tx_env.nonce(),
             is_l1_deposit: tx_env.tx_type() == DEPOSIT_TX_TYPE_ID,
-            contract: match tx_env.kind() {
-                TxKind::Call(address) => Some(address),
-                TxKind::Create => None,
-            },
+            contract,
             meta: Meta {
                 id: callee,
                 ..Meta::default()

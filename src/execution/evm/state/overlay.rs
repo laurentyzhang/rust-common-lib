@@ -45,6 +45,16 @@ impl StateOverlay {
         incoming: EvmState,
         fallback: Option<&DB>,
     ) -> Result<(), StoreError> {
+        self.apply_with_fallbacks(incoming, fallback, fallback)
+    }
+
+    /// Applies changes using the supplied fallbacks for accounts and storage slots.
+    pub(super) fn apply_with_fallbacks<DB: DatabaseRef>(
+        &mut self,
+        incoming: EvmState,
+        fallback: Option<&DB>,
+        slot_fallback: Option<&DB>,
+    ) -> Result<(), StoreError> {
         // Step 1 (serial): pair each incoming account with its committed counterpart.
         let accounts = incoming
             .into_iter()
@@ -53,7 +63,7 @@ impl StateOverlay {
                 // Load missing slots before applying deltas, retaining their base values.
                 for (&key, slot) in &incoming.storage {
                     if !current.storage.contains_key(&key) {
-                        let original = match fallback {
+                        let original = match slot_fallback {
                             Some(db) => db
                                 .storage_ref(address, key)
                                 .map_err(|error| {

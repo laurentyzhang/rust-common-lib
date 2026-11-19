@@ -1,6 +1,6 @@
 use alloy_primitives::Address;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct CalleeId {
     pub account: Address,
     pub selector: [u8; 4],
