@@ -4,7 +4,7 @@ pub mod scheduler;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::execution::workload::{Block, Generation, JobSequence};
+use crate::execution::workload::{Block, Generation, JobSequence, TransactionGasLimit};
 use alloy_evm::{
     block::BlockExecutionError,
     revm::{Database, state::EvmState},
@@ -19,6 +19,7 @@ pub struct Planner<DB: Database, K> {
     pub db: DB,
     pub scheduler: GreedyScheduler,
     pub checker: ConflictDetector<K>,
+    pub block_gas_limit: u64,
     callees: BTreeMap<u64, Option<CalleeId>>,
     meta_lookup: BTreeSet<Meta>,
 }
@@ -26,26 +27,30 @@ pub struct Planner<DB: Database, K> {
 // Planner manages the scheduling and conflict detection for transactions within a generation.
 impl<DB: Database, K> Planner<DB, K> {
     /// Creates a planner with the supplied database and scheduler configuration.
+    /// The block executor sets the gas limit before planning a block.
     pub fn new(db: DB, config: SchedulerConfig) -> Self {
         Self {
             db,
             scheduler: GreedyScheduler::with_config(config),
             checker: ConflictDetector::new(),
+            block_gas_limit: u64::MAX,
             callees: BTreeMap::new(),
             meta_lookup: BTreeSet::new(),
         }
     }
 
-    /// Schedules deposits first in block order, then schedules the remaining jobs.
+    /// Validates declared block gas, then schedules deposits before the remaining jobs.
     /// Loads each function's contract meta_lookup before building the plan.
-    pub fn plan<Tx>(
+    pub fn plan<Tx: TransactionGasLimit>(
         &mut self,
         jobs: impl IntoIterator<Item = Job<Tx>>,
     ) -> Result<Block<Tx>, BlockExecutionError> {
         let jobs = jobs.into_iter().collect::<Vec<_>>();
+        let mut gas = 0u128;
         let mut callees = BTreeSet::new();
         let mut job_callees = BTreeMap::new();
         for job in &jobs {
+            gas += u128::from(job.tx.gas_limit());
             let callee = job
                 .contract
                 .map(|contract| CalleeId::new(contract, job.meta.id.selector));
@@ -53,6 +58,12 @@ impl<DB: Database, K> Planner<DB, K> {
                 callees.insert(callee);
             }
             job_callees.insert(job.id.global, callee);
+        }
+        if gas >= u128::from(self.block_gas_limit) {
+            return Err(BlockExecutionError::msg(format!(
+                "declared transaction gas total {gas} must be below block gas limit {}",
+                self.block_gas_limit
+            )));
         }
         let mut meta_lookup = BTreeSet::new();
         for id in callees {

@@ -1,4 +1,4 @@
-use super::{Job, JobResult, ReceiptStatus};
+use super::{Job, JobResult, ReceiptStatus, TransactionGasLimit};
 use crate::planner::scheduler::sender::SenderNonceOffset;
 use crate::{
     crdt::state,
@@ -87,7 +87,18 @@ impl<Tx> Default for JobSequence<Tx> {
 }
 
 impl<Tx> JobSequence<Tx> {
-    /// Executes each job in a fresh EVM, carrying completed changes forward locally.
+    /// Returns the gas reserved by the sequence's declared transaction limits.
+    pub(super) fn gas_limit(&self) -> Result<u64, Error>
+    where
+        Tx: TransactionGasLimit,
+    {
+        self.jobs
+            .iter()
+            .try_fold(0u64, |gas, job| gas.checked_add(job.tx.gas_limit()))
+            .ok_or_else(|| Error::other("declared sequence gas exceeds u64"))
+    }
+
+    /// Executes jobs in order within their reserved sequence gas budget.
     /// Returns each job's raw outcome and the committed sequence state.
     /// Errors leave the sequence state unchanged.
     pub fn run<F, Fallback>(
@@ -108,9 +119,17 @@ impl<Tx> JobSequence<Tx> {
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         F::Receipt: Clone + ReceiptStatus,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
-        Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
+        Tx: TransactionGasLimit
+            + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let (mut raws, mut committed) = self.execute(factory, fallback, env, ctx)?;
+        let gas_limit = self.gas_limit()?;
+        if gas_limit > env.block_env.gas_limit {
+            return Err(Error::other(format!(
+                "declared sequence gas {gas_limit} exceeds block gas limit {}",
+                env.block_env.gas_limit
+            )));
+        }
+        let (mut raws, mut committed) = self.execute(factory, fallback, env, ctx, gas_limit)?;
         for raw in &mut raws {
             if raw.gas_used().is_some() {
                 raw.verdict.decision = CommitDecision::Accepted;
@@ -122,12 +141,14 @@ impl<Tx> JobSequence<Tx> {
         Ok((raws, committed))
     }
 
+    /// Executes jobs in a shared sequence gas pool and carries their state forward locally.
     pub(super) fn execute<F, Fallback>(
         self,
         factory: &F,
         fallback: &Fallback,
         env: EvmEnv<<F::EvmFactory as EvmFactory>::Spec, <F::EvmFactory as EvmFactory>::BlockEnv>,
         ctx: OpBlockExecutionCtx,
+        mut remaining_gas: u64,
     ) -> Result<
         (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
@@ -140,7 +161,8 @@ impl<Tx> JobSequence<Tx> {
         for<'a> F: BlockExecutorFactory<ExecutionCtx<'a> = OpBlockExecutionCtx>,
         F::Receipt: Clone,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
-        Tx: ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
+        Tx: TransactionGasLimit
+            + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         if self.jobs.is_empty() {
             return Ok((Vec::new(), EvmState::default()));
@@ -156,6 +178,13 @@ impl<Tx> JobSequence<Tx> {
 
         let mut raws = Vec::with_capacity(self.jobs.len());
         for job in self.jobs {
+            let gas_limit = job.tx.gas_limit();
+            if gas_limit > remaining_gas {
+                return Err(Error::other(format!(
+                    "declared gas {gas_limit} for job {:?} exceeds remaining sequence gas {remaining_gas}",
+                    job.id
+                )));
+            }
             let result = {
                 let evm = factory.evm_factory().create_evm_with_inspector(
                     &mut seq_db,
@@ -172,6 +201,7 @@ impl<Tx> JobSequence<Tx> {
                     result.id
                 )));
             }
+            remaining_gas -= result.gas_used().unwrap_or_default();
             raws.push(result);
         }
 

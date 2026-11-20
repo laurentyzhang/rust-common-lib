@@ -1,5 +1,8 @@
 /target
 /tmp
-/benches
+/benches/*
+!/benches/accumulator_sorting.rs
+!/benches/evm_state_merge.rs
+!/benches/hasher_comparison.rs
 Cargo.lock
 .VSCodeCounter/

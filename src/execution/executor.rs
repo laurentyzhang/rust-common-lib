@@ -53,7 +53,7 @@ impl ArcologyParaBlockExecutor {
         cumulative
     }
 
-    /// Prepares jobs, schedules the block, and delegates execution to `Block::run`.
+    /// Prepares jobs, validates and schedules them against the block gas limit, and executes them.
     pub fn execute_block<'db, F, PDB, Fallback, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,
@@ -94,6 +94,7 @@ impl ArcologyParaBlockExecutor {
             .enumerate()
             .map(|(index, tx)| Job::new(ID::new(block, index as u64), tx));
 
+        planner.block_gas_limit = config.env.block_env.gas_limit;
         let block = planner.plan(jobs).map_err(Error::other)?;
         block.run(factory, config, pool, set_cumulative, fallback, planner)
     }

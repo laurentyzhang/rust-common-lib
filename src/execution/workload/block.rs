@@ -1,4 +1,4 @@
-use super::{Generation, JobResult, ReceiptStatus};
+use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
 use crate::execution::evm::state::StateOverlay;
 use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
@@ -17,7 +17,7 @@ pub struct Block<Tx> {
 }
 
 impl<Tx> Block<Tx> {
-    /// Executes planned generations and returns finalized outcomes and committed block state.
+    /// Executes planned generations, carrying unused gas forward after each generation.
     pub fn run<F, PDB, Fallback>(
         self,
         factory: &F,
@@ -43,7 +43,9 @@ impl<Tx> Block<Tx> {
         PDB: Database,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send + ReceiptStatus,
-        Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
+        Tx: Send
+            + TransactionGasLimit
+            + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         let mut block_db = StateDb::with_fallback(
             StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),

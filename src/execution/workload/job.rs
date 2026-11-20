@@ -59,6 +59,27 @@ pub struct Job<Tx> {
     pub meta: Meta,
 }
 
+/// Supplies a transaction's declared gas limit for planning and execution.
+pub trait TransactionGasLimit {
+    /// Returns the gas limit declared by the transaction.
+    fn gas_limit(&self) -> u64;
+}
+
+impl<TxEnv: Transaction, R> TransactionGasLimit for (TxEnv, R) {
+    /// Reads the declared limit from the transaction environment.
+    fn gas_limit(&self) -> u64 {
+        self.0.gas_limit()
+    }
+}
+
+#[cfg(test)]
+impl TransactionGasLimit for () {
+    /// Gives scheduling-only test jobs a zero gas reservation.
+    fn gas_limit(&self) -> u64 {
+        0
+    }
+}
+
 impl<Tx> Job<Tx> {
     pub(crate) fn id(&self) -> Option<CalleeId> {
         (self.contract.is_some() || self.meta.id != CalleeId::default()).then_some(self.meta.id)

@@ -1,4 +1,4 @@
-use super::{JobResult, JobSequence, ReceiptStatus};
+use super::{JobResult, JobSequence, ReceiptStatus, TransactionGasLimit};
 use crate::execution::evm::state::StateOverlay;
 use crate::planner::scheduler::sender::{Sender, SenderNonceOffset};
 use alloy_evm::{
@@ -31,7 +31,7 @@ impl<Tx> Default for Generation<Tx> {
 }
 
 impl<Tx> Generation<Tx> {
-    /// Executes sequences in parallel, finalizes job results, and merges sequence states.
+    /// Runs each parallel sequence with its own gas budget, then merges finalized states.
     pub fn run<F, Fallback>(
         self,
         factory: &F,
@@ -55,7 +55,9 @@ impl<Tx> Generation<Tx> {
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send + ReceiptStatus,
-        Tx: Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
+        Tx: Send
+            + TransactionGasLimit
+            + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
         // Use previously committed state as the base for this generation.
         let gen_db = StateDb::with_fallback(
@@ -68,8 +70,14 @@ impl<Tx> Generation<Tx> {
             self.sequences
                 .into_par_iter()
                 .map(|sequence| {
-                    // Each sequence applies its changes to its own state overlay.
-                    sequence.execute(factory, &gen_db, config.env.clone(), config.ctx.clone())
+                    let gas_limit = sequence.gas_limit()?;
+                    sequence.execute(
+                        factory,
+                        &gen_db,
+                        config.env.clone(),
+                        config.ctx.clone(),
+                        gas_limit,
+                    )
                 })
                 .collect()
         });
