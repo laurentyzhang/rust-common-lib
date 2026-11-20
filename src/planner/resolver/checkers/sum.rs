@@ -61,8 +61,7 @@ impl<K, T: Type> SumChecker<K, T> {
         run_parallel(&mut self.entries, &mut self.counts, Self::do_check)
     }
 
-    /// Orders one key's records by sequence/job, then checks negative and positive
-    /// changes independently from the same initial value.
+    /// Checks one key's sequence prefixes in schedule order.
     fn do_check(
         mut records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
     ) -> Vec<Diagnostic<K>>
@@ -77,69 +76,87 @@ impl<K, T: Type> SumChecker<K, T> {
         let mut initial = first.data.current().clone();
         initial.delta = None;
 
-        Self::check_sum_bounds(
-            &mut records,
-            initial.clone(),
-            |before, after| after < before,
-            &mut diagnostics,
-        );
-        Self::check_sum_bounds(
-            &mut records,
-            initial,
-            |before, after| after > before,
-            &mut diagnostics,
-        );
+        Self::check_sum_bounds(records, initial, &mut diagnostics);
         diagnostics
     }
 
-    /// Accumulates job changes accepted by `select(before, after)`.
-    /// Cuts each failing job's sequence suffix and records its diagnostic and peers.
+    /// Checks both bounds using each sequence's latest net contribution.
     fn check_sum_bounds(
-        records: &mut Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
-        mut summed: Scalar<T>,
-        select: impl Fn(T, T) -> bool,
+        records: Vec<ExecutionOutput<K, Tracked<Status, Scalar<T>>>>,
+        summed: Scalar<T>,
         diagnostics: &mut Vec<Diagnostic<K>>,
     ) {
+        let mut lower = summed.clone();
+        let mut upper = summed;
         let mut previous_sequence = None;
-        let mut previous_value = summed.value;
-        let mut contributors = Vec::<ID>::new();
-        let mut index = 0;
+        let mut sequence_start = lower.value;
+        let mut previous_value = sequence_start;
+        let mut lower_contributors = Vec::<ID>::new();
+        let mut upper_contributors = Vec::<ID>::new();
+        let mut lower_start = 0;
+        let mut upper_start = 0;
+        let mut rejected = false;
 
-        while index < records.len() {
-            let record = &records[index];
+        for record in records {
             let sequence = (record.id.block, record.id.generation, record.id.sequence);
             let scalar = record.data.current();
             if previous_sequence != Some(sequence) {
                 previous_sequence = Some(sequence);
-                previous_value = scalar.value;
+                sequence_start = scalar.value;
+                previous_value = sequence_start;
+                lower_start = lower_contributors.len();
+                upper_start = upper_contributors.len();
+                rejected = false;
             }
-
-            // Consecutive snapshots give this job's change, including a return to zero.
-            let before = previous_value;
-            previous_value = scalar.clone().apply_delta().value;
-            if !select(before, previous_value) {
-                index += 1;
+            if rejected {
                 continue;
             }
-            let delta = T::delta_between(before, previous_value);
+            let value = scalar.clone().apply_delta().value;
+            if value == previous_value {
+                continue;
+            }
 
-            if let Err(error) = summed.add_delta(&delta) {
-                let failed = records.remove(index);
+            // Replace the sequence's previous contribution in both sums together.
+            let mut next_lower = lower.clone();
+            let mut next_upper = upper.clone();
+            let lower_delta = T::delta_between(
+                previous_value.min(sequence_start),
+                value.min(sequence_start),
+            );
+            let upper_delta = T::delta_between(
+                previous_value.max(sequence_start),
+                value.max(sequence_start),
+            );
+            let failure = if let Err(error) = next_lower.add_delta(&lower_delta) {
+                Some((error, &lower_contributors))
+            } else if let Err(error) = next_upper.add_delta(&upper_delta) {
+                Some((error, &upper_contributors))
+            } else {
+                None
+            };
+            if let Some((error, contributors)) = failure {
                 diagnostics.push(Diagnostic {
-                    id: failed.id,
+                    id: record.id,
                     peers: contributors.clone(),
-                    reason: Reason::NumericError(failed.key, error.into()),
+                    reason: Reason::NumericError(record.key, error.into()),
                 });
-
-                // Drop this sequence's suffix and continue with the next sequence.
-                records.retain(|record| {
-                    (record.id.block, record.id.generation, record.id.sequence) != sequence
-                        || record.id.job < failed.id.job
-                });
+                rejected = true;
                 continue;
             }
-            contributors.push(record.id);
-            index += 1;
+
+            lower = next_lower;
+            upper = next_upper;
+            if value >= sequence_start {
+                lower_contributors.truncate(lower_start);
+            } else if value < previous_value {
+                lower_contributors.push(record.id);
+            }
+            if value <= sequence_start {
+                upper_contributors.truncate(upper_start);
+            } else if value > previous_value {
+                upper_contributors.push(record.id);
+            }
+            previous_value = value;
         }
     }
 }

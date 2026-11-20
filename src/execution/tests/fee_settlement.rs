@@ -349,3 +349,61 @@ fn block_drops_transactions_exceeding_total_gas_limit() {
         assert_eq!(result.unwrap(), 21_000);
     }
 }
+
+/// A single sequence must fit the gas budget across all its transactions.
+#[test]
+fn single_sequence_respects_total_gas_limit() {
+    let caller = Address::repeat_byte(0x11);
+    let fallback = StateDb::new(EvmState::from_iter([(
+        caller,
+        account(FUNDS, Bytes::new()),
+    )]));
+    let mut env = env(Address::repeat_byte(0x88));
+    env.block_env.gas_limit = 30_000;
+    let mut checker = ConflictDetector::new();
+    checker.set_gas_limit(env.block_env.gas_limit);
+    let config = ParaBlockConfig {
+        env,
+        ctx: OpBlockExecutionCtx::default(),
+    };
+    let jobs = (0..2)
+        .map(|nonce| {
+            let mut typed = OpTypedTransaction::Legacy(Default::default());
+            let OpTypedTransaction::Legacy(tx) = &mut typed else {
+                unreachable!()
+            };
+            tx.nonce = nonce;
+            tx.to = TxKind::Call(Address::repeat_byte(0x99));
+            tx.gas_limit = 21_000;
+            tx.gas_price = 10;
+            let tx = OpTxEnvelope::new_unhashed(
+                typed,
+                Signature::new(U256::from(1), U256::from(1), false),
+            );
+            Job::new(
+                ID::new(0, nonce),
+                (
+                    ArcologyTx::from_recovered_tx(&tx, caller),
+                    Recovered { tx, signer: caller },
+                ),
+            )
+        })
+        .collect();
+    let mut generation = Generation::new(vec![JobSequence::new(jobs)]);
+    generation.assign_ids(0);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap();
+    let (outcomes, _) = generation
+        .run(&factory(), &config, &pool, &mut checker, &fallback)
+        .unwrap();
+
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter_map(|raw| raw.gas_used())
+            .sum::<u64>(),
+        21_000
+    );
+}

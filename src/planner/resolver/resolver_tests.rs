@@ -196,6 +196,7 @@ fn checks_numeric_bounds_across_multiple_imports() {
     );
 }
 
+/// Checks net sequence deltas and retains accepted prefixes when a bound is exceeded.
 #[test]
 fn numeric_checks_use_job_differences_and_independent_directions() {
     // Snapshots contain global ID, sequence, job, base value, and accumulated delta.
@@ -213,10 +214,10 @@ fn numeric_checks_use_job_differences_and_independent_directions() {
             &[][..],
         ),
         (
-            "zero accumulated delta retains the subtraction",
+            "returning to the starting value releases the contribution",
             10,
             &[(1, 0, 0, 5, 4), (2, 0, 1, 5, 0), (3, 1, 0, 5, -2)][..],
-            &[3][..],
+            &[][..],
         ),
         (
             "negative changes cannot cover an upper-bound failure",
@@ -234,26 +235,26 @@ fn numeric_checks_use_job_differences_and_independent_directions() {
             "positive to negative accumulated delta",
             10,
             &[(1, 0, 0, 5, 2), (2, 0, 1, 5, -2), (3, 1, 0, 5, -2)][..],
-            &[3][..],
+            &[][..],
         ),
         (
             "negative to positive accumulated delta",
             10,
             &[(1, 0, 0, 5, -2), (2, 0, 1, 5, 2), (3, 1, 0, 5, 2)][..],
-            &[3][..],
+            &[][..],
         ),
         (
-            "cutoff excludes the suffix from both passes",
+            "cutoff retains the accepted prefix's contribution",
             10,
             &[
                 (1, 0, 0, 5, 2),
-                (2, 0, 1, 5, 0),
+                (2, 0, 1, 5, 1),
                 (3, 1, 0, 5, 3),
                 (4, 1, 1, 5, 5),
                 (5, 1, 2, 5, 0),
-                (6, 2, 0, 5, -3),
+                (6, 2, 0, 5, 2),
             ][..],
-            &[4, 5][..],
+            &[4, 5, 6][..],
         ),
         (
             "balance snapshots advance their base value",
