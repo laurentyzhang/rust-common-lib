@@ -24,7 +24,8 @@ fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
             verdict
                 .conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers)
+                .filter(|(peer, _)| *peer != verdict.id)
+                .map(|(peer, _)| peer)
                 .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
         })
         .collect()
@@ -143,7 +144,7 @@ fn reports_every_conflicting_pair() {
         report[1]
             .conflicts
             .iter()
-            .flat_map(|(peers, _)| peers)
+            .map(|(peer, _)| peer)
             .map(|id| id.global)
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([1, 3])
@@ -458,7 +459,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         assert_eq!(
             conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers.iter())
+                .map(|(peer, _)| peer)
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![5]
@@ -475,7 +476,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
         assert_eq!(
             conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers.iter())
+                .map(|(peer, _)| peer)
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![11]
@@ -546,7 +547,7 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
     assert_eq!(
         conflicts
             .iter()
-            .flat_map(|(peers, _)| peers.iter())
+            .map(|(peer, _)| peer)
             .map(|id| id.global)
             .collect::<BTreeSet<_>>(),
         BTreeSet::from([1])
@@ -659,7 +660,7 @@ fn numeric_reads_remain_visible_to_access_detection() {
         assert_eq!(
             conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers.iter())
+                .map(|(peer, _)| peer)
                 .map(|id| id.global)
                 .collect::<Vec<_>>(),
             vec![1]
@@ -864,7 +865,7 @@ fn rolling_back_one_job_preserves_its_nonconflicting_peers() {
         assert_eq!(
             conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers.iter())
+                .map(|(peer, _)| peer)
                 .map(|id| id.global)
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([2, 3])
@@ -910,13 +911,9 @@ fn rejected_jobs_preserve_their_direct_conflicts() {
     let result = detector.check();
     assert_eq!(rejected_ids(&result), vec![rejected, dependent]);
     assert_eq!(result[1].decision, CommitDecision::Rejected);
-    assert!(
-        result[1]
-            .conflicts
-            .iter()
-            .any(|(peers, reason)| peers.contains(&peer)
-                && matches!(reason, Reason::AccessConflict(7, _)))
-    );
+    assert!(result[1].conflicts.iter().any(
+        |(related, reason)| *related == peer && matches!(reason, Reason::AccessConflict(7, _))
+    ));
     assert_eq!(result[2].decision, CommitDecision::Rejected);
     assert!(
         result[2]
@@ -928,7 +925,7 @@ fn rejected_jobs_preserve_their_direct_conflicts() {
         result[2]
             .conflicts
             .iter()
-            .any(|(peers, reason)| peers.contains(&dependent_peer)
+            .any(|(related, reason)| *related == dependent_peer
                 && matches!(reason, Reason::AccessConflict(8, _)))
     );
     assert_eq!(

@@ -67,7 +67,7 @@ impl<Tx> Block<Tx> {
         }
 
         let metadata = planner
-            .resolve(
+            .build_conflict_meta_updates(
                 results
                     .iter()
                     .filter(|raw| raw.verdict.decision != CommitDecision::Pending)

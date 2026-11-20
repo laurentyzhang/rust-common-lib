@@ -11,18 +11,16 @@ use alloy_evm::{
 };
 
 use meta::{CalleeId, Meta};
-use resolver::{CommitVerdict, ConflictDetector};
+use resolver::{CommitVerdict, ConflictDetector, Reason};
 use scheduler::{CalleeProfile, GreedyScheduler, Job, Scheduler, SchedulerConfig};
-
-type LoadedMetadata = BTreeSet<Meta>;
 
 /// Scheduling and conflict detection state for one generation.
 pub struct Planner<DB: Database, K> {
     pub db: DB,
     pub scheduler: GreedyScheduler,
     pub checker: ConflictDetector<K>,
-    callees: BTreeMap<u64, Option<(CalleeId, u64)>>,
-    metadata: LoadedMetadata,
+    callees: BTreeMap<u64, Option<CalleeId>>,
+    meta_lookup: BTreeSet<Meta>,
 }
 
 // Planner manages the scheduling and conflict detection for transactions within a generation.
@@ -34,12 +32,12 @@ impl<DB: Database, K> Planner<DB, K> {
             scheduler: GreedyScheduler::with_config(config),
             checker: ConflictDetector::new(),
             callees: BTreeMap::new(),
-            metadata: BTreeSet::new(),
+            meta_lookup: BTreeSet::new(),
         }
     }
 
     /// Schedules deposits first in block order, then schedules the remaining jobs.
-    /// Loads each function's contract metadata before building the plan.
+    /// Loads each function's contract meta_lookup before building the plan.
     pub fn plan<Tx>(
         &mut self,
         jobs: impl IntoIterator<Item = Job<Tx>>,
@@ -48,29 +46,26 @@ impl<DB: Database, K> Planner<DB, K> {
         let mut callees = BTreeSet::new();
         let mut job_callees = BTreeMap::new();
         for job in &jobs {
-            let callee = job.contract.map(|contract| {
-                (
-                    CalleeId::new(contract, job.meta.id.selector),
-                    job.meta.id.compact(),
-                )
-            });
+            let callee = job
+                .contract
+                .map(|contract| CalleeId::new(contract, job.meta.id.selector));
             if let Some(callee) = callee {
                 callees.insert(callee);
             }
             job_callees.insert(job.id.global, callee);
         }
-        let mut metadata = LoadedMetadata::new();
-        for (id, callee) in callees {
-            let meta = match Meta::get_by_id(&metadata, id) {
+        let mut meta_lookup = BTreeSet::new();
+        for id in callees {
+            let meta = match Meta::get_by_id(&meta_lookup, id) {
                 Some(meta) => meta,
                 None => {
                     let meta = Meta::load(&mut self.db, id.account, id.selector)?;
-                    metadata.insert(meta);
-                    Meta::get_by_id(&metadata, id).unwrap()
+                    meta_lookup.insert(meta);
+                    Meta::get_by_id(&meta_lookup, id).unwrap()
                 }
             };
             self.scheduler.set_profile(
-                callee,
+                id.compact,
                 CalleeProfile {
                     conflict_peers: meta.conflict_peers.clone(),
                     sequential_only: meta.sequential_only,
@@ -78,7 +73,7 @@ impl<DB: Database, K> Planner<DB, K> {
                 },
             );
         }
-        self.metadata = metadata;
+        self.meta_lookup = meta_lookup;
 
         self.callees = job_callees;
 
@@ -95,8 +90,8 @@ impl<DB: Database, K> Planner<DB, K> {
         Ok(Block { generations })
     }
 
-    /// Maps job conflicts to scheduled callees and returns metadata updates for the caller to commit.
-    pub fn resolve<'a>(
+    /// Converts verdict conflicts into meta_lookup changes for the caller to commit.
+    pub fn build_conflict_meta_updates<'a>(
         &mut self,
         verdicts: impl IntoIterator<Item = &'a CommitVerdict<K>>,
         current: &EvmState,
@@ -104,30 +99,49 @@ impl<DB: Database, K> Planner<DB, K> {
     where
         K: 'a,
     {
-        // Aggregate unique peer job IDs per callee across all verdicts.
-        let mut peers = BTreeMap::<Meta, BTreeSet<u64>>::new();
+        let mut updates = EvmState::default();
         for verdict in verdicts {
+            // Map the verdict's job ID to the callee recorded during planning.
             let left = self.callees.get(&verdict.id.global).ok_or_else(|| {
                 BlockExecutionError::msg("conflicting transaction was not scheduled")
             })?;
-            for right in verdict.conflicts.iter().flat_map(|(peers, _)| peers) {
-                let right = self.callees.get(&right.global).ok_or_else(|| {
+
+            // Do pairwise conflict recording for each party involved in the verdict.
+            for (right_id, reason) in &verdict.conflicts {
+                // Learn only from direct access conflicts between distinct jobs.
+                if *right_id == verdict.id || !matches!(reason, Reason::AccessConflict(_, _)) {
+                    continue;
+                }
+                let right = self.callees.get(&right_id.global).ok_or_else(|| {
                     BlockExecutionError::msg("conflicting transaction was not scheduled")
                 })?;
-                if let (Some((left_id, left)), Some((right_id, right))) = (*left, *right) {
-                    // Record each conflict for both callees.
-                    for (id, peer) in [(left_id, right), (right_id, left)] {
-                        let meta = Meta::get_by_id(&self.metadata, id).unwrap();
-                        if let Some(detected) = peers.get_mut(meta) {
-                            detected.insert(peer);
-                        } else {
-                            peers.insert(meta.clone(), BTreeSet::from([peer]));
-                        }
+                if let (Some(left), Some(right)) = (*left, *right) {
+                    let mut left = Meta::take_by_id(&mut self.meta_lookup, left).unwrap();
+                    let mut right = if left.id == right {
+                        None
+                    } else {
+                        Some(Meta::take_by_id(&mut self.meta_lookup, right).unwrap())
+                    };
+
+                    // Record new conflict peers for the meta entry and its counterpart.
+                    // Write the updated an evm state with the new conflict information.
+                    let result = left.add_conflict_peers(
+                        right.as_mut(),
+                        &mut self.db,
+                        current,
+                        &mut updates,
+                    );
+
+                    // Reinsert the updated meta entries back into the meta_lookup set.
+                    self.meta_lookup.insert(left);
+                    if let Some(right) = right {
+                        self.meta_lookup.insert(right);
                     }
+                    result?;
                 }
             }
         }
-        Meta::build_conflict_peer_storage_updates(&mut self.db, peers, current)
+        Ok(updates)
     }
 }
 

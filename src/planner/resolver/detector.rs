@@ -106,9 +106,6 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
     /// Accepts a single sequence directly; otherwise checks gas and conflicts.
     fn check(&mut self) -> Vec<CommitVerdict<K>> {
         let sequences = self.accumulate();
-        if sequences.len() == 1 {
-            return self.accept_all(sequences);
-        }
 
         let mut diagnostics = self.gas_limit_checker.check::<K>();
         let dropped: BTreeSet<_> = diagnostics.iter().map(|diagnostic| diagnostic.id).collect();
@@ -172,7 +169,7 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             })
             .collect();
 
-        // Merge duplicate reasons, retaining their distinct associated peers.
+        // Keep one entry per related job and reason.
         for Diagnostic {
             id,
             peers: mut related,
@@ -182,15 +179,21 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
             related.sort_unstable();
             related.dedup();
             let conflicts = &mut verdicts.get_mut(&id).unwrap().conflicts;
-            if let Some((peers, _)) = conflicts
-                .iter_mut()
-                .find(|(_, existing)| *existing == reason)
-            {
-                peers.extend(related);
-                peers.sort_unstable();
-                peers.dedup();
+            if related.is_empty() {
+                if !conflicts
+                    .iter()
+                    .any(|(peer, existing)| *peer == id && *existing == reason)
+                {
+                    conflicts.push((id, reason));
+                }
             } else {
-                conflicts.push((related, reason));
+                for peer in related {
+                    if !conflicts.iter().any(|(existing_peer, existing)| {
+                        *existing_peer == peer && *existing == reason
+                    }) {
+                        conflicts.push((peer, reason.clone()));
+                    }
+                }
             }
         }
         // Ensure every reported peer link is visible from both endpoints, even
@@ -201,13 +204,16 @@ impl<K: Clone + Ord + std::hash::Hash + Send + Sync> Checker<K> for ConflictDete
                 verdict
                     .conflicts
                     .iter()
-                    .flat_map(move |(peers, _)| peers.iter().map(move |peer| (*id, *peer)))
+                    .filter_map(move |(peer, _)| (*peer != *id).then_some((*id, *peer)))
             })
             .collect();
         for (id, peer) in links {
             let conflicts = &mut verdicts.get_mut(&peer).unwrap().conflicts;
-            if !conflicts.iter().any(|(peers, _)| peers.contains(&id)) {
-                conflicts.push((vec![id], Reason::None));
+            if !conflicts
+                .iter()
+                .any(|(existing_peer, _)| *existing_peer == id)
+            {
+                conflicts.push((id, Reason::None));
             }
         }
         // BTreeMap iteration returns verdicts ordered by job ID.

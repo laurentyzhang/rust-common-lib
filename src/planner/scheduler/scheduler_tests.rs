@@ -3,13 +3,14 @@ use super::*;
 use crate::planner::meta::{CalleeId, Meta};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn callee_id(callee: u64) -> CalleeId {
+fn id(callee: u64) -> CalleeId {
     let bytes = callee.to_le_bytes();
     let mut account = [0; 20];
     account[..4].copy_from_slice(&bytes[..4]);
     CalleeId::new(account.into(), bytes[4..].try_into().unwrap())
 }
 
+/// Builds a scheduler test job with the given callee.
 fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
     let mut address = [0; 20];
     address[19] = sender;
@@ -21,7 +22,7 @@ fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         is_l1_deposit: false,
         contract: None,
         meta: Meta {
-            id: callee_id(callee),
+            id: self::id(callee),
             ..Meta::default()
         },
     }
@@ -620,8 +621,8 @@ fn assert_plan_invariants(
                     .push((scheduled.nonce, scheduled.id.global));
                 if !original.meta.fully_parallelizable
                     && original
-                        .callee_id()
-                        .and_then(|callee| profiles.get(&callee.compact()))
+                        .id()
+                        .and_then(|callee| profiles.get(&callee.compact))
                         .is_some_and(|profile| profile.sequential_only)
                 {
                     assert_eq!(ids(generation), vec![scheduled.id.global]);
@@ -673,17 +674,13 @@ fn assert_plan_invariants(
                         if left.meta.fully_parallelizable || right.meta.fully_parallelizable {
                             continue;
                         }
-                        if let (Some(left_callee), Some(right_callee)) =
-                            (left.callee_id(), right.callee_id())
-                        {
+                        if let (Some(left_callee), Some(right_callee)) = (left.id(), right.id()) {
                             let conflict =
-                                profiles.get(&left_callee.compact()).is_some_and(|profile| {
-                                    profile.conflict_peers.contains(&right_callee.compact())
-                                }) || profiles.get(&right_callee.compact()).is_some_and(
-                                    |profile| {
-                                        profile.conflict_peers.contains(&left_callee.compact())
-                                    },
-                                );
+                                profiles.get(&left_callee.compact).is_some_and(|profile| {
+                                    profile.conflict_peers.contains(&right_callee.compact)
+                                }) || profiles.get(&right_callee.compact).is_some_and(|profile| {
+                                    profile.conflict_peers.contains(&left_callee.compact)
+                                });
                             assert!(!conflict, "conflicting callees run in parallel: {plan:?}");
                         }
                     }
@@ -803,7 +800,7 @@ mod model_tests {
 }
 
 mod policy_tests {
-    use super::callee_id;
+    use super::id;
     use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::{ExecutionMode, JobResolver};
     use crate::planner::scheduler::{CalleeProfile, ID, Job};
@@ -819,7 +816,7 @@ mod policy_tests {
             contract: None,
             meta: Meta {
                 fully_parallelizable,
-                id: callee_id(callee),
+                id: id(callee),
                 ..Meta::default()
             },
         }
@@ -878,13 +875,14 @@ mod policy_tests {
 }
 
 mod queue_tests {
-    use super::callee_id;
+    // use super::id;
     use crate::planner::meta::Meta;
     use crate::planner::scheduler::job_resolver::JobResolver;
     use crate::planner::scheduler::sender_batcher::SenderBatcher;
     use crate::planner::scheduler::{CalleeProfile, ID, Job};
     use std::collections::{BTreeMap, BTreeSet};
 
+    /// Builds a job for sender-queue tests.
     fn transaction(id: u64, sender: u8, nonce: u64, callee: u64) -> Job<()> {
         Job {
             tx: (),
@@ -894,7 +892,7 @@ mod queue_tests {
             is_l1_deposit: false,
             contract: None,
             meta: Meta {
-                id: callee_id(callee),
+                id: super::id(callee),
                 ..Meta::default()
             },
         }

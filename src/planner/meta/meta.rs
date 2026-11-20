@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use alloy_evm::{
     block::BlockExecutionError,
@@ -8,8 +8,6 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, U256};
-
-use crate::planner::LoadedMetadata;
 
 use super::{CalleeId, MetaCodec, MetaFieldId};
 
@@ -26,19 +24,38 @@ pub struct Meta {
     pub sequential_only: bool,
     pub deferred_peers: BTreeSet<u64>,
     pub deferred_gas: u64,
+    /// Sorted peer IDs staged for the current conflict meta_lookup update.
+    pub pending_peers: Vec<u64>,
 }
 
 impl Meta {
-    /// Looks up a callee by ID, which sorts before the other metadata fields.
-    pub(in crate::planner) fn get_by_id(metadata: &LoadedMetadata, id: CalleeId) -> Option<&Self> {
+    /// Looks up a callee by ID, which sorts before the other meta_lookup fields.
+    pub(in crate::planner) fn get_by_id(
+        meta_lookup: &BTreeSet<Meta>,
+        id: CalleeId,
+    ) -> Option<&Self> {
         let lower_bound = Self {
             id,
             ..Self::default()
         };
-        metadata
+        meta_lookup
             .range(lower_bound..)
             .next()
             .filter(|meta| meta.id == id)
+    }
+
+    /// Takes a callee out of the set, so its pending peers can be updated.
+    pub(in crate::planner) fn take_by_id(
+        meta_lookup: &mut BTreeSet<Meta>,
+        id: CalleeId,
+    ) -> Option<Self> {
+        let lower_bound = Self {
+            id,
+            ..Self::default()
+        };
+        meta_lookup
+            .extract_if(lower_bound.., |meta| meta.id == id)
+            .next()
     }
 
     /// Loads conflict policy and peers for one contract function.
@@ -66,13 +83,13 @@ impl Meta {
         Ok((false, peers, count, last_slot))
     }
 
-    /// Loads all metadata for one contract function.
+    /// Loads all meta_lookup for one contract function.
     pub fn load<DB: Database>(
         db: &mut DB,
         contract: Address,
         selector: [u8; 4],
     ) -> Result<Self, BlockExecutionError> {
-        // create an instance and populate its conflict and deferred metadata from storage.
+        // create an instance and populate its conflict and deferred meta_lookup from storage.
         let meta = Self {
             id: CalleeId::new(contract, selector),
             ..Self::default()
@@ -110,38 +127,47 @@ impl Meta {
         })
     }
 
-    /// Builds storage updates that append new conflict peers to each function's metadata.
-    pub(in crate::planner) fn build_conflict_peer_storage_updates<DB: Database>(
+    /// Records both directions of a conflict and stages the changed storage slots.
+    pub(in crate::planner) fn add_conflict_peers<DB: Database>(
+        &mut self,
+        right: Option<&mut Meta>,
         db: &mut DB,
-        peers: BTreeMap<Meta, BTreeSet<u64>>,
         current: &EvmState,
-    ) -> Result<EvmState, BlockExecutionError> {
-        let mut updates = EvmState::default();
-        for (meta, detected) in peers {
+        updates: &mut EvmState,
+    ) -> Result<(), BlockExecutionError> {
+        // A missing right entry means both jobs call the same function.
+        let left_peer = right
+            .as_ref()
+            .map_or(self.id.compact, |right| right.id.compact);
+        let right_peer = self.id.compact;
+        for (meta, peer) in [(Some(self), left_peer), (right, right_peer)] {
+            let Some(meta) = meta else {
+                continue;
+            };
             let contract = meta.id.account;
             let selector = meta.id.selector;
-            // Do not write metadata for a contract deleted by the current execution.
-            if current
-                .get(&contract)
-                .is_some_and(|account| account.is_selfdestructed())
+            let current_account = current.get(&contract);
+            if meta.sequential_only
+                || meta.conflict_peers.contains(&peer)
+                || current_account.is_some_and(|account| account.is_selfdestructed())
             {
                 continue;
             }
-            // The sequential-only marker already supersedes individual peer entries.
-            if meta.sequential_only {
-                continue;
+
+            let count_slot = MetaFieldId::ConflictCount.slot(contract, selector, 0);
+            // Start fresh when building a new update from the same loaded meta_lookup.
+            if !updates
+                .get(&contract)
+                .is_some_and(|account| account.storage.contains_key(&count_slot))
+            {
+                meta.pending_peers.clear();
             }
-            let mut new_peers = detected
-                .difference(&meta.conflict_peers)
-                .copied()
-                .peekable();
-            if new_peers.peek().is_none() {
-                continue;
-            }
-            // Reuse current account information when available; storage remains
-            // a set of changes rather than a copy of the account's existing slots.
+            let offset = match meta.pending_peers.binary_search(&peer) {
+                Ok(_) => continue,
+                Err(offset) => offset,
+            };
             if !updates.contains_key(&contract) {
-                let info = match current.get(&contract) {
+                let info = match current_account {
                     Some(account) => account.info.clone(),
                     None => db
                         .basic(contract)
@@ -151,29 +177,34 @@ impl Meta {
                 updates.insert(contract, Account::from(info).with_touched_mark());
             }
             let account = updates.get_mut(&contract).unwrap();
-            let mut position = meta.conflict_count;
+            meta.pending_peers.insert(offset, peer);
+            let mut position = meta.conflict_count + offset as u64;
+            let mut new_peers = &meta.pending_peers[offset..];
 
-            // Each index slot holds four 8-byte peers. Append to a partial slot
-            // without disturbing its existing entries, then continue in new slots.
-            while new_peers.peek().is_some() {
+            // Repack the affected suffix in peer ID order, reusing staged slots.
+            while !new_peers.is_empty() {
                 let index = (position / 4)
                     .try_into()
                     .map_err(|_| BlockExecutionError::msg("conflict slot index exceeds u32"))?;
                 let slot = MetaFieldId::ConflictIndex.slot(contract, selector, index);
-                let original = if position % 4 != 0 {
-                    meta.last_conflict_slot
-                } else {
-                    db.storage(contract, slot)
-                        .map_err(BlockExecutionError::other)?
+                let (original, present) = match account.storage.get(&slot) {
+                    Some(slot) => (slot.original_value(), slot.present_value()),
+                    None => {
+                        let original = if position % 4 != 0 {
+                            meta.last_conflict_slot
+                        } else {
+                            db.storage(contract, slot)
+                                .map_err(BlockExecutionError::other)?
+                        };
+                        (original, original)
+                    }
                 };
-                let mut slot_peers = MetaCodec::decode_peer_slot(original);
-                for entry in slot_peers.iter_mut().skip((position % 4) as usize) {
-                    let Some(peer) = new_peers.next() else {
-                        break;
-                    };
-                    *entry = peer;
-                    position += 1;
-                }
+                let start = (position % 4) as usize;
+                let (peers, remaining) = new_peers.split_at(new_peers.len().min(4 - start));
+                let mut slot_peers = MetaCodec::decode_peer_slot(present);
+                slot_peers[start..start + peers.len()].copy_from_slice(peers);
+                position += peers.len() as u64;
+                new_peers = remaining;
                 account.storage.insert(
                     slot,
                     EvmStorageSlot::new_changed(
@@ -183,9 +214,8 @@ impl Meta {
                     ),
                 );
             }
-            // Record the old and new counts so the storage change has the correct base.
             account.storage.insert(
-                MetaFieldId::ConflictCount.slot(contract, selector, 0),
+                count_slot,
                 EvmStorageSlot::new_changed(
                     MetaCodec::encode_u64(meta.conflict_count),
                     MetaCodec::encode_u64(position),
@@ -193,7 +223,7 @@ impl Meta {
                 ),
             );
         }
-        Ok(updates)
+        Ok(())
     }
 
     fn decode_u64(value: U256, field: &str) -> Result<u64, BlockExecutionError> {
@@ -210,7 +240,9 @@ impl Meta {
     ) -> Result<(BTreeSet<u64>, U256), BlockExecutionError> {
         let slot_count = count.div_ceil(4);
         if slot_count > u64::from(u32::MAX) + 1 {
-            return Err(BlockExecutionError::msg("metadata slot index exceeds u32"));
+            return Err(BlockExecutionError::msg(
+                "meta_lookup slot index exceeds u32",
+            ));
         }
         let mut peers = BTreeSet::new();
         let mut last_slot = U256::ZERO;

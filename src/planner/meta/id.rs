@@ -4,22 +4,19 @@ use alloy_primitives::Address;
 pub struct CalleeId {
     pub account: Address,
     pub selector: [u8; 4],
-    pub series: u64,
+    pub compact: u64,
 }
 
 impl CalleeId {
+    /// Creates a callee ID and computes its compact key.
     pub fn new(account: Address, selector: [u8; 4]) -> Self {
+        let mut bytes = [0; 8];
+        bytes[..4].copy_from_slice(&account[..4]);
+        bytes[4..].copy_from_slice(&selector);
         Self {
             account,
             selector,
-            series: 0,
+            compact: u64::from_le_bytes(bytes),
         }
-    }
-
-    pub(crate) fn compact(self) -> u64 {
-        let mut bytes = [0; 8];
-        bytes[..4].copy_from_slice(&self.account[..4]);
-        bytes[4..].copy_from_slice(&self.selector);
-        u64::from_le_bytes(bytes)
     }
 }

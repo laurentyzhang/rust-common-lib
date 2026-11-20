@@ -60,7 +60,7 @@ pub struct Job<Tx> {
 }
 
 impl<Tx> Job<Tx> {
-    pub(crate) fn callee_id(&self) -> Option<CalleeId> {
+    pub(crate) fn id(&self) -> Option<CalleeId> {
         (self.contract.is_some() || self.meta.id != CalleeId::default()).then_some(self.meta.id)
     }
 

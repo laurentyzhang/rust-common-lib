@@ -16,7 +16,7 @@ pub enum CommitDecision {
 pub struct CommitVerdict<K> {
     pub id: ID,
     pub decision: CommitDecision,
-    pub conflicts: Vec<(Vec<ID>, Reason<K>)>, // Conflict peers and the reason.
+    pub conflicts: Vec<(ID, Reason<K>)>, // Related job and the reason.
 }
 
 pub fn accepted_ids<'a, K: 'a>(

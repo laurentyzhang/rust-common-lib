@@ -63,7 +63,7 @@ impl<Tx> JobSequence<Tx> {
                 }) {
                     verdict
                         .conflicts
-                        .push((Vec::new(), Reason::Dependency(cause)));
+                        .push((verdict.id, Reason::Dependency(cause)));
                 }
             } else if verdict.decision == CommitDecision::Rejected {
                 dependency = Some(verdict.id);

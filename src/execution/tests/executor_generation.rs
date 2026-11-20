@@ -28,7 +28,8 @@ fn pairs<R, H>(raws: &[JobResult<R, H>]) -> BTreeSet<(ID, ID)> {
             verdict
                 .conflicts
                 .iter()
-                .flat_map(|(peers, _)| peers)
+                .filter(|(peer, _)| *peer != verdict.id)
+                .map(|(peer, _)| peer)
                 .map(move |peer| (verdict.id.min(*peer), verdict.id.max(*peer)))
         })
         .collect()
@@ -168,6 +169,7 @@ fn job(id: u64, contract: Address) -> Job<(ArcologyTx, Recovered)> {
     )
 }
 
+/// Verifies a job's callee ID includes its compact account-selector key.
 #[test]
 fn job_callee_contains_full_address_and_padded_selector() {
     use alloy_evm::revm::context::TxEnv;
@@ -178,12 +180,13 @@ fn job_callee_contains_full_address_and_padded_selector() {
         data: vec![0x12, 0x34].into(),
         ..Default::default()
     };
-    let mut callee = Job::new(ID::new(0, 0), (tx, ())).meta.id;
+    let callee = Job::new(ID::new(0, 0), (tx, ())).meta.id;
     assert_eq!(callee.account, contract);
     assert_eq!(callee.selector, [0x12, 0x34, 0, 0]);
-    assert_eq!(callee.series, 0);
-    callee.series = 7;
-    assert_eq!(callee.series, 7);
+    let mut bytes = [0; 8];
+    bytes[..4].copy_from_slice(&contract[..4]);
+    bytes[4..].copy_from_slice(&[0x12, 0x34, 0, 0]);
+    assert_eq!(callee.compact, u64::from_le_bytes(bytes));
 }
 
 #[test]
@@ -451,7 +454,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         assert!(
             conflicts
                 .iter()
-                .any(|(peers, _)| peers.contains(&job(1, contract).id))
+                .any(|(peer, _)| *peer == job(1, contract).id)
         );
         assert!(
             conflicts

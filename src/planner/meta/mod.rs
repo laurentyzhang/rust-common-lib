@@ -1,7 +1,7 @@
-mod callee_id;
+mod id;
 mod codec;
 mod meta;
 
-pub use callee_id::CalleeId;
+pub use id::CalleeId;
 pub use codec::{MetaCodec, MetaFieldId};
 pub use meta::Meta;

@@ -133,12 +133,12 @@ fn finalization_rebuilds_from_raw_when_jobs_are_rejected() {
         CommitVerdict {
             id: ids[1],
             decision: CommitDecision::Rejected,
-            conflicts: vec![(vec![ID::new(0, 3)], Reason::None)],
+            conflicts: vec![(ID::new(0, 3), Reason::None)],
         },
         CommitVerdict {
             id: ids[2],
             decision: CommitDecision::Rejected,
-            conflicts: vec![(Vec::new(), Reason::Dependency(ids[1]))],
+            conflicts: vec![(ids[2], Reason::Dependency(ids[1]))],
         },
     ];
     for (raw, verdict) in raw.iter_mut().zip(&verdicts) {
