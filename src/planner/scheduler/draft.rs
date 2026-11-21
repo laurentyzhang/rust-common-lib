@@ -117,9 +117,7 @@ impl<'a, Tx> DraftGeneration<'a, Tx> {
                     .transactions
                     .iter()
                     .enumerate()
-                    .find(|(_, current)| {
-                        current.job.job.id().map(|id| id.compact) == Some(callee)
-                    })
+                    .find(|(_, current)| current.job.job.id().map(|id| id.compact) == Some(callee))
                     .map(|(transaction_index, _)| (sequence_index, transaction_index))
             })
     }

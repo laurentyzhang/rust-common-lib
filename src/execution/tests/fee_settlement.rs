@@ -344,7 +344,12 @@ fn block_drops_transactions_exceeding_total_gas_limit() {
             &mut planner,
             transactions,
         )
-        .map(|(outcomes, _)| outcomes.iter().filter_map(|raw| raw.gas_used()).sum::<u64>());
+        .map(|(outcomes, _)| {
+            outcomes
+                .iter()
+                .filter_map(|raw| raw.gas_used())
+                .sum::<u64>()
+        });
 
         assert_eq!(result.unwrap(), 21_000);
     }

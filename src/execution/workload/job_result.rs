@@ -359,8 +359,7 @@ impl<R, H> JobResult<R, H> {
                     Status::Tag(Tag::Deleted)
                 } else {
                     // All
-                    if CrdtKeyCodec::decode(*slot_key).is_some() || MetaCodec::is_crdt(*slot_key)
-                    {
+                    if CrdtKeyCodec::decode(*slot_key).is_some() || MetaCodec::is_crdt(*slot_key) {
                         operations.deltas.increment();
                     } else {
                         operations.writes.increment();

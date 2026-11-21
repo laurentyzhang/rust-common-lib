@@ -1,7 +1,7 @@
-mod id;
 mod codec;
+mod id;
 mod meta;
 
-pub use id::CalleeId;
 pub use codec::{MetaCodec, MetaFieldId};
+pub use id::CalleeId;
 pub use meta::Meta;

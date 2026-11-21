@@ -13,11 +13,14 @@ pub use evm::{EvmStateCommitter, StateDb};
 pub use executor::ArcologyParaBlockExecutor;
 pub use hooks::{
     ApiAddress, CallHandler, CallInput, CallOutput, CallRouter, CallScheme, ExitStatus,
-    I256Handler, II256, IRuntime, IU256, RuntimeHandler, U256Handler, dispatch_precompile,
+    I256Handler, II256, IRuntime, ISet, IU256, RuntimeHandler, SetHandler, U256Handler,
+    dispatch_precompile,
 };
 #[doc(hidden)]
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
-pub use slot::{Property, ScalarAdapter, ScalarKeyCodec, ScalarKind};
+pub use slot::{
+    Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, SetAdapter, SetKeyCodec, SetProperty,
+};
 pub use tracking::{Recorder, RecorderOutput, recorder};
 pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig, ReceiptStatus};
