@@ -1,3 +1,4 @@
+pub mod common;
 pub mod collections;
 pub mod crdt;
 pub mod execution;

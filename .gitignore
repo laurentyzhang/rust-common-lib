@@ -6,3 +6,4 @@
 !/benches/hasher_comparison.rs
 Cargo.lock
 .VSCodeCounter/
+Cargo.lock

@@ -17,10 +17,8 @@ pub struct Meta {
     pub fully_parallelizable: bool,
     pub is_deferred: bool,
     pub conflict_peers: BTreeSet<u64>,
-    /// Original peer count, used as the next append position and the old count in the update.
-    pub conflict_count: u64,
-    /// Original value of the last packed slot, reused when appending to a partial slot.
-    pub last_conflict_slot: U256,
+    /// Stored conflict peers in storage order; new peers are appended after them.
+    pub conflict_list: Vec<u64>,
     pub sequential_only: bool,
     pub deferred_peers: BTreeSet<u64>,
     pub deferred_gas: u64,
@@ -58,29 +56,27 @@ impl Meta {
             .next()
     }
 
-    /// Loads conflict policy and peers for one contract function.
+    /// Loads the sequential-only flag and the stored conflict peers for one contract function.
     fn load_conflicts<DB: Database>(
         &self,
         db: &mut DB,
-    ) -> Result<(bool, BTreeSet<u64>, u64, U256), BlockExecutionError> {
-        let count = db
+    ) -> Result<(bool, Vec<u64>), BlockExecutionError> {
+        let flag = db
             .storage(
                 self.id.account,
                 MetaFieldId::ConflictCount.slot(self.id.account, self.id.selector, 0),
             )
             .map_err(BlockExecutionError::other)?;
-        if count == U256::MAX {
-            return Ok((true, BTreeSet::new(), 0, U256::ZERO));
+        if flag == U256::MAX {
+            return Ok((true, Vec::new()));
         }
-        let count = Self::decode_u64(count, "conflict count")?;
-        let (peers, last_slot) = Self::load_peers(
+        let peers = Self::load_peers(
             db,
             self.id.account,
             self.id.selector,
-            count,
             MetaFieldId::ConflictIndex,
         )?;
-        Ok((false, peers, count, last_slot))
+        Ok((false, peers))
     }
 
     /// Loads all meta_lookup for one contract function.
@@ -94,19 +90,8 @@ impl Meta {
             id: CalleeId::new(contract, selector),
             ..Self::default()
         };
-        let deferred_count = db
-            .storage(
-                contract,
-                MetaFieldId::DeferredCount.slot(contract, selector, 0),
-            )
-            .map_err(BlockExecutionError::other)?;
-        let (deferred_peers, _) = Self::load_peers(
-            db,
-            contract,
-            selector,
-            Self::decode_u64(deferred_count, "deferred count")?,
-            MetaFieldId::DeferredIndex,
-        )?;
+        let deferred_peers =
+            Self::load_peers(db, contract, selector, MetaFieldId::DeferredIndex)?;
         let deferred_gas = db
             .storage(
                 contract,
@@ -114,14 +99,12 @@ impl Meta {
             )
             .map_err(BlockExecutionError::other)?;
 
-        let (sequential_only, conflict_peers, conflict_count, last_conflict_slot) =
-            meta.load_conflicts(db)?;
+        let (sequential_only, conflict_list) = meta.load_conflicts(db)?;
         Ok(Self {
-            conflict_peers,
-            conflict_count,
-            last_conflict_slot,
+            conflict_peers: conflict_list.iter().copied().collect(),
+            conflict_list,
             sequential_only,
-            deferred_peers,
+            deferred_peers: deferred_peers.into_iter().collect(),
             deferred_gas: Self::decode_u64(deferred_gas, "deferred gas")?,
             ..meta
         })
@@ -154,11 +137,12 @@ impl Meta {
                 continue;
             }
 
-            let count_slot = MetaFieldId::ConflictCount.slot(contract, selector, 0);
+            let codec = MetaFieldId::ConflictIndex.codec(contract, selector);
+            let length_slot = codec.key(0)?;
             // Start fresh when building a new update from the same loaded meta_lookup.
             if !updates
                 .get(&contract)
-                .is_some_and(|account| account.storage.contains_key(&count_slot))
+                .is_some_and(|account| account.storage.contains_key(&length_slot))
             {
                 meta.pending_peers.clear();
             }
@@ -178,50 +162,29 @@ impl Meta {
             }
             let account = updates.get_mut(&contract).unwrap();
             meta.pending_peers.insert(offset, peer);
-            let mut position = meta.conflict_count + offset as u64;
-            let mut new_peers = &meta.pending_peers[offset..];
+            let peers = meta
+                .conflict_list
+                .iter()
+                .chain(&meta.pending_peers)
+                .copied()
+                .collect::<Vec<_>>();
 
-            // Repack the affected suffix in peer ID order, reusing staged slots.
-            while !new_peers.is_empty() {
-                let index = (position / 4)
-                    .try_into()
-                    .map_err(|_| BlockExecutionError::msg("conflict slot index exceeds u32"))?;
-                let slot = MetaFieldId::ConflictIndex.slot(contract, selector, index);
-                let (original, present) = match account.storage.get(&slot) {
-                    Some(slot) => (slot.original_value(), slot.present_value()),
-                    None => {
-                        let original = if position % 4 != 0 {
-                            meta.last_conflict_slot
-                        } else {
-                            db.storage(contract, slot)
-                                .map_err(BlockExecutionError::other)?
-                        };
-                        (original, original)
-                    }
-                };
-                let start = (position % 4) as usize;
-                let (peers, remaining) = new_peers.split_at(new_peers.len().min(4 - start));
-                let mut slot_peers = MetaCodec::decode_peer_slot(present);
-                slot_peers[start..start + peers.len()].copy_from_slice(peers);
-                position += peers.len() as u64;
-                new_peers = remaining;
-                account.storage.insert(
-                    slot,
-                    EvmStorageSlot::new_changed(
-                        original,
-                        MetaCodec::encode_peer_slot(slot_peers),
-                        Default::default(),
-                    ),
-                );
-            }
-            account.storage.insert(
-                count_slot,
-                EvmStorageSlot::new_changed(
-                    MetaCodec::encode_u64(meta.conflict_count),
-                    MetaCodec::encode_u64(position),
-                    Default::default(),
-                ),
-            );
+            // Rewrite the length and the chunks from the new peer onward; earlier chunks are unchanged.
+            codec.encode_at::<_, _, u64, BlockExecutionError>(
+                &peers,
+                meta.conflict_list.len() + offset,
+                |slot, value| {
+                    let original = match account.storage.get(&slot) {
+                        Some(slot) => slot.original_value(),
+                        None => db.storage(contract, slot).map_err(BlockExecutionError::other)?,
+                    };
+                    account.storage.insert(
+                        slot,
+                        EvmStorageSlot::new_changed(original, value, Default::default()),
+                    );
+                    Ok(())
+                },
+            )?;
         }
         Ok(())
     }
@@ -231,32 +194,15 @@ impl Meta {
             .ok_or_else(|| BlockExecutionError::msg(format!("{field} exceeds u64")))
     }
 
+    /// Loads a peer list stored through `field`'s slot codec, in storage order.
     fn load_peers<DB: Database>(
         db: &mut DB,
         contract: Address,
         selector: [u8; 4],
-        count: u64,
         field: MetaFieldId,
-    ) -> Result<(BTreeSet<u64>, U256), BlockExecutionError> {
-        let slot_count = count.div_ceil(4);
-        if slot_count > u64::from(u32::MAX) + 1 {
-            return Err(BlockExecutionError::msg(
-                "meta_lookup slot index exceeds u32",
-            ));
-        }
-        let mut peers = BTreeSet::new();
-        let mut last_slot = U256::ZERO;
-        for index in 0..slot_count {
-            last_slot = db
-                .storage(contract, field.slot(contract, selector, index as u32))
-                .map_err(BlockExecutionError::other)?;
-            for peer in MetaCodec::decode_peer_slot(last_slot)
-                .into_iter()
-                .take((count - index * 4).min(4) as usize)
-            {
-                peers.insert(peer);
-            }
-        }
-        Ok((peers, last_slot))
+    ) -> Result<Vec<u64>, BlockExecutionError> {
+        field
+            .codec(contract, selector)
+            .decode(|slot| db.storage(contract, slot).map_err(BlockExecutionError::other))
     }
 }

@@ -165,7 +165,8 @@ impl<'a> Tracked<CrdtValue<'a>, CrdtValue<'a>> {
         Ok(())
     }
 
-    pub fn add_delta(&mut self, delta: CrdtDelta) -> Result<(), CrdtError> {
+    /// Records a delta and merges it into the current value; returns whether the pending delta changed.
+    pub fn add_delta(&mut self, delta: CrdtDelta) -> Result<bool, CrdtError> {
         if !self.is_live() {
             return Err(CrdtError::CannotAddDeltaToMissingValue);
         }

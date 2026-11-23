@@ -519,7 +519,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
         );
         assert!(pairs(&outcomes).is_empty());
         let selector = job(1, contract).meta.id.selector;
-        let count = crate::planner::meta::MetaFieldId::ConflictCount.slot(contract, selector, 0);
+        let count = crate::planner::meta::MetaFieldId::ConflictIndex.slot(contract, selector, 0);
         assert!(!committed[&contract].storage.contains_key(&count));
         assert_eq!(planner.db.storage(contract, count).unwrap(), U256::ZERO);
         assert_eq!(
@@ -776,7 +776,10 @@ fn sequence_keeps_api_transitions_for_rejected_suffixes() {
         crate::execution::Property::Value as u8,
         handle,
     );
-    let slots = ScalarAdapter::new(key);
+    let slots = ScalarAdapter::new(crate::execution::ScalarKeyCodec::derive_key(
+        crate::namespace::Namespace::U256,
+        key,
+    ));
     let mut account = Account::from(AccountInfo::default().with_nonce(7));
     account.storage.insert(
         slots.max,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    common::codec::CodecError,
     crdt::{
         Scalar,
         state::{CrdtDelta, CrdtValue, DeltaOp, Status, Tracked, status::reduce_to_statuses},
@@ -36,6 +37,25 @@ fn pairs<K>(verdicts: &[CommitVerdict<K>]) -> BTreeSet<(ID, ID)> {
         .collect()
 }
 
+/// Stores `peers` in `account` through a meta field's slot codec.
+fn store_peers(
+    account: &mut Account,
+    field: Property,
+    host: Address,
+    selector: [u8; 4],
+    peers: Vec<u64>,
+) {
+    field
+        .codec(host, selector)
+        .encode(&peers, |slot, value| {
+            account
+                .storage
+                .insert(slot, EvmStorageSlot::new(value, Default::default()));
+            Ok::<_, CodecError>(())
+        })
+        .unwrap();
+}
+
 fn callee(contract: Address, selector: u32) -> u64 {
     let mut bytes = [0; 8];
     bytes[..4].copy_from_slice(&contract[..4]);
@@ -48,35 +68,8 @@ fn meta_loads_all_stored_fields_for_a_function() {
     let host = Address::repeat_byte(0x11);
     let selector = 10u32.to_be_bytes();
     let mut account = Account::default();
-    account.storage.insert(
-        Property::ConflictCount.slot(host, selector, 0),
-        EvmStorageSlot::new(MetaCodec::encode_u64(5), Default::default()),
-    );
-    account.storage.insert(
-        Property::ConflictIndex.slot(host, selector, 0),
-        EvmStorageSlot::new(
-            MetaCodec::encode_peer_slot([1, 2, 3, 4]),
-            Default::default(),
-        ),
-    );
-    account.storage.insert(
-        Property::ConflictIndex.slot(host, selector, 1),
-        EvmStorageSlot::new(
-            MetaCodec::encode_peer_slot([5, 0, 0, 0]),
-            Default::default(),
-        ),
-    );
-    account.storage.insert(
-        Property::DeferredCount.slot(host, selector, 0),
-        EvmStorageSlot::new(MetaCodec::encode_u64(2), Default::default()),
-    );
-    account.storage.insert(
-        Property::DeferredIndex.slot(host, selector, 0),
-        EvmStorageSlot::new(
-            MetaCodec::encode_peer_slot([6, 7, 0, 0]),
-            Default::default(),
-        ),
-    );
+    store_peers(&mut account, Property::ConflictIndex, host, selector, vec![1, 2, 3, 4, 5]);
+    store_peers(&mut account, Property::DeferredIndex, host, selector, vec![6, 7]);
     account.storage.insert(
         Property::DeferredGas.slot(host, selector, 0),
         EvmStorageSlot::new(MetaCodec::encode_u64(123), Default::default()),
@@ -265,12 +258,13 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
                 .conflict_peers,
             BTreeSet::from([callee(a, 10)])
         );
+        // The list length is in bytes: one 8-byte peer.
         assert_eq!(
             planner
                 .db
-                .storage(a, Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0))
+                .storage(a, Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 0))
                 .unwrap(),
-            U256::from(1)
+            U256::from(8)
         );
     }
 
@@ -304,9 +298,9 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
             .conflict_peers
             .is_empty()
     );
-    let count = &result[&a].storage[&Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0)];
-    assert_eq!(count.original_value(), U256::from(1));
-    assert_eq!(count.present_value(), U256::from(2));
+    let count = &result[&a].storage[&Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 0)];
+    assert_eq!(count.original_value(), U256::from(8));
+    assert_eq!(count.present_value(), U256::from(16));
     drop(planner);
 
     let mut committer = EvmStateCommitter::with_target(db.into_inner());
@@ -424,13 +418,13 @@ fn resolve_returns_metadata_with_a_read_only_database() {
         );
         let account = &result[&contract];
         assert!(account.is_touched());
-        let count = &account.storage[&Property::ConflictCount.slot(contract, selector, 0)];
+        let count = &account.storage[&Property::ConflictIndex.slot(contract, selector, 0)];
         assert_eq!(count.original_value(), U256::ZERO);
-        assert_eq!(count.present_value(), U256::from(1));
-        let entry = &account.storage[&Property::ConflictIndex.slot(contract, selector, 0)];
+        assert_eq!(count.present_value(), U256::from(8));
+        let entry = &account.storage[&Property::ConflictIndex.slot(contract, selector, 1)];
         assert_eq!(entry.original_value(), U256::ZERO);
         let mut bytes = [0; 32];
-        bytes[..8].copy_from_slice(&peer.to_le_bytes());
+        bytes[..8].copy_from_slice(&peer.to_be_bytes());
         assert_eq!(entry.present_value(), U256::from_be_bytes(bytes));
     }
 }
@@ -461,7 +455,7 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
             .collect::<Vec<_>>(),
         vec![1, 3]
     );
-    let deferred = Property::DeferredCount.slot(a, 11u32.to_be_bytes(), 0);
+    let deferred = Property::DeferredIndex.slot(a, 11u32.to_be_bytes(), 0);
     let mut accepted = Account::default().with_touched_mark();
     accepted.info.nonce = 9;
     accepted.info.balance = U256::from(42);
@@ -490,9 +484,9 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
     assert_eq!(db.storage(a, U256::from(7)).unwrap(), U256::ZERO);
     for (host, selector) in [(a, 10u32.to_be_bytes()), (b, 20u32.to_be_bytes())] {
         assert_eq!(
-            db.storage(host, Property::ConflictCount.slot(host, selector, 0))
+            db.storage(host, Property::ConflictIndex.slot(host, selector, 0))
                 .unwrap(),
-            U256::from(1)
+            U256::from(8)
         );
     }
     assert_eq!(
@@ -548,24 +542,24 @@ fn metadata_combines_generation_diagnostics_and_preserves_deleted_accounts() {
     assert!(current.inner()[&c].is_selfdestructed());
     assert_eq!(
         current
-            .storage(a, Property::ConflictCount.slot(a, 10u32.to_be_bytes(), 0))
+            .storage(a, Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 0))
             .unwrap(),
-        U256::from(2)
+        U256::from(16)
     );
     assert_eq!(
         current
-            .storage(b, Property::ConflictCount.slot(b, 20u32.to_be_bytes(), 0))
+            .storage(b, Property::ConflictIndex.slot(b, 20u32.to_be_bytes(), 0))
             .unwrap(),
-        U256::from(1)
+        U256::from(8)
     );
     let packed = current
-        .storage(a, Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 0))
+        .storage(a, Property::ConflictIndex.slot(a, 10u32.to_be_bytes(), 1))
         .unwrap()
         .to_be_bytes::<32>();
     let peers = packed
         .chunks_exact(8)
         .take(2)
-        .map(|value| u64::from_le_bytes(value.try_into().unwrap()))
+        .map(|value| u64::from_be_bytes(value.try_into().unwrap()))
         .collect::<BTreeSet<_>>();
     assert_eq!(peers, BTreeSet::from([callee(b, 20), callee(c, 30)]));
 }
@@ -663,8 +657,11 @@ fn contract_metadata_keys_encode_field_selector_index_and_host() {
         &entry.to_be_bytes::<32>()[..7]
     );
     assert_eq!(Property::Reserved as u8, 0);
-    assert_eq!(Property::DeferredCount as u8, 3);
     assert_eq!(Property::DeferredIndex as u8, 4);
+    assert_eq!(
+        Property::ConflictIndex.codec(host, function_selector).key(42),
+        Ok(entry)
+    );
     let deferred = Property::DeferredIndex.slot(host, function_selector, 42);
     assert_eq!(
         MetaCodec::decode(deferred).unwrap(),
@@ -728,22 +725,23 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
         .build_conflict_meta_updates(&conflicts, &EvmState::default())
         .unwrap();
     let selector = 10u32.to_be_bytes();
-    let count = &result[&a].storage[&Property::ConflictCount.slot(a, selector, 0)];
-    assert_eq!(count.original_value(), U256::from(3));
-    assert_eq!(count.present_value(), U256::from(6));
-    let first = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 0)];
+    // Lengths are in bytes: 3 peers before, 6 after.
+    let count = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 0)];
+    assert_eq!(count.original_value(), U256::from(24));
+    assert_eq!(count.present_value(), U256::from(48));
+    let first = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 1)];
     let mut expected = [0; 32];
     for (index, selector) in (20..23).enumerate() {
-        expected[index * 8..index * 8 + 8].copy_from_slice(&callee(b, selector).to_le_bytes());
+        expected[index * 8..index * 8 + 8].copy_from_slice(&callee(b, selector).to_be_bytes());
     }
     assert_eq!(first.original_value(), U256::from_be_bytes(expected));
-    expected[24..].copy_from_slice(&callee(b, 23).to_le_bytes());
+    expected[24..].copy_from_slice(&callee(b, 23).to_be_bytes());
     assert_eq!(first.present_value(), U256::from_be_bytes(expected));
-    let second = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 1)];
+    let second = &result[&a].storage[&Property::ConflictIndex.slot(a, selector, 2)];
     assert_eq!(second.original_value(), U256::ZERO);
     let mut expected = [0; 32];
-    expected[..8].copy_from_slice(&callee(b, 24).to_le_bytes());
-    expected[8..16].copy_from_slice(&callee(b, 25).to_le_bytes());
+    expected[..8].copy_from_slice(&callee(b, 24).to_be_bytes());
+    expected[8..16].copy_from_slice(&callee(b, 25).to_be_bytes());
     assert_eq!(second.present_value(), U256::from_be_bytes(expected));
 
     let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());

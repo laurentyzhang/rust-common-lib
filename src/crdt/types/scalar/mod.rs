@@ -140,11 +140,11 @@ impl<T: Type> Crdt<T, DeltaOp<T::Magnitude>> for Scalar<T> {
         self.delta.as_ref()
     }
 
-    fn add_delta(
-        &mut self,
-        delta: &DeltaOp<T::Magnitude>,
-    ) -> Result<&DeltaOp<T::Magnitude>, Self::Error> {
-        self.update_delta(delta.clone())
+    /// Validates and merges `delta` into the pending delta; returns whether the pending delta changed.
+    fn add_delta(&mut self, delta: &DeltaOp<T::Magnitude>) -> Result<bool, Self::Error> {
+        let previous = self.delta.clone();
+        self.update_delta(delta.clone())?;
+        Ok(self.delta != previous)
     }
 
     fn apply_delta(&mut self) -> &Self {

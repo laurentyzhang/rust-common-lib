@@ -20,7 +20,7 @@ pub use hooks::{
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
 pub use slot::{
-    Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, SetAdapter, SetKeyCodec, SetProperty,
+    Codec, Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, SetAdapter, SetKeyCodec, SetProperty,
 };
 pub use tracking::{Recorder, RecorderOutput, recorder};
 pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig, ReceiptStatus};

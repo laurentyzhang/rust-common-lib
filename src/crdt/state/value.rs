@@ -1,5 +1,6 @@
 use super::CrdtError;
 use crate::crdt::Crdt;
+use crate::crdt::types::collections::SetDelta;
 use crate::crdt::{Scalar, Set};
 
 /// The original and current states of a tracked value.
@@ -24,7 +25,8 @@ impl<T0: Clone, T1: Clone> ValueSnapshots<T0, T1> {
 pub enum CrdtDelta {
     I256(DeltaOp<alloy_primitives::U256>),
     U256(DeltaOp<alloy_primitives::U256>),
-    U64Set(Vec<DeltaOp<u64>>),
+    U64Set(SetDelta<u64>),
+    U256Set(SetDelta<alloy_primitives::U256>),
     None,
 }
 
@@ -39,6 +41,7 @@ pub enum DeltaOp<T> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CrdtValue<'a> {
     U64Set(std::borrow::Cow<'a, Set<u64>>),
+    U256Set(std::borrow::Cow<'a, Set<alloy_primitives::U256>>),
     I256(std::borrow::Cow<'a, Scalar<alloy_primitives::I256>>),
     U256(std::borrow::Cow<'a, Scalar<alloy_primitives::U256>>),
     None,
@@ -54,6 +57,7 @@ impl<'a> CrdtValue<'a> {
     pub fn into_owned(self) -> CrdtValue<'static> {
         match self {
             Self::U64Set(value) => CrdtValue::U64Set(std::borrow::Cow::Owned(value.into_owned())),
+            Self::U256Set(value) => CrdtValue::U256Set(std::borrow::Cow::Owned(value.into_owned())),
             Self::I256(value) => CrdtValue::I256(std::borrow::Cow::Owned(value.into_owned())),
             Self::U256(value) => CrdtValue::U256(std::borrow::Cow::Owned(value.into_owned())),
             Self::None => CrdtValue::None,
@@ -63,6 +67,7 @@ impl<'a> CrdtValue<'a> {
     pub fn from_borrowed(value: &'a CrdtValue<'_>) -> Self {
         match value {
             Self::U64Set(value) => Self::U64Set(std::borrow::Cow::Borrowed(value.as_ref())),
+            Self::U256Set(value) => Self::U256Set(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::I256(value) => Self::I256(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::U256(value) => Self::U256(std::borrow::Cow::Borrowed(value.as_ref())),
             Self::None => Self::None,
@@ -100,6 +105,7 @@ impl<'a> CrdtValue<'a> {
     pub fn is_commutative(&self) -> bool {
         match self {
             Self::U64Set(value) => value.is_commutative(),
+            Self::U256Set(value) => value.is_commutative(),
             Self::I256(_) | Self::U256(_) => true,
             Self::None => false,
         }
@@ -109,7 +115,10 @@ impl<'a> CrdtValue<'a> {
         match self {
             Self::U64Set(value) => value
                 .delta()
-                .map_or(CrdtDelta::None, |delta| CrdtDelta::U64Set(delta.to_vec())),
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U64Set(delta.clone())),
+            Self::U256Set(value) => value
+                .delta()
+                .map_or(CrdtDelta::None, |delta| CrdtDelta::U256Set(delta.clone())),
             Self::I256(value) => value
                 .delta()
                 .map_or(CrdtDelta::None, |delta| CrdtDelta::I256(*delta)),
@@ -123,25 +132,21 @@ impl<'a> CrdtValue<'a> {
     pub fn has_delta(&self) -> bool {
         match self {
             Self::U64Set(value) => value.delta().is_some(),
+            Self::U256Set(value) => value.delta().is_some(),
             Self::I256(value) => value.delta().is_some(),
             Self::U256(value) => value.delta().is_some(),
             Self::None => false,
         }
     }
 
-    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<(), CrdtError> {
+    /// Merges a matching delta into the value; returns whether the pending delta changed.
+    pub fn add_delta(&mut self, delta: &CrdtDelta) -> Result<bool, CrdtError> {
         match (self, delta) {
-            (_, CrdtDelta::None) => Ok(()),
-            (Self::U64Set(value), CrdtDelta::U64Set(delta)) => {
-                value.to_mut().add_delta(delta).map(|_| ())
-            }
-
-            (Self::I256(value), CrdtDelta::I256(delta)) => {
-                value.to_mut().add_delta(delta).map(|_| ())
-            }
-            (Self::U256(value), CrdtDelta::U256(delta)) => {
-                value.to_mut().add_delta(delta).map(|_| ())
-            }
+            (_, CrdtDelta::None) => Ok(false),
+            (Self::U64Set(value), CrdtDelta::U64Set(delta)) => value.to_mut().add_delta(delta),
+            (Self::U256Set(value), CrdtDelta::U256Set(delta)) => value.to_mut().add_delta(delta),
+            (Self::I256(value), CrdtDelta::I256(delta)) => value.to_mut().add_delta(delta),
+            (Self::U256(value), CrdtDelta::U256(delta)) => value.to_mut().add_delta(delta),
 
             _ => Err(CrdtError::TypeMismatch),
         }
@@ -150,6 +155,10 @@ impl<'a> CrdtValue<'a> {
     pub fn apply_delta(&mut self) -> &CrdtValue<'a> {
         match self {
             Self::U64Set(value) => {
+                value.to_mut().apply_delta();
+                self
+            }
+            Self::U256Set(value) => {
                 value.to_mut().apply_delta();
                 self
             }

@@ -4,6 +4,7 @@ use crate::crdt::{self, Crdt, state::DeltaOp};
 use crate::execution::{
     CallHookError, Recorder, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key,
 };
+use crate::namespace::Namespace;
 use alloy_evm::EvmInternals;
 use alloy_primitives::{I256, U256};
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -55,9 +56,8 @@ impl CallHandler for I256Handler {
         internals: &mut EvmInternals<'_>,
         api_reads: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
-        if !self.is_valid_slot(key) {
-            return Ok(CallOutput::reverted(0, Vec::new()));
-        }
+        // Map the caller's key to its internal scalar key.
+        let key = ScalarKeyCodec::derive_key(Namespace::I256, key);
         match II256::II256Calls::abi_decode_validate(input.input) {
             Ok(II256::II256Calls::init(call)) => {
                 if input.scheme == CallScheme::StaticCall || call.min > call.max {

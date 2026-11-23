@@ -1,34 +1,46 @@
+use alloy_evm::block::BlockExecutionError;
 use alloy_primitives::{Address, U256};
 
+use crate::common::codec::CodecError;
+use crate::execution::Codec;
 use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 
-/// Contract metadata fields. Counts measure peers, with four peers per index slot.
+/// Contract metadata fields. Peer lists are stored through `MetaFieldId::codec`.
 #[derive(Clone, Copy, strum_macros::FromRepr)]
 #[repr(u8)]
 pub enum MetaFieldId {
     /// Reserved for future metadata.
     Reserved = 0,
-    /// Conflict peer count; U256::MAX means sequential-only.
+    /// U256::MAX marks the function sequential-only.
     ConflictCount = 1,
-    /// Up to four packed conflict peers at this slot index.
+    /// Conflict peer list: index 0 holds its byte length, indexes 1.. its chunks.
     ConflictIndex = 2,
-    /// Deferred peer count for the host function.
-    DeferredCount = 3,
-    /// Up to four packed deferred peers at this slot index.
+    /// Deferred peer list: index 0 holds its byte length, indexes 1.. its chunks.
     DeferredIndex = 4,
     /// Required prepaid gas for this function; zero disables deferral.
     DeferredGas = 5,
 }
 
 // Key: [ARCO:4][version:1][namespace:1][reserved:1][selector:4][property:1][slot index:4][host prefix:16].
-// Example
-// slot index 0 → peers 0–3
-// slot index 1 → peers 4–7
-// slot index 2 → peers 8–11
 impl MetaFieldId {
-    /// Selects this metadata field for the host function and packed slot index.
+    /// Selects this metadata field for the host function and slot index.
     pub fn slot(self, contract: Address, selector: [u8; 4], index: u32) -> U256 {
         MetaCodec::encode(self as u8, contract, selector, index)
+    }
+
+    /// Returns the slot codec for this field's list; its keys match `slot` for the same index.
+    pub fn codec(self, contract: Address, selector: [u8; 4]) -> Codec {
+        let mut prefix = NamespaceCodec::encode(Namespace::Meta).to_vec();
+        prefix.extend_from_slice(&selector);
+        prefix.push(self as u8);
+        Codec::new(prefix, contract[..16].to_vec())
+    }
+}
+
+impl From<CodecError> for BlockExecutionError {
+    /// Reports a meta list codec failure as a block execution error.
+    fn from(error: CodecError) -> Self {
+        BlockExecutionError::other(error)
     }
 }
 
@@ -73,22 +85,5 @@ impl MetaCodec {
 
     pub(crate) fn decode_u64(value: U256) -> Option<u64> {
         value.try_into().ok()
-    }
-
-    /// Encodes four little-endian `u64` peer IDs into one storage value.
-    pub(crate) fn encode_peer_slot(peers: [u64; 4]) -> U256 {
-        let mut bytes = [0; 32];
-        for (chunk, peer) in bytes.chunks_exact_mut(8).zip(peers) {
-            chunk.copy_from_slice(&peer.to_le_bytes());
-        }
-        U256::from_be_bytes(bytes)
-    }
-
-    /// Decodes four little-endian `u64` peer IDs from one storage value.
-    pub(crate) fn decode_peer_slot(value: U256) -> [u64; 4] {
-        let bytes = value.to_be_bytes::<32>();
-        std::array::from_fn(|index| {
-            u64::from_le_bytes(bytes[index * 8..index * 8 + 8].try_into().unwrap())
-        })
     }
 }

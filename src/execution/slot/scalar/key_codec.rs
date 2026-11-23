@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, U256, keccak256};
 
 use super::{Property, ScalarKind};
 use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
@@ -12,6 +12,15 @@ impl ScalarKeyCodec {
         let mut instance = [0; 24];
         instance[4..].copy_from_slice(handle.as_slice());
         Self::encode_key(namespace, property, instance)
+    }
+
+    /// Derives the internal scalar key for a caller-supplied key, keeping the format private.
+    /// The instance ID is the first 24 bytes of the key's keccak hash, under `namespace`.
+    pub fn derive_key(namespace: Namespace, user_key: U256) -> U256 {
+        let instance = keccak256(user_key.to_be_bytes::<32>())[..24]
+            .try_into()
+            .unwrap();
+        Self::encode_key(namespace, Property::Value as u8, instance)
     }
 
     pub fn encode_key(namespace: Namespace, property: u8, instance: [u8; 24]) -> U256 {

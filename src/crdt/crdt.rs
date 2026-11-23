@@ -3,7 +3,8 @@ pub trait Crdt<T: ?Sized + PartialEq, D: ?Sized + PartialEq>: Clone + PartialEq 
 
     fn value(&self) -> Option<&T>;
     fn delta(&self) -> Option<&D>;
-    fn add_delta(&mut self, delta: &D) -> Result<&D, Self::Error>;
+    /// Merges `delta` into the pending delta; returns whether the pending delta changed.
+    fn add_delta(&mut self, delta: &D) -> Result<bool, Self::Error>;
     fn apply_delta(&mut self) -> &Self;
     fn limits(&self) -> Option<(&T, &T)>;
 

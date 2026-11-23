@@ -14,6 +14,13 @@ pub enum CallHookError {
     Handler(String),
 }
 
+impl From<crate::common::codec::CodecError> for CallHookError {
+    /// Reports a slot codec failure as a fatal handler error.
+    fn from(error: crate::common::codec::CodecError) -> Self {
+        Self::Handler(error.to_string())
+    }
+}
+
 impl fmt::Display for CallHookError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

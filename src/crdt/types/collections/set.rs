@@ -1,8 +1,9 @@
 //! Commutative set CRDT.
 
+use super::SetDelta;
 use crate::collections::delta_set::DeltaSet;
 use crate::crdt::crdt::Crdt;
-use crate::crdt::state::{CrdtError, DeltaOp};
+use crate::crdt::state::CrdtError;
 use std::cmp::Ordering;
 use std::hash::Hash;
 
@@ -12,7 +13,7 @@ where
     T: Eq + Hash,
 {
     pub(crate) entries: DeltaSet<T>,
-    pub(crate) delta: Option<Vec<DeltaOp<T>>>,
+    pub(crate) delta: Option<SetDelta<T>>,
 }
 
 impl<T> Default for Set<T>
@@ -35,9 +36,56 @@ where
         Ok(Self::default())
     }
 
+    /// Returns the live element count, including pending additions and removals.
+    pub fn len(&self) -> u64 {
+        let committed = self.entries.len();
+        match &self.delta {
+            Some(delta) => committed + delta.added.len() - delta.removed.len() as u64,
+            None => committed,
+        }
+    }
+
+    /// Returns the index span of the committed-plus-pending view, including holes.
+    pub fn span(&self) -> u64 {
+        self.entries.span() + self.delta.as_ref().map_or(0, |delta| delta.added.span())
+    }
+
+    /// Reads index `i` in the committed-plus-pending view: committed entries first, then pending
+    /// additions. Removed entries and cancelled additions read as holes (`None`).
+    pub fn get_at(&self, i: u64) -> Option<&T>
+    where
+        T: Ord,
+    {
+        let span = self.entries.span();
+        match &self.delta {
+            Some(delta) if i < span => self
+                .entries
+                .get_at(i)
+                .filter(|element| !delta.removed.contains(*element)),
+            Some(delta) => delta.added.get_at(i - span),
+            None => self.entries.get_at(i),
+        }
+    }
+
+    /// Returns whether `element` is a member of the committed-plus-pending view.
+    pub fn contains(&self, element: &T) -> bool
+    where
+        T: Ord,
+    {
+        match &self.delta {
+            Some(delta) => {
+                delta.added.get(element).is_some()
+                    || (self.entries.get(element).is_some() && !delta.removed.contains(element))
+            }
+            None => self.entries.get(element).is_some(),
+        }
+    }
+
+    /// Orders sets by their pending change count; sets without a delta come last.
     pub fn compare(&self, other: &Self) -> Ordering {
         match (&self.delta, &other.delta) {
-            (Some(left), Some(right)) => left.len().cmp(&right.len()),
+            (Some(left), Some(right)) => (left.added.len() + left.removed.len() as u64)
+                .cmp(&(right.added.len() + right.removed.len() as u64)),
             (None, None) => Ordering::Equal,
             (None, Some(_)) => Ordering::Greater,
             (Some(_), None) => Ordering::Less,
@@ -45,9 +93,9 @@ where
     }
 }
 
-impl<T> Crdt<DeltaSet<T>, [DeltaOp<T>]> for Set<T>
+impl<T> Crdt<DeltaSet<T>, SetDelta<T>> for Set<T>
 where
-    T: Clone + Eq + Hash,
+    T: Clone + std::fmt::Debug + Eq + Hash + Ord,
 {
     type Error = CrdtError;
 
@@ -55,40 +103,44 @@ where
         Some(&self.entries)
     }
 
-    fn delta(&self) -> Option<&[DeltaOp<T>]> {
-        self.delta.as_deref()
+    fn delta(&self) -> Option<&SetDelta<T>> {
+        self.delta.as_ref()
     }
 
-    fn add_delta(&mut self, delta: &[DeltaOp<T>]) -> Result<&[DeltaOp<T>], CrdtError> {
+    /// Merges additions (keeping first-insertion order) and removals into the pending delta,
+    /// returning whether anything changed. A call that changes nothing does not create a delta.
+    /// Adding a committed entry only cancels its pending removal; only new entries are staged for addition.
+    /// Removing a pending addition leaves a hole; only committed entries are staged for removal.
+    fn add_delta(&mut self, delta: &SetDelta<T>) -> Result<bool, CrdtError> {
+        let had_delta = self.delta.is_some();
         let pending = self.delta.get_or_insert_default();
-
-        for operation in delta {
-            if !pending.contains(operation) {
-                pending.push(operation.clone());
-            }
+        let mut changed = false;
+        for element in delta.added.iter_live() {
+            changed |= if self.entries.get(element).is_some() {
+                pending.removed.remove(element)
+            } else {
+                pending.added.insert(element.clone()).is_some()
+            };
         }
-
-        Ok(pending.as_slice())
+        for element in &delta.removed {
+            changed |= pending.added.remove(element).is_some()
+                || (self.entries.get(element).is_some() && pending.removed.insert(element.clone()));
+        }
+        if !changed && !had_delta {
+            self.delta = None;
+        }
+        Ok(changed)
     }
 
+    /// Applies removals, then additions, to the entries and clears the delta.
     fn apply_delta(&mut self) -> &Self {
         if let Some(delta) = self.delta.take() {
-            let added = delta
-                .iter()
-                .filter_map(|operation| match operation {
-                    DeltaOp::Add(value) => Some(value.clone()),
-                    DeltaOp::Sub(_) => None,
-                })
-                .collect::<Vec<_>>();
-            let removed = delta
-                .iter()
-                .filter_map(|operation| match operation {
-                    DeltaOp::Sub(value) => Some(value.clone()),
-                    DeltaOp::Add(_) => None,
-                })
-                .collect::<Vec<_>>();
+            let removed = delta.removed.into_iter().collect::<Vec<_>>();
+            let added = delta.added.iter_live().cloned().collect::<Vec<_>>();
             self.entries.apply_delta(&removed, &added);
-            self.entries.commit();
+            // Drop holes at commit so committed indexes are always contiguous.
+            self.entries.compact();
+            self.entries.snapshot();
         }
         self
     }

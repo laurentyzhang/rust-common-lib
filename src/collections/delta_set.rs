@@ -23,6 +23,7 @@ pub struct DeltaSet<K> {
     keys: im::HashMap<K, u64>,
     committed: im::HashMap<K, u64>,
     sequence: u64,
+    first_hole: Option<u64>, // Lowest index left empty by a removal.
 }
 
 impl<K: std::fmt::Debug + std::hash::Hash + Eq> std::fmt::Debug for DeltaSet<K> {
@@ -32,6 +33,7 @@ impl<K: std::fmt::Debug + std::hash::Hash + Eq> std::fmt::Debug for DeltaSet<K> 
             .field("keys", &self.keys)
             .field("committed", &self.committed)
             .field("sequence", &self.sequence)
+            .field("first_hole", &self.first_hole)
             .finish()
     }
 }
@@ -61,6 +63,7 @@ where
             keys: HashMap::new(),
             committed: HashMap::new(),
             sequence: 0,
+            first_hole: None,
         }
     }
 
@@ -86,6 +89,7 @@ where
             committed: keys.clone(),
             keys,
             sequence,
+            first_hole: None,
         })
     }
 
@@ -95,6 +99,7 @@ where
         K: Clone,
     {
         let sequence = u64::try_from(elements.len()).ok()?;
+        let first_hole = elements.iter().position(Option::is_none).map(|i| i as u64);
         let mut keys = HashMap::new();
 
         for (index, key) in elements.iter().enumerate() {
@@ -111,6 +116,7 @@ where
             committed: keys.clone(),
             keys,
             sequence,
+            first_hole,
         })
     }
 
@@ -164,6 +170,7 @@ where
     {
         let ind = usize::try_from(*self.keys.get(key)?).ok()?;
         self.elements[ind].take();
+        self.mark_hole(ind as u64);
         self.keys.remove_with_key(key)
     }
 
@@ -178,12 +185,23 @@ where
         }
 
         let key = self.elements[element_index].take()?;
+        self.mark_hole(ind);
         self.keys.remove_with_key(&key)
     }
 
-    /// Returns the number of allocated slots, including slots left by removals.
-    pub fn len(&self) -> u64 {
+    /// Lowers the first-hole marker to `ind` if it is earlier.
+    fn mark_hole(&mut self, ind: u64) {
+        self.first_hole = Some(self.first_hole.map_or(ind, |hole| hole.min(ind)));
+    }
+
+    /// Returns the index span `0..span()`, including holes left by removals.
+    pub fn span(&self) -> u64 {
         u64::try_from(self.elements.len()).expect("element count exceeds u64::MAX")
+    }
+
+    /// Returns the number of live elements, excluding holes left by removals.
+    pub fn len(&self) -> u64 {
+        u64::try_from(self.keys.len()).expect("key count exceeds u64::MAX")
     }
 
     /// Returns `(added, removed)` keys relative to the committed snapshot.
@@ -224,8 +242,8 @@ where
         }
     }
 
-    /// Marks the current live keys as committed.
-    pub(crate) fn commit(&mut self)
+    /// Records the current live keys as the committed snapshot.
+    pub(crate) fn snapshot(&mut self)
     where
         K: Clone,
     {
@@ -239,7 +257,7 @@ where
     where
         K: Clone + std::fmt::Debug,
     {
-        let Some(first_index) = self.elements.iter().position(Option::is_none) else {
+        let Some(first_index) = self.first_hole.take() else {
             return 0;
         };
 
@@ -257,8 +275,7 @@ where
                     .unwrap_or_else(|| panic!("missing key: {:?}", key));
             });
         self.sequence = u64::try_from(self.elements.len()).expect("element count exceeds u64::MAX");
-        u64::try_from(self.elements.len() - first_index)
-            .expect("compacted element count exceeds u64::MAX")
+        self.sequence - first_index
     }
 }
 

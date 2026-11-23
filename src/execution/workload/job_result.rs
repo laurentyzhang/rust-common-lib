@@ -173,7 +173,7 @@ impl<R, H> JobResult<R, H> {
 
         // Get unique accessed records from the evmState and
         // combine them with the inspector_record operations.
-        for (key, mut journal_records) in self.delta_records(id.global) {
+        for (key, mut journal_records) in self.collect_state_changes(id.global) {
             // At this point, the unique accessed map only
             // have keys from the inspector_record operations.
             if let Some(inspector_record) = unique_accessed.get(&key) {
@@ -197,17 +197,17 @@ impl<R, H> JobResult<R, H> {
     }
 
     /// Exports REVM account and storage accesses without consuming the result.
-    fn delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+    fn collect_state_changes(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         // Collect account delta records for the job.
-        let mut records = self.account_delta_records(id);
+        let mut records = self.collect_account_changes(id);
 
         // Collect storage delta records for the job.
-        records.extend(self.slot_delta_records(id));
+        records.extend(self.collect_storage_changes(id));
         records
     }
 
     /// Collects account records from the result state.
-    fn account_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+    fn collect_account_changes(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let Ok(result_and_state) = &self.raw_result_and_state else {
             return Vec::new();
         };
@@ -284,7 +284,7 @@ impl<R, H> JobResult<R, H> {
 
     /// Collects storage records from the result state for access and bound checks.
     /// It need to handle both original and current storage slot values.
-    fn slot_delta_records(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
+    fn collect_storage_changes(&self, id: u64) -> Vec<(Key, Tracked<Status, Status>)> {
         let Ok(result_and_state) = &self.raw_result_and_state else {
             return Vec::new();
         };

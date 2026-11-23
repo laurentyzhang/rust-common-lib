@@ -271,3 +271,86 @@ mod tracked_creation {
         assert!(!deleted.is_newly_created());
     }
 }
+
+mod u256_set {
+    use crate::crdt::state::{CrdtDelta, CrdtError, value::CrdtValue};
+    use crate::crdt::types::collections::SetDelta;
+    use crate::crdt::{Crdt, Set};
+    use alloy_primitives::U256;
+    use std::borrow::Cow;
+
+    /// Builds a U256-set delta from additions in order and removals.
+    fn delta(added: &[u64], removed: &[u64]) -> CrdtDelta {
+        let mut delta = SetDelta::default();
+        for element in added {
+            delta.added.insert(U256::from(*element));
+        }
+        delta.removed = removed.iter().map(|e| U256::from(*e)).collect();
+        CrdtDelta::U256Set(delta)
+    }
+
+    /// Returns the set inside a U256-set value.
+    fn set<'a>(value: &'a CrdtValue<'_>) -> &'a Set<U256> {
+        match value {
+            CrdtValue::U256Set(set) => set,
+            _ => panic!("not a U256 set"),
+        }
+    }
+
+    #[test]
+    fn add_delta_reports_changes_and_apply_delta_commits() {
+        let mut value = CrdtValue::U256Set(Cow::Owned(Set::default()));
+
+        assert_eq!(value.add_delta(&delta(&[1, 2], &[])), Ok(true));
+        assert_eq!(value.add_delta(&delta(&[1], &[])), Ok(false));
+        assert!(value.has_delta());
+        assert_eq!(value.delta(), delta(&[1, 2], &[]));
+
+        value.apply_delta();
+        assert!(!value.has_delta());
+        assert_eq!(value.delta(), CrdtDelta::None);
+        assert_eq!(set(&value).get_at(0), Some(&U256::from(1)));
+        assert_eq!(set(&value).get_at(1), Some(&U256::from(2)));
+
+        // Removing a committed element compacts the set at commit.
+        assert_eq!(value.add_delta(&delta(&[], &[1])), Ok(true));
+        value.apply_delta();
+        assert!(!set(&value).contains(&U256::from(1)));
+        assert_eq!(set(&value).get_at(0), Some(&U256::from(2)));
+        assert_eq!(set(&value).value().unwrap().span(), 1);
+    }
+
+    #[test]
+    fn none_delta_is_a_noop() {
+        let mut value = CrdtValue::U256Set(Cow::Owned(Set::default()));
+
+        assert_eq!(value.add_delta(&CrdtDelta::None), Ok(false));
+        assert!(!value.has_delta());
+    }
+
+    #[test]
+    fn rejects_other_delta_types() {
+        let mut u256_set = CrdtValue::U256Set(Cow::Owned(Set::default()));
+        let mut u64_set: CrdtValue<'static> = Set::<u64>::default().into();
+
+        assert_eq!(
+            u256_set.add_delta(&CrdtDelta::U64Set(SetDelta::default())),
+            Err(CrdtError::TypeMismatch)
+        );
+        assert_eq!(
+            u64_set.add_delta(&delta(&[1], &[])),
+            Err(CrdtError::TypeMismatch)
+        );
+    }
+
+    #[test]
+    fn borrowed_and_owned_copies_are_equal() {
+        let mut value = CrdtValue::U256Set(Cow::Owned(Set::default()));
+        value.add_delta(&delta(&[1], &[])).unwrap();
+
+        let borrowed = CrdtValue::from_borrowed(&value);
+        assert!(matches!(&borrowed, CrdtValue::U256Set(Cow::Borrowed(_))));
+        assert_eq!(borrowed, value);
+        assert_eq!(borrowed.into_owned(), value);
+    }
+}

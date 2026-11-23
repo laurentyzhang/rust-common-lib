@@ -57,7 +57,7 @@ fn meta_encodes_selector_before_property() {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
     ]);
     for selector in [[0; 4], [0x12, 0x34, 0x56, 0x78], [0xff; 4]] {
-        for property in 0..=5 {
+        for property in [0, 1, 2, 4, 5] {
             for index in [0, 42, u32::MAX] {
                 let slot = MetaCodec::encode(property, host, selector, index);
                 let bytes = slot.to_be_bytes::<32>();

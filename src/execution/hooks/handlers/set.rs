@@ -1,23 +1,24 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
-use crate::execution::evm::storage::ApiStore;
 use crate::execution::{CallHookError, Recorder, SetAdapter, SetKeyCodec, SetProperty, key::Key};
 use alloy_evm::EvmInternals;
-use alloy_primitives::{Bytes, U256};
+use alloy_primitives::U256;
 use alloy_sol_types::{SolInterface, SolValue, sol};
 
 sol! {
     interface ISet {
-        function insert(bytes element) external returns (bool);
-        function remove(bytes element) external returns (bool);
-        function contains(bytes element) external view returns (bool);
-        function length() external view returns (uint256);
-        function at(uint256 index) external view returns (bool, bytes);
+        function insert(bytes32 set, uint256 element) external returns (bool);
+        function remove(bytes32 set, uint256 element) external returns (bool);
+        function contains(bytes32 set, uint256 element) external view returns (bool);
+        function length(bytes32 set) external view returns (uint256);
+        function first(bytes32 set) external view returns (bool, uint256);
+        function next(bytes32 set, uint256 element) external view returns (bool, uint256);
     }
 }
 
-/// Ordered byte-element set owned by the caller; pending inserts and removes get indexes
-/// on the next index read (`length`/`at`).
+/// Ordered U256-element sets owned by the caller, one per set key. Committed elements form a
+/// circular linked list; pending changes live in per-transaction logs and flags until commit.
+/// Traversal with first/next sees committed elements, then pending additions, skipping removed ones.
 pub struct SetHandler;
 
 impl CallHandler for SetHandler {
@@ -26,77 +27,60 @@ impl CallHandler for SetHandler {
         SetKeyCodec::decode(slot).is_some()
     }
 
-    /// Executes ISet calls on the caller's set; the router's key argument is unused.
+    /// Executes ISet calls on the caller's set named by the router's key (the first argument).
     fn call(
         &self,
-        _key: U256,
+        key: U256,
         input: &CallInput<'_>,
         internals: &mut EvmInternals<'_>,
         recorder: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         let owner = input.caller;
-        let length = SetKeyCodec::encode(SetProperty::Length, [0; 24]);
+        // Map the caller's set key to its private set ID.
+        let set = SetKeyCodec::derive_key(key);
+        let length = SetKeyCodec::length(set);
         match ISet::ISetCalls::abi_decode_validate(input.input) {
             Ok(ISet::ISetCalls::insert(_) | ISet::ISetCalls::remove(_))
                 if input.scheme == CallScheme::StaticCall =>
             {
                 Ok(CallOutput::reverted(0, Vec::new()))
             }
-            // Store the element and flag it pending; Length is a delta for readers.
+            // Stage the change in the pending delta; returns whether it changed. Length is a delta for readers.
             Ok(ISet::ISetCalls::insert(call)) => {
-                let id = SetKeyCodec::element_id(&call.element);
-                SetAdapter::write_element(internals, owner, id, &call.element)?;
-                SetAdapter::flag(internals, owner, id, SetProperty::Added)?;
+                let changed = SetAdapter::insert(internals, owner, set, call.element)?;
                 recorder.log_delta(Key::Storage(owner, length));
-                Ok(CallOutput::returned(0, true.abi_encode()))
+                Ok(CallOutput::returned(0, changed.abi_encode()))
             }
             Ok(ISet::ISetCalls::remove(call)) => {
-                let id = SetKeyCodec::element_id(&call.element);
-                SetAdapter::flag(internals, owner, id, SetProperty::Removed)?;
+                let changed = SetAdapter::remove(internals, owner, set, call.element)?;
                 recorder.log_delta(Key::Storage(owner, length));
-                Ok(CallOutput::returned(0, true.abi_encode()))
+                Ok(CallOutput::returned(0, changed.abi_encode()))
             }
             // Committed membership plus pending flags; a pending add wins over a pending remove.
             Ok(ISet::ISetCalls::contains(call)) => {
-                let id = SetKeyCodec::element_id(&call.element);
-                let [member, added, removed] = [
-                    SetProperty::Member,
-                    SetProperty::Added,
-                    SetProperty::Removed,
-                ]
-                .map(|property| SetKeyCodec::encode(property, id));
-                for key in [member, added, removed] {
+                for property in [SetProperty::Next, SetProperty::Added, SetProperty::Removed] {
+                    let key = SetKeyCodec::element(property, set, call.element, 0);
                     recorder.log_read(Key::Storage(owner, key));
                 }
-                let found = !internals.read(owner, added)?.is_zero()
-                    || (!internals.read(owner, member)?.is_zero()
-                        && internals.read(owner, removed)?.is_zero());
+                let found = SetAdapter::contains(internals, owner, set, call.element)?;
                 Ok(CallOutput::returned(0, found.abi_encode()))
             }
-            // Index reads fold pending elements first, so they get indexes now.
+            // Live element count; pending logs are this transaction's own data, so only Length is recorded.
             Ok(ISet::ISetCalls::length(_)) => {
                 recorder.log_read(Key::Storage(owner, length));
-                SetAdapter::fold_pending(internals, owner)
-                    .map_err(|error| CallHookError::Handler(error.to_string()))?;
-                Ok(CallOutput::returned(
-                    0,
-                    internals.read(owner, length)?.abi_encode(),
-                ))
+                let count = SetAdapter::length(internals, owner, set)?;
+                Ok(CallOutput::returned(0, count.abi_encode()))
             }
-            // Element at an index; found is false for a removed or out-of-range slot.
-            Ok(ISet::ISetCalls::at(call)) => {
+            // Cursor traversal over live elements: committed list order, then pending additions.
+            Ok(ISet::ISetCalls::first(_)) => {
                 recorder.log_read(Key::Storage(owner, length));
-                SetAdapter::fold_pending(internals, owner)
-                    .map_err(|error| CallHookError::Handler(error.to_string()))?;
-                let mut output = (false, Bytes::new());
-                if call.index < internals.read(owner, length)? {
-                    let word = internals.read(owner, SetKeyCodec::index(call.index.to()))?;
-                    if !word.is_zero() {
-                        let id = word.to_be_bytes::<32>()[8..].try_into().unwrap();
-                        output = (true, SetAdapter::read_element(internals, owner, id)?.into());
-                    }
-                }
-                Ok(CallOutput::returned(0, output.abi_encode_params()))
+                let first = SetAdapter::first(internals, owner, set)?;
+                Ok(CallOutput::returned(0, (first.is_some(), first.unwrap_or_default()).abi_encode_params()))
+            }
+            Ok(ISet::ISetCalls::next(call)) => {
+                recorder.log_read(Key::Storage(owner, length));
+                let next = SetAdapter::next(internals, owner, set, call.element)?;
+                Ok(CallOutput::returned(0, (next.is_some(), next.unwrap_or_default()).abi_encode_params()))
             }
             Err(_) => Ok(CallOutput::reverted(0, Vec::new())),
         }
