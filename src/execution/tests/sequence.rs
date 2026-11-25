@@ -194,40 +194,6 @@ fn rebuild_returns_first_encountered_error() {
 }
 
 #[test]
-fn sequence_merges_api_transitions_after_a_rejected_job() {
-    use crate::execution::{scalar, StateDb};
-    use crate::namespace::Namespace;
-    use alloy_evm::revm::state::EvmStorageSlot;
-
-    for property in [scalar::Property::PosDelta, scalar::Property::NegDelta] {
-        let key = scalar::KeyCodec::encode(Namespace::U256, property as u8, Address::ZERO);
-        let state = |original: u64, present: u64| {
-            let mut account = Account::default().with_touched_mark();
-            account.storage.insert(
-                key,
-                EvmStorageSlot::new_changed(
-                    U256::from(original),
-                    U256::from(present),
-                    Default::default(),
-                ),
-            );
-            EvmState::from_iter([(Address::ZERO, account)])
-        };
-        let fallback = StateDb::new(state(10, 10));
-        let mut rejected = raw_job(ID::new(0, 0), state(10, 12));
-        rejected.verdict.decision = CommitDecision::Rejected;
-        let mut accepted = raw_job(ID::new(0, 1), state(12, 15));
-        accepted.verdict.decision = CommitDecision::Accepted;
-        let committed =
-            JobSequence::<()>::rebuild_sequence_state(&mut [rejected, accepted], &fallback)
-                .unwrap();
-        let slot = &committed[&Address::ZERO].storage[&key];
-        assert_eq!(slot.original_value(), U256::from(10));
-        assert_eq!(slot.present_value(), U256::from(13));
-    }
-}
-
-#[test]
 fn sequence_rebases_nonce_deltas_for_missing_senders() {
     use crate::execution::StateDb;
     use alloy_evm::revm::state::AccountInfo;

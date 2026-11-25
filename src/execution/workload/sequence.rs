@@ -223,6 +223,12 @@ impl<Tx> JobSequence<Tx> {
         let overlay =
             StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas);
         let mut db = StateDb::with_fallback(overlay, Some(fallback));
+        // Jobs after a non-accepted one are rejected, so the accepted jobs form a prefix and their
+        // cumulative Set logs hold only accepted changes.
+        debug_assert!(raws.windows(2).all(|pair| {
+            pair[0].verdict.decision == CommitDecision::Accepted
+                || pair[1].verdict.decision != CommitDecision::Accepted
+        }));
         for result in raws.iter_mut() {
             let executed = result
                 .result_and_state()
