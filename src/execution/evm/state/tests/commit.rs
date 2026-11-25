@@ -1,6 +1,6 @@
 use super::*;
 use crate::execution::evm::state::StateOverlay;
-use crate::execution::{Property, ScalarKeyCodec};
+use crate::execution::scalar;
 use crate::namespace::Namespace;
 use alloy_evm::{
     block::StateDB,
@@ -28,8 +28,8 @@ fn commit_applies_scalar_materialization_and_keeps_other_slots() {
     fn requires_state_db<T: StateDB>() {}
     requires_state_db::<StateDb>();
 
-    let value = ScalarKeyCodec::encode(Namespace::U256, Property::Value as u8, Address::ZERO);
-    let delta = ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO);
+    let value = scalar::KeyCodec::encode(Namespace::U256, scalar::Property::Value as u8, Address::ZERO);
+    let delta = scalar::KeyCodec::encode(Namespace::U256, scalar::Property::PosDelta as u8, Address::ZERO);
     let ordinary = U256::from(7);
     let mut db = StateDb::new(changes(&[
         (value, U256::ZERO, U256::from(42)),
@@ -131,8 +131,8 @@ fn commit_updates_code_and_keeps_it_when_not_loaded_again() {
 
 #[test]
 fn commit_rebases_slots_on_fallback_and_keeps_their_originals() {
-    let delta = ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO);
-    let value = ScalarKeyCodec::encode(Namespace::U256, Property::Value as u8, Address::ZERO);
+    let delta = scalar::KeyCodec::encode(Namespace::U256, scalar::Property::PosDelta as u8, Address::ZERO);
+    let value = scalar::KeyCodec::encode(Namespace::U256, scalar::Property::Value as u8, Address::ZERO);
     let ordinary = U256::from(7);
     let fallback = StateDb::new(changes(&[
         (delta, U256::ZERO, U256::from(10)),
@@ -148,7 +148,8 @@ fn commit_rebases_slots_on_fallback_and_keeps_their_originals() {
         (value, U256::from(42), U256::from(47)),
         (ordinary, U256::from(55), U256::from(60)),
     ]));
-    for (key, original, present) in [(delta, 10, 13), (value, 42, 47), (ordinary, 50, 60)] {
+    // Scalar deltas are merged by scalar::Merger, so a plain commit takes the incoming value.
+    for (key, original, present) in [(delta, 10, 15), (value, 42, 47), (ordinary, 50, 60)] {
         let slot = &db.inner()[&Address::ZERO].storage[&key];
         assert_eq!(slot.original_value(), U256::from(original));
         assert_eq!(slot.present_value(), U256::from(present));
@@ -156,7 +157,7 @@ fn commit_rebases_slots_on_fallback_and_keeps_their_originals() {
     db.commit(changes(&[(delta, U256::from(15), U256::from(17))]));
     let slot = &db.inner()[&Address::ZERO].storage[&delta];
     assert_eq!(slot.original_value(), U256::from(10));
-    assert_eq!(slot.present_value(), U256::from(15));
+    assert_eq!(slot.present_value(), U256::from(17));
     assert_eq!(
         fallback.inner()[&Address::ZERO].storage[&delta].present_value(),
         U256::from(10)

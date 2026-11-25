@@ -667,7 +667,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
     });
     // Deposits remain in one ordered sequence even when the callee is deferrable.
     account.storage.insert(
-        MetaFieldId::DeferredGas.slot(contract, selector, 0),
+        MetaFieldId::DeferredGasLimit.slot(contract, selector, 0),
         EvmStorageSlot::new(U256::from(1), Default::default()),
     );
     let state = EvmState::from_iter([(contract, account)]);
@@ -735,7 +735,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
 fn sequence_keeps_api_transitions_for_rejected_suffixes() {
     use crate::crdt::state::{Status, Tracked};
     use crate::execution::{
-        ApiAddress, IU256, ScalarAdapter, U256Handler, output::ExecutionOutput,
+        ApiAddress, IU256, scalar, U256Handler, output::ExecutionOutput,
     };
     use crate::planner::resolver::Checker;
     use alloy_evm::revm::state::EvmStorageSlot;
@@ -771,12 +771,12 @@ fn sequence_keeps_api_transitions_for_rejected_suffixes() {
         .unwrap();
     let caller = Address::from(job(1, api).sender);
     let handle = Address::with_last_byte(7);
-    let key = crate::execution::ScalarKeyCodec::encode(
+    let key = crate::execution::scalar::KeyCodec::encode(
         crate::namespace::Namespace::U256,
-        crate::execution::Property::Value as u8,
+        crate::execution::scalar::Property::Value as u8,
         handle,
     );
-    let slots = ScalarAdapter::new(crate::execution::ScalarKeyCodec::derive_key(
+    let slots = scalar::Indexer::new(crate::execution::scalar::KeyCodec::derive_key(
         crate::namespace::Namespace::U256,
         key,
     ));

@@ -9,8 +9,7 @@ use op_revm::OpHaltReason as EvmHaltReason;
 use super::ID;
 use crate::crdt::Scalar;
 use crate::execution::{
-    Property, RecorderOutput, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key,
-    output::ExecutionOutput,
+    scalar, RecorderOutput, key::Key, output::ExecutionOutput,
 };
 
 use crate::{
@@ -300,10 +299,10 @@ impl<R, H> JobResult<R, H> {
                     Tag::Stripped
                 };
 
-                let current = if let Some((kind, property, _)) = ScalarKeyCodec::decode(*slot_key)
-                    && property == Property::Value as u8
+                let current = if let Some((kind, property, _)) = scalar::KeyCodec::decode(*slot_key)
+                    && property == scalar::Property::Value as u8
                 {
-                    let slots = ScalarAdapter::new(*slot_key);
+                    let slots = scalar::Indexer::new(*slot_key);
                     let keys = [
                         slots.min,
                         slots.max,
@@ -331,7 +330,7 @@ impl<R, H> JobResult<R, H> {
                         std::cmp::Ordering::Less => Some(DeltaOp::Sub(negative - positive)),
                         std::cmp::Ordering::Equal => None,
                     };
-                    Status::Value(if kind == ScalarKind::I256 {
+                    Status::Value(if kind == scalar::Kind::I256 {
                         Scalar {
                             min: I256::from_raw(min),
                             max: I256::from_raw(max),

@@ -295,8 +295,9 @@ fn rejected_funding_does_not_leak_into_later_fee_balances() {
     );
 }
 
+/// The planner guarantees the declared gas total stays below the block gas limit.
 #[test]
-fn block_drops_transactions_exceeding_total_gas_limit() {
+fn planner_rejects_blocks_exceeding_total_gas_limit() {
     use crate::execution::ArcologyParaBlockExecutor;
     use crate::planner::Planner;
 
@@ -351,7 +352,11 @@ fn block_drops_transactions_exceeding_total_gas_limit() {
                 .sum::<u64>()
         });
 
-        assert_eq!(result.unwrap(), 21_000);
+        // One transaction fits; two declare 42,000 gas, over the 30,000 limit.
+        match count {
+            1 => assert_eq!(result.unwrap(), 21_000),
+            _ => assert!(result.is_err()),
+        }
     }
 }
 

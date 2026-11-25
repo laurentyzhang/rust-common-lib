@@ -1,18 +1,18 @@
-//! Stores Sets in account-owned slots: the committed list plus a transaction's pending changes.
+//! Execution format of Sets: contract reads and writes over the index plus the pending changes.
 
 use alloy_primitives::{Address, U256};
 
-use super::{SetKeyCodec, SetProperty};
+use super::{KeyCodec, Property};
 use crate::collections::delta_set::DeltaSet;
 use crate::common::codec::CodecError;
 use crate::crdt::types::collections::SetDelta;
 use crate::execution::evm::storage::ApiStore;
 
-/// Reads and writes caller-owned Sets stored in an account's slots.
-pub struct SetAdapter;
+/// Reads and writes caller-owned Sets in the execution format; `Converter` converts them in and out.
+pub struct Indexer;
 
-impl SetAdapter {
-    /// Stages inserting `element`: a committed element only has its pending removal cancelled;
+impl Indexer {
+    /// Stages inserting `element`: an indexed element only has its pending removal cancelled;
     /// otherwise it is appended to the pending additions. Returns whether the pending delta changed.
     pub fn insert<S: ApiStore>(
         storage: &mut S,
@@ -23,18 +23,18 @@ impl SetAdapter {
     where
         S::Error: From<CodecError>,
     {
-        let [added, removed] = [SetProperty::Added, SetProperty::Removed]
-            .map(|property| SetKeyCodec::element(property, set, element, 0));
+        let [added, removed] = [Property::Added, Property::Removed]
+            .map(|property| KeyCodec::element(property, set, element));
         if !storage.read(owner, added)?.is_zero() {
             return Ok(false);
         }
 
-        if Self::successor(storage, owner, set, element)?.is_some() {
+        if Self::committed(storage, owner, set, element)? {
             if storage.read(owner, removed)?.is_zero() {
                 return Ok(false);
             }
             // Cancel the pending removal, rewriting the removals log from its position.
-            let log = SetKeyCodec::delta(SetProperty::PendingRemovals, set);
+            let log = KeyCodec::delta(Property::PendingRemovals, set);
             let mut removals: Vec<U256> = log.decode(|key| storage.read(owner, key))?;
             let at = removals
                 .binary_search(&element)
@@ -44,7 +44,7 @@ impl SetAdapter {
             storage.write(owner, removed, U256::ZERO)?;
         } else {
             // Append to the additions log; the flag records the position for later cancellation.
-            let log = SetKeyCodec::delta(SetProperty::DeltaAdded, set);
+            let log = KeyCodec::delta(Property::DeltaAdded, set);
             let len = storage.read(owner, log.key(0)?)?;
             let at = u64::try_from(len / U256::from(32)).map_err(|_| CodecError::Invalid)?;
             storage.write(owner, log.key(at + 1)?, element)?;
@@ -54,7 +54,7 @@ impl SetAdapter {
         Ok(true)
     }
 
-    /// Stages removing `element`: a pending addition is cancelled; a committed element joins the
+    /// Stages removing `element`: a pending addition is cancelled; an indexed element joins the
     /// pending removals. Returns whether the pending delta changed.
     pub fn remove<S: ApiStore>(
         storage: &mut S,
@@ -65,16 +65,16 @@ impl SetAdapter {
     where
         S::Error: From<CodecError>,
     {
-        let [added, removed] = [SetProperty::Added, SetProperty::Removed]
-            .map(|property| SetKeyCodec::element(property, set, element, 0));
+        let [added, removed] = [Property::Added, Property::Removed]
+            .map(|property| KeyCodec::element(property, set, element));
         let position = storage.read(owner, added)?;
         if !position.is_zero() {
             // Cancel the pending addition: zero its word and mark its position as cancelled.
             let at = u64::try_from(position - U256::from(1)).map_err(|_| CodecError::Invalid)?;
-            let log = SetKeyCodec::delta(SetProperty::DeltaAdded, set);
+            let log = KeyCodec::delta(Property::DeltaAdded, set);
             storage.write(owner, log.key(at + 1)?, U256::ZERO)?;
 
-            let cancelled = SetKeyCodec::delta(SetProperty::DeltaCancelled, set);
+            let cancelled = KeyCodec::delta(Property::DeltaCancelled, set);
             let word = cancelled.key(at / 256 + 1)?;
             let bits = storage.read(owner, word)? | (U256::from(1) << (at % 256) as usize);
             storage.write(owner, word, bits)?;
@@ -83,11 +83,11 @@ impl SetAdapter {
                 .max(U256::from((at / 256 + 1) * 32));
             storage.write(owner, cancelled.key(0)?, len)?;
             storage.write(owner, added, U256::ZERO)?;
-        } else if Self::successor(storage, owner, set, element)?.is_some()
+        } else if Self::committed(storage, owner, set, element)?
             && storage.read(owner, removed)?.is_zero()
         {
             // Insert into the ascending removals log, rewriting it from the insertion point.
-            let log = SetKeyCodec::delta(SetProperty::PendingRemovals, set);
+            let log = KeyCodec::delta(Property::PendingRemovals, set);
             let mut removals: Vec<U256> = log.decode(|key| storage.read(owner, key))?;
             let at = match removals.binary_search(&element) {
                 Ok(_) => return Err(CodecError::Invalid.into()),
@@ -102,32 +102,70 @@ impl SetAdapter {
         Ok(true)
     }
 
-    /// Returns whether `element` is live: pending added, or committed without a pending removal.
+    /// Returns whether `element` is live: pending added, or indexed without a pending removal.
     pub fn contains<S: ApiStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
         element: U256,
     ) -> Result<bool, S::Error> {
-        let [added, removed] = [SetProperty::Added, SetProperty::Removed]
-            .map(|property| SetKeyCodec::element(property, set, element, 0));
+        let [added, removed] = [Property::Added, Property::Removed]
+            .map(|property| KeyCodec::element(property, set, element));
         Ok(!storage.read(owner, added)?.is_zero()
-            || (Self::successor(storage, owner, set, element)?.is_some()
+            || (Self::committed(storage, owner, set, element)?
                 && storage.read(owner, removed)?.is_zero()))
     }
 
-    /// Returns the live element count: committed, minus pending removals, plus uncancelled additions.
+    /// Returns whether `element` is in the index, i.e. in the set before the pending changes.
+    fn committed<S: ApiStore>(
+        storage: &mut S,
+        owner: Address,
+        set: [u8; 6],
+        element: U256,
+    ) -> Result<bool, S::Error> {
+        let position = KeyCodec::element(Property::Position, set, element);
+        Ok(!storage.read(owner, position)?.is_zero())
+    }
+
+    /// Returns the first index element at or after position `from` that is neither a hole
+    /// nor pending removal.
+    fn indexed_from<S: ApiStore>(
+        storage: &mut S,
+        owner: Address,
+        set: [u8; 6],
+        from: u64,
+    ) -> Result<Option<U256>, S::Error>
+    where
+        S::Error: From<CodecError>,
+    {
+        let [index, holes] =
+            [Property::Index, Property::Holes].map(|property| KeyCodec::delta(property, set));
+        let count = u64::try_from(storage.read(owner, index.key(0)?)? / U256::from(32))
+            .map_err(|_| CodecError::Invalid)?;
+        for at in from..count {
+            if storage.read(owner, holes.key(at / 256 + 1)?)?.bit((at % 256) as usize) {
+                continue;
+            }
+            let element = storage.read(owner, index.key(at + 1)?)?;
+            if storage.read(owner, KeyCodec::element(Property::Removed, set, element))?.is_zero() {
+                return Ok(Some(element));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Returns the live element count: Length, minus pending removals, plus uncancelled additions.
     pub fn length<S: ApiStore>(storage: &mut S, owner: Address, set: [u8; 6]) -> Result<U256, S::Error>
     where
         S::Error: From<CodecError>,
     {
-        let committed = storage.read(owner, SetKeyCodec::length(set))?;
+        let committed = storage.read(owner, KeyCodec::length(set))?;
         let [added, removals, cancelled] = [
-            SetProperty::DeltaAdded,
-            SetProperty::PendingRemovals,
-            SetProperty::DeltaCancelled,
+            Property::DeltaAdded,
+            Property::PendingRemovals,
+            Property::DeltaCancelled,
         ]
-        .map(|property| SetKeyCodec::delta(property, set));
+        .map(|property| KeyCodec::delta(property, set));
         let added = storage.read(owner, added.key(0)?)? / U256::from(32);
         let removals = storage.read(owner, removals.key(0)?)? / U256::from(32);
 
@@ -141,7 +179,7 @@ impl SetAdapter {
         Ok(committed + added - removals - U256::from(holes))
     }
 
-    /// Returns the first live element: committed elements in list order, then pending additions.
+    /// Returns the first live element: index order, then pending additions.
     pub fn first<S: ApiStore>(
         storage: &mut S,
         owner: Address,
@@ -150,20 +188,14 @@ impl SetAdapter {
     where
         S::Error: From<CodecError>,
     {
-        if storage.read(owner, SetKeyCodec::length(set))?.is_zero() {
-            return Self::pending_from(storage, owner, set, 0);
+        match Self::indexed_from(storage, owner, set, 0)? {
+            Some(element) => Ok(Some(element)),
+            None => Self::pending_from(storage, owner, set, 0),
         }
-        // The list is circular: the element after Tail is the first.
-        let tail = storage.read(owner, SetKeyCodec::tail(set))?;
-        let first = Self::successor(storage, owner, set, tail)?.ok_or(CodecError::Invalid)?;
-        if storage.read(owner, SetKeyCodec::element(SetProperty::Removed, set, first, 0))?.is_zero() {
-            return Ok(Some(first));
-        }
-        Self::next(storage, owner, set, first)
     }
 
     /// Returns the live element after `element`, skipping pending removals and cancelled additions;
-    /// `None` at the end or if `element` is neither committed nor pending.
+    /// `None` at the end or if `element` is neither indexed nor pending.
     pub fn next<S: ApiStore>(
         storage: &mut S,
         owner: Address,
@@ -173,45 +205,22 @@ impl SetAdapter {
     where
         S::Error: From<CodecError>,
     {
-        let position = storage.read(owner, SetKeyCodec::element(SetProperty::Added, set, element, 0))?;
+        let position = storage.read(owner, KeyCodec::element(Property::Added, set, element))?;
         if !position.is_zero() {
             let at = u64::try_from(position).map_err(|_| CodecError::Invalid)?;
             return Self::pending_from(storage, owner, set, at);
         }
 
-        if Self::successor(storage, owner, set, element)?.is_none() {
+        // Continue after the element's index position, then into pending additions.
+        let position = storage.read(owner, KeyCodec::element(Property::Position, set, element))?;
+        if position.is_zero() {
             return Ok(None);
         }
-
-        // Walk the committed list until a live element or the tail, then continue into pending additions.
-        let tail = storage.read(owner, SetKeyCodec::tail(set))?;
-        let mut current = element;
-        loop {
-            if current == tail {
-                return Self::pending_from(storage, owner, set, 0);
-            }
-            let next = Self::successor(storage, owner, set, current)?.ok_or(CodecError::Invalid)?;
-            if storage.read(owner, SetKeyCodec::element(SetProperty::Removed, set, next, 0))?.is_zero() {
-                return Ok(Some(next));
-            }
-            current = next;
+        let from = u64::try_from(position).map_err(|_| CodecError::Invalid)?;
+        match Self::indexed_from(storage, owner, set, from)? {
+            Some(next) => Ok(Some(next)),
+            None => Self::pending_from(storage, owner, set, 0),
         }
-    }
-
-    /// Returns the committed element after `element`, or `None` if `element` isn't committed.
-    /// A successor of 0 is stored under flag 1, since a zero word reads as empty.
-    pub fn successor<S: ApiStore>(
-        storage: &mut S,
-        owner: Address,
-        set: [u8; 6],
-        element: U256,
-    ) -> Result<Option<U256>, S::Error> {
-        let next = storage.read(owner, SetKeyCodec::element(SetProperty::Next, set, element, 0))?;
-        if !next.is_zero() {
-            return Ok(Some(next));
-        }
-        let zero = storage.read(owner, SetKeyCodec::element(SetProperty::Next, set, element, 1))?;
-        Ok((!zero.is_zero()).then_some(U256::ZERO))
     }
 
     /// Returns the first uncancelled pending addition at or after position `from`.
@@ -224,13 +233,13 @@ impl SetAdapter {
     where
         S::Error: From<CodecError>,
     {
-        let log = SetKeyCodec::delta(SetProperty::DeltaAdded, set);
+        let log = KeyCodec::delta(Property::DeltaAdded, set);
         let count = u64::try_from(storage.read(owner, log.key(0)?)? / U256::from(32))
             .map_err(|_| CodecError::Invalid)?;
         for at in from..count {
             // A position is live while its element's flag still points to it.
             let element = storage.read(owner, log.key(at + 1)?)?;
-            let added = SetKeyCodec::element(SetProperty::Added, set, element, 0);
+            let added = KeyCodec::element(Property::Added, set, element);
             if storage.read(owner, added)? == U256::from(at + 1) {
                 return Ok(Some(element));
             }
@@ -238,7 +247,7 @@ impl SetAdapter {
         Ok(None)
     }
 
-    /// Reads the transaction's pending delta for `set` from its three logs; empty logs read as empty.
+    /// Reads the pending changes of `set` as a delta from its three logs; empty logs read as empty.
     pub fn delta<S: ApiStore>(
         storage: &mut S,
         owner: Address,
@@ -248,11 +257,11 @@ impl SetAdapter {
         S::Error: From<CodecError>,
     {
         let [added, cancelled, removals] = [
-            SetProperty::DeltaAdded,
-            SetProperty::DeltaCancelled,
-            SetProperty::PendingRemovals,
+            Property::DeltaAdded,
+            Property::DeltaCancelled,
+            Property::PendingRemovals,
         ]
-        .map(|property| SetKeyCodec::delta(property, set));
+        .map(|property| KeyCodec::delta(property, set));
         let added: Vec<U256> = added.decode(|key| storage.read(owner, key))?;
         let cancelled: Vec<U256> = cancelled.decode(|key| storage.read(owner, key))?;
         let removals: Vec<U256> = removals.decode(|key| storage.read(owner, key))?;

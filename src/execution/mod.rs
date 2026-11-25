@@ -19,8 +19,6 @@ pub use hooks::{
 #[doc(hidden)]
 pub use op::backend;
 pub use op::{ArcologyBlockExecutorFactory, ArcologyEvm, ArcologyEvmFactory, ArcologyTx};
-pub use slot::{
-    Codec, Property, ScalarAdapter, ScalarKeyCodec, ScalarKind, SetAdapter, SetKeyCodec, SetProperty,
-};
+pub use slot::{Codec, FormatConverter, DeltaMerger, scalar, set};
 pub use tracking::{Recorder, RecorderOutput, recorder};
 pub use workload::{Block, HaltReason, JobResult, ParaBlockConfig, ReceiptStatus};

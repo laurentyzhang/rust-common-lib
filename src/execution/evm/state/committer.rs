@@ -2,13 +2,15 @@ use std::collections::{BTreeMap, HashSet};
 
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, EvmState},
+    state::{Account, EvmState, EvmStorage},
 };
+use alloy_primitives::{Address, U256};
 use std::io::Error;
 
 use super::{StateDb, overlay::StateOverlay};
 use crate::crdt::state::CrdtError;
 use crate::execution::workload::ID;
+use crate::execution::{DeltaMerger, scalar, set};
 use crate::store::traits::{Committer, StoreError};
 
 /// Buffers transaction states and commits accepted changes.
@@ -55,15 +57,47 @@ impl EvmStateCommitter {
         self.state.into_inner()
     }
 
-    /// Merges the buffered states against the shared base.
+    /// Merges the buffered states against the shared base; CRDT slots go through their mergers.
     pub(crate) fn commit<DB: DatabaseRef>(self, fallback: &DB) -> Result<EvmState, Error> {
-        let mut overlay = StateOverlay::new(self.state.into_inner(), self.nonce_fee_handler);
+        let overlay = StateOverlay::new(self.state.into_inner(), self.nonce_fee_handler);
+        let mut db = StateDb::with_fallback(overlay, Some(fallback));
         for incoming in self.buffered.into_values() {
-            overlay
-                .apply(incoming, Some(fallback))
-                .map_err(|error| Error::other(format!("{error:?}")))?;
+            Self::merge(&mut db, incoming).map_err(Error::other)?;
         }
-        Ok(overlay.into_inner())
+        Ok(db.into_inner())
+    }
+
+    /// Applies one state to `db`: plain slots through the overlay, Set and scalar slots through
+    /// their mergers.
+    fn merge<DB: DatabaseRef>(db: &mut StateDb<DB>, mut incoming: EvmState) -> Result<(), StoreError> {
+        let sets = Self::split(&mut incoming, |key| set::KeyCodec::decode(key).is_some());
+        let scalars = Self::split(&mut incoming, |key| scalar::KeyCodec::decode(key).is_some());
+        db.overlay.apply(incoming, db.fallback.as_ref())?;
+        for (owner, slots) in sets {
+            set::Merger::merge(db, owner, &slots)?;
+        }
+        for (owner, slots) in scalars {
+            scalar::Merger::merge(db, owner, &slots)?;
+        }
+        Ok(())
+    }
+
+    /// Moves each account's slots selected by `belongs` out of `incoming`, for a CRDT merger.
+    pub(crate) fn split(incoming: &mut EvmState, belongs: impl Fn(U256) -> bool) -> Vec<(Address, EvmStorage)> {
+        incoming
+            .iter_mut()
+            .filter_map(|(&owner, account)| {
+                let mut slots = EvmStorage::default();
+                account.storage.retain(|&key, slot| {
+                    if !belongs(key) {
+                        return true;
+                    }
+                    slots.insert(key, slot.clone());
+                    false
+                });
+                (!slots.is_empty()).then_some((owner, slots))
+            })
+            .collect()
     }
 }
 
@@ -77,12 +111,14 @@ impl Committer<ID, EvmState> for EvmStateCommitter {
         self.buffered.retain(|id, _| accepted.contains(id));
     }
 
+    /// Merges the buffered states into the target; CRDT slots go through their mergers.
     fn flush(&mut self) -> Result<(), StoreError> {
-        let mut overlay = StateOverlay::new(self.state.inner().clone(), self.nonce_fee_handler);
+        let overlay = StateOverlay::new(self.state.inner().clone(), self.nonce_fee_handler);
+        let mut db = StateDb::with_fallback(overlay, self.state.fallback);
         for incoming in self.buffered.values() {
-            overlay.apply(incoming.clone(), self.state.fallback.as_ref())?;
+            Self::merge(&mut db, incoming.clone())?;
         }
-        self.state.overlay = overlay;
+        self.state.overlay = db.overlay;
         self.buffered.clear();
         Ok(())
     }

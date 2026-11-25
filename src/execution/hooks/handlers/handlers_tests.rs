@@ -6,8 +6,7 @@ use crate::crdt::{
 use crate::execution::evm::storage::ApiStore;
 use crate::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
-    EvmStateCommitter, ExitStatus, JobResult, Recorder, ScalarAdapter, ScalarKeyCodec, StateDb,
-    key::Key,
+    EvmStateCommitter, ExitStatus, JobResult, Recorder, StateDb, key::Key, scalar,
 };
 use crate::namespace::Namespace;
 use crate::namespace::codec::VERSION;
@@ -62,11 +61,11 @@ fn invoke(
 }
 
 fn scalar_key(handle: Address) -> B256 {
-    ScalarKeyCodec::encode(Namespace::U256, 2, handle).into()
+    scalar::KeyCodec::encode(Namespace::U256, 2, handle).into()
 }
 
-fn slots(handle: Address) -> ScalarAdapter {
-    ScalarAdapter::new(ScalarKeyCodec::derive_key(
+fn slots(handle: Address) -> scalar::Indexer {
+    scalar::Indexer::new(scalar::KeyCodec::derive_key(
         Namespace::U256,
         scalar_key(handle).into(),
     ))
@@ -104,7 +103,7 @@ fn invoke_delta(
     }
 }
 
-fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: ScalarAdapter) -> [U256; 5] {
+fn stored_values(journal: &mut Journal<EmptyDB>, owner: Address, keys: scalar::Indexer) -> [U256; 5] {
     [
         keys.min,
         keys.max,
@@ -132,10 +131,10 @@ fn scalar_handler_recognizes_slots_through_the_trait() {
             assert!(handler.is_valid_slot(slot));
         }
         for field in 5..=u8::MAX {
-            assert!(!handler.is_valid_slot(ScalarKeyCodec::encode(Namespace::U256, field, handle)));
+            assert!(!handler.is_valid_slot(scalar::KeyCodec::encode(Namespace::U256, field, handle)));
         }
         for api in ApiAddress::iter().filter(|api| *api != ApiAddress::U256) {
-            let mut bytes = ScalarKeyCodec::encode(Namespace::U256, 0, handle).to_be_bytes::<32>();
+            let mut bytes = scalar::KeyCodec::encode(Namespace::U256, 0, handle).to_be_bytes::<32>();
             bytes[5] = api as u8;
             assert!(!handler.is_valid_slot(U256::from_be_bytes(bytes)));
         }
@@ -170,13 +169,13 @@ fn any_user_key_maps_to_private_slots_per_namespace() {
         assert_eq!(B256::abi_decode_validate(&output.output).unwrap(), key);
 
         // The same user key maps to different slots in the U256 and I256 namespaces.
-        let unsigned = ScalarKeyCodec::derive_key(Namespace::U256, key.into());
-        let signed = ScalarKeyCodec::derive_key(Namespace::I256, key.into());
+        let unsigned = scalar::KeyCodec::derive_key(Namespace::U256, key.into());
+        let signed = scalar::KeyCodec::derive_key(Namespace::I256, key.into());
         assert_ne!(unsigned, signed);
         assert!(U256Handler.is_valid_slot(unsigned));
         assert!(I256Handler.is_valid_slot(signed));
         assert_eq!(
-            stored_values(&mut journal, owner, ScalarAdapter::new(unsigned)),
+            stored_values(&mut journal, owner, scalar::Indexer::new(unsigned)),
             [
                 U256::ZERO,
                 U256::from(100),
@@ -329,8 +328,8 @@ fn native_scalar_calls_record_each_field_access() {
 #[test]
 fn signed_scalar_calls_record_writes_and_deltas() {
     let owner = Address::repeat_byte(0x11);
-    let key = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO);
-    let slots = ScalarAdapter::new(ScalarKeyCodec::derive_key(Namespace::I256, key));
+    let key = scalar::KeyCodec::encode(Namespace::I256, 2, Address::ZERO);
+    let slots = scalar::Indexer::new(scalar::KeyCodec::derive_key(Namespace::I256, key));
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     let block = BlockEnv::default();
     let cfg: CfgEnv = CfgEnv::default();
@@ -601,7 +600,7 @@ fn scalar_store_and_load_round_trip() {
             value,
             delta: None,
         };
-        let keys = ScalarAdapter::new(ScalarKeyCodec::derive_key(
+        let keys = scalar::Indexer::new(scalar::KeyCodec::derive_key(
             Namespace::U256,
             scalar_key(handle).into(),
         ));
@@ -1627,8 +1626,8 @@ fn invoke_i256(
 #[test]
 fn signed_deltas_cross_zero_without_materializing() {
     let owner = Address::repeat_byte(0x11);
-    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
-    let slots = ScalarAdapter::new(ScalarKeyCodec::derive_key(Namespace::I256, key.into()));
+    let key: B256 = scalar::KeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = scalar::Indexer::new(scalar::KeyCodec::derive_key(Namespace::I256, key.into()));
     let mut journal = Journal::new(EmptyDB::default());
     assert_eq!(
         invoke_i256(
@@ -1688,8 +1687,8 @@ fn signed_deltas_cross_zero_without_materializing() {
 #[test]
 fn signed_arithmetic_supports_full_width_magnitudes_and_rejects_overflow() {
     let owner = Address::repeat_byte(0x11);
-    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
-    let slots = ScalarAdapter::new(ScalarKeyCodec::derive_key(Namespace::I256, key.into()));
+    let key: B256 = scalar::KeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = scalar::Indexer::new(scalar::KeyCodec::derive_key(Namespace::I256, key.into()));
     let mut journal = Journal::new(EmptyDB::default());
     let block = BlockEnv::default();
     let cfg: CfgEnv = CfgEnv::default();
@@ -1784,7 +1783,7 @@ fn signed_arithmetic_supports_full_width_magnitudes_and_rejects_overflow() {
 #[test]
 fn signed_calls_reject_wrong_keys_bounds_and_call_modes() {
     let owner = Address::repeat_byte(0x11);
-    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let key: B256 = scalar::KeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
     for scheme in [CallScheme::StaticCall, CallScheme::CallCodeOrDelegateCall] {
         let mut journal = Journal::new(EmptyDB::default());
         assert_eq!(
@@ -1818,7 +1817,7 @@ fn signed_calls_reject_wrong_keys_bounds_and_call_modes() {
         .status,
         ExitStatus::Revert
     );
-    let unsigned: B256 = ScalarKeyCodec::encode(Namespace::U256, 2, Address::ZERO).into();
+    let unsigned: B256 = scalar::KeyCodec::encode(Namespace::U256, 2, Address::ZERO).into();
     assert!(journal.evm_state().is_empty());
     assert!(!U256Handler.is_valid_slot(key.into()));
     assert!(!I256Handler.is_valid_slot(unsigned.into()));
@@ -1828,8 +1827,8 @@ fn signed_calls_reject_wrong_keys_bounds_and_call_modes() {
 #[test]
 fn signed_evm_output_keeps_signed_numeric_records_and_rolls_back() {
     let owner = Address::repeat_byte(0x11);
-    let key: B256 = ScalarKeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
-    let slots = ScalarAdapter::new(ScalarKeyCodec::derive_key(Namespace::I256, key.into()));
+    let key: B256 = scalar::KeyCodec::encode(Namespace::I256, 2, Address::ZERO).into();
+    let slots = scalar::Indexer::new(scalar::KeyCodec::derive_key(Namespace::I256, key.into()));
     let mut db = InMemoryDB::default();
     for (slot, value) in [
         (slots.min, I256::MIN.into_raw()),
@@ -1932,7 +1931,7 @@ fn factory() -> ArcologyEvmFactory {
 }
 
 fn deferral_slot(host: Address, selector: [u8; 4]) -> U256 {
-    Property::DeferredGas.slot(host, selector, 0)
+    Property::DeferredGasLimit.slot(host, selector, 0)
 }
 
 fn invoke_runtime(

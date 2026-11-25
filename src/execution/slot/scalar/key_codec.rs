@@ -1,12 +1,12 @@
 use alloy_primitives::{Address, U256, keccak256};
 
-use super::{Property, ScalarKind};
+use super::{Property, Kind};
 use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 
 /// Layout: [namespace prefix:7][property:1][instance key:24].
-pub struct ScalarKeyCodec;
+pub struct KeyCodec;
 
-impl ScalarKeyCodec {
+impl KeyCodec {
     /// Uses a zero-padded address as the instance key.
     pub fn encode(namespace: Namespace, property: u8, handle: Address) -> U256 {
         let mut instance = [0; 24];
@@ -38,9 +38,9 @@ impl ScalarKeyCodec {
     }
 
     /// Rejects other namespaces and undefined scalar properties.
-    pub fn decode(key: U256) -> Option<(ScalarKind, u8, [u8; 24])> {
+    pub fn decode(key: U256) -> Option<(Kind, u8, [u8; 24])> {
         let (namespace, payload) = NamespaceCodec::decode(key)?;
-        let kind = ScalarKind::try_from(namespace).ok()?;
+        let kind = Kind::try_from(namespace).ok()?;
         let (&property, instance) = payload.split_first()?;
         Property::from_repr(property)?;
         Some((kind, property, instance.try_into().ok()?))

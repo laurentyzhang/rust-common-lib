@@ -8,7 +8,7 @@ use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
     revm::{
-        DatabaseRef,
+        DatabaseCommit, DatabaseRef,
         state::{Account, EvmState},
     },
 };
@@ -17,7 +17,7 @@ use alloy_primitives::Address;
 use std::io::Error;
 
 use crate::execution::evm::state::StateOverlay;
-use crate::execution::{ArcologyEvmFactory, Recorder, StateDb};
+use crate::execution::{ArcologyEvmFactory, DeltaMerger, EvmStateCommitter, Recorder, StateDb, scalar};
 
 /// Transactions in one sequence execute in order; sequences in a generation may run in parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,18 +220,27 @@ impl<Tx> JobSequence<Tx> {
         raws: &mut [JobResult<R, H>],
         fallback: &DB,
     ) -> Result<EvmState, Error> {
-        let mut overlay =
+        let overlay =
             StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas);
+        let mut db = StateDb::with_fallback(overlay, Some(fallback));
         for result in raws.iter_mut() {
             let executed = result
                 .result_and_state()
                 .as_ref()
                 .map_err(|error| Error::other(error.to_string()))?;
-            overlay
-                .apply(executed.state.clone(), Some(fallback))
-                .map_err(Error::other)?;
+            // Scalar deltas add up across jobs; the other slots take the later job's values.
+            let mut state = executed.state.clone();
+            let scalars =
+                EvmStateCommitter::split(&mut state, |key| scalar::KeyCodec::decode(key).is_some());
+            db.commit(state);
+            if let Some(error) = db.commit_error() {
+                return Err(Error::other(error.to_string()));
+            }
+            for (owner, slots) in scalars {
+                scalar::Merger::merge(&mut db, owner, &slots).map_err(Error::other)?;
+            }
         }
-        Ok(overlay.into_inner())
+        Ok(db.into_inner())
     }
 
     /// Loads sender accounts from the fallback and advances their local nonces

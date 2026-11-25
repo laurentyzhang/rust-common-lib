@@ -71,7 +71,7 @@ fn meta_loads_all_stored_fields_for_a_function() {
     store_peers(&mut account, Property::ConflictIndex, host, selector, vec![1, 2, 3, 4, 5]);
     store_peers(&mut account, Property::DeferredIndex, host, selector, vec![6, 7]);
     account.storage.insert(
-        Property::DeferredGas.slot(host, selector, 0),
+        Property::DeferredGasLimit.slot(host, selector, 0),
         EvmStorageSlot::new(MetaCodec::encode_u64(123), Default::default()),
     );
     let mut db = StateDb::new(EvmState::from_iter([(host, account)]));
@@ -81,7 +81,7 @@ fn meta_loads_all_stored_fields_for_a_function() {
     assert_eq!(meta.id, CalleeId::new(host, 10u32.to_be_bytes()));
     assert_eq!(meta.conflict_peers, BTreeSet::from([1, 2, 3, 4, 5]));
     assert_eq!(meta.deferred_peers, BTreeSet::from([6, 7]));
-    assert_eq!(meta.deferred_gas, 123);
+    assert_eq!(meta.deferred_gas_limit, 123);
     assert!(!meta.sequential_only);
 }
 

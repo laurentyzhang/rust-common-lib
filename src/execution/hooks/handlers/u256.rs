@@ -2,7 +2,7 @@ use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::crdt::{self, Crdt, state::DeltaOp};
 use crate::execution::{
-    CallHookError, Recorder, ScalarAdapter, ScalarKeyCodec, ScalarKind, key::Key,
+    CallHookError, Recorder, scalar, key::Key,
 };
 use crate::namespace::Namespace;
 use alloy_evm::EvmInternals;
@@ -34,7 +34,7 @@ impl U256Handler {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
         let (mut scalar, slots) =
-            ScalarAdapter::new(key).load::<U256, _>(internals, input.caller, recorder)?;
+            scalar::Indexer::new(key).load::<U256, _>(internals, input.caller, recorder)?;
         if scalar.add_delta(&delta).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
@@ -46,7 +46,7 @@ impl U256Handler {
 
 impl CallHandler for U256Handler {
     fn is_valid_slot(&self, slot: U256) -> bool {
-        matches!(ScalarKeyCodec::decode(slot), Some((ScalarKind::U256, _, _)))
+        matches!(scalar::KeyCodec::decode(slot), Some((scalar::Kind::U256, _, _)))
     }
 
     fn call(
@@ -57,7 +57,7 @@ impl CallHandler for U256Handler {
         api_reads: &mut Recorder,
     ) -> Result<CallOutput, CallHookError> {
         // Map the caller's key to its internal scalar key.
-        let key = ScalarKeyCodec::derive_key(Namespace::U256, key);
+        let key = scalar::KeyCodec::derive_key(Namespace::U256, key);
         match IU256::IU256Calls::abi_decode_validate(input.input) {
             Ok(IU256::IU256Calls::init(call)) => {
                 if input.scheme == CallScheme::StaticCall || call.min > call.max {
@@ -68,7 +68,7 @@ impl CallHandler for U256Handler {
                     max: call.max,
                     ..Default::default()
                 };
-                ScalarAdapter::new(key).store(internals, input.caller, &scalar, api_reads)?;
+                scalar::Indexer::new(key).store(internals, input.caller, &scalar, api_reads)?;
                 Ok(CallOutput::returned(0, call.key.abi_encode()))
             }
             Ok(IU256::IU256Calls::add(call)) => {
@@ -79,7 +79,7 @@ impl CallHandler for U256Handler {
             }
             Ok(IU256::IU256Calls::get(_)) => {
                 let (mut scalar, slots) =
-                    ScalarAdapter::new(key).load::<U256, _>(internals, input.caller, api_reads)?;
+                    scalar::Indexer::new(key).load::<U256, _>(internals, input.caller, api_reads)?;
                 api_reads.log_write(Key::Storage(input.caller, slots.value));
                 Ok(CallOutput::returned(
                     0,

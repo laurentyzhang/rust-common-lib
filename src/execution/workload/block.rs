@@ -1,6 +1,8 @@
 use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
 use crate::execution::evm::state::StateOverlay;
-use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
+use crate::execution::{
+    ArcologyEvmFactory, ArcologyParaBlockExecutor, FormatConverter, StateDb, key::Key, set,
+};
 use crate::planner::{Planner, resolver::CommitDecision};
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
@@ -66,6 +68,24 @@ impl<Tx> Block<Tx> {
                 )));
             }
             results.extend(raws);
+        }
+
+        // Convert each touched Set back into the storage format.
+        let sets: Vec<_> = block_db
+            .inner()
+            .iter()
+            .map(|(&owner, account)| {
+                let keys: Vec<_> = account
+                    .storage
+                    .keys()
+                    .copied()
+                    .filter(|&key| set::KeyCodec::decode(key).is_some())
+                    .collect();
+                (owner, keys)
+            })
+            .collect();
+        for (owner, keys) in sets {
+            set::Converter::to_storage_format(&mut block_db, owner, &keys).map_err(Error::other)?;
         }
 
         let metadata = planner

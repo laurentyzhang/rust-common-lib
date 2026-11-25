@@ -19,7 +19,7 @@ pub struct RuntimeHandler;
 
 impl CallHandler for RuntimeHandler {
     fn is_valid_slot(&self, slot: U256) -> bool {
-        matches!(MetaCodec::decode(slot), Some((property, _, _, _)) if property == MetaFieldId::DeferredGas as u8)
+        matches!(MetaCodec::decode(slot), Some((property, _, _, _)) if property == MetaFieldId::DeferredGasLimit as u8)
     }
 
     fn call(
@@ -49,7 +49,7 @@ impl CallHandler for RuntimeHandler {
                 {
                     return Ok(CallOutput::reverted(0, Vec::new()));
                 }
-                let slot = MetaFieldId::DeferredGas.slot(input.caller, call.selector.0, 0);
+                let slot = MetaFieldId::DeferredGasLimit.slot(input.caller, call.selector.0, 0);
 
                 // Log that we are writing to the caller's account.
                 api_recorder.log_write(Key::Storage(input.caller, slot));

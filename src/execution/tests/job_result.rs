@@ -13,14 +13,14 @@ fn zero_deletes_only_ordinary_evm_slots() {
     let slots = [
         (U256::ZERO, true),
         (
-            ScalarKeyCodec::encode(Namespace::U256, Property::PosDelta as u8, Address::ZERO),
+            scalar::KeyCodec::encode(Namespace::U256, scalar::Property::PosDelta as u8, Address::ZERO),
             false,
         ),
         (
-            ScalarKeyCodec::encode(Namespace::I256, Property::NegDelta as u8, Address::ZERO),
+            scalar::KeyCodec::encode(Namespace::I256, scalar::Property::NegDelta as u8, Address::ZERO),
             false,
         ),
-        (MetaProperty::DeferredGas.slot(owner, [0; 4], 0), false),
+        (MetaProperty::DeferredGasLimit.slot(owner, [0; 4], 0), false),
     ];
     let mut account = Account::from(AccountInfo::default().with_nonce(1));
     for &(slot, _) in &slots {

@@ -30,13 +30,13 @@ fn raw_job(id: ID, state: EvmState) -> JobResult<()> {
 
 #[test]
 fn numeric_checks_count_each_job_delta_once() {
-    use crate::execution::{Property, ScalarAdapter, ScalarKeyCodec, key::Key};
+    use crate::execution::{scalar, key::Key};
     use crate::namespace::Namespace;
     use crate::planner::resolver::{Checker, ConflictDetector};
 
     let owner = Address::with_last_byte(1);
-    let key = ScalarKeyCodec::encode(Namespace::U256, Property::Value as u8, Address::ZERO);
-    let slots = ScalarAdapter::new(key);
+    let key = scalar::KeyCodec::encode(Namespace::U256, scalar::Property::Value as u8, Address::ZERO);
+    let slots = scalar::Indexer::new(key);
     let mut checker = ConflictDetector::new();
 
     // Sequence zero adds 2, then 3; sequence one adds 1. Starting at 1 gives 7.
@@ -195,12 +195,12 @@ fn rebuild_returns_first_encountered_error() {
 
 #[test]
 fn sequence_merges_api_transitions_after_a_rejected_job() {
-    use crate::execution::{Property, ScalarKeyCodec, StateDb};
+    use crate::execution::{scalar, StateDb};
     use crate::namespace::Namespace;
     use alloy_evm::revm::state::EvmStorageSlot;
 
-    for property in [Property::PosDelta, Property::NegDelta] {
-        let key = ScalarKeyCodec::encode(Namespace::U256, property as u8, Address::ZERO);
+    for property in [scalar::Property::PosDelta, scalar::Property::NegDelta] {
+        let key = scalar::KeyCodec::encode(Namespace::U256, property as u8, Address::ZERO);
         let state = |original: u64, present: u64| {
             let mut account = Account::default().with_touched_mark();
             account.storage.insert(

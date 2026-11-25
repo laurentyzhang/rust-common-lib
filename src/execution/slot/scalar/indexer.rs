@@ -5,7 +5,8 @@ use alloy_primitives::{Address, U256};
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
 use crate::execution::evm::storage::ApiStore;
-use crate::execution::{CallHookError, Recorder, ScalarKeyCodec, key::Key};
+use super::KeyCodec;
+use crate::execution::{CallHookError, Recorder, key::Key};
 
 /// Scalar field IDs encoded in byte 7 of a slot key.
 #[derive(strum_macros::FromRepr)]
@@ -21,7 +22,7 @@ pub enum Property {
 /// Holds the five slot keys for one scalar instance, rather than their stored values.
 /// The owner address is supplied separately when accessing storage.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ScalarAdapter {
+pub struct Indexer {
     pub min: U256,
     pub max: U256,
     pub value: U256,
@@ -30,16 +31,16 @@ pub struct ScalarAdapter {
 }
 
 // Construct a slot layout and transfer whole scalar states through a backend.
-impl ScalarAdapter {
+impl Indexer {
     /// Derives all five field keys while preserving the instance key and prefix.
     /// The caller must validate the input key before calling this constructor.
     pub fn new(key: U256) -> Self {
         Self {
-            min: ScalarKeyCodec::with_property(key, Property::Min as u8),
-            max: ScalarKeyCodec::with_property(key, Property::Max as u8),
-            value: ScalarKeyCodec::with_property(key, Property::Value as u8),
-            pos_delta: ScalarKeyCodec::with_property(key, Property::PosDelta as u8),
-            neg_delta: ScalarKeyCodec::with_property(key, Property::NegDelta as u8),
+            min: KeyCodec::with_property(key, Property::Min as u8),
+            max: KeyCodec::with_property(key, Property::Max as u8),
+            value: KeyCodec::with_property(key, Property::Value as u8),
+            pos_delta: KeyCodec::with_property(key, Property::PosDelta as u8),
+            neg_delta: KeyCodec::with_property(key, Property::NegDelta as u8),
         }
     }
 

@@ -7,7 +7,6 @@ use rayon::prelude::*;
 
 use crate::crdt::state::CrdtError;
 use crate::crdt::{Crdt, Scalar, Type};
-use crate::execution::{ApiAddress, Property, ScalarKeyCodec};
 use crate::store::traits::StoreError;
 
 #[derive(Debug)]
@@ -124,14 +123,9 @@ impl StateOverlay {
         }
         current.transaction_id = incoming.transaction_id;
 
-        // Combine API deltas; ordinary storage slots take the incoming values.
+        // Storage slots take the incoming values; CRDT slots are merged by their mergers.
         for (key, mut value) in incoming.storage {
             if let Some(slot) = current.storage.get(&key) {
-                if ApiAddress::is_api_storage_key(key)
-                    && let Some(change) = Self::api_slot_delta(key, &value)
-                {
-                    value.present_value = slot.present_value().wrapping_add(change);
-                }
                 value.original_value = slot.original_value();
             }
             current.storage.insert(key, value);
@@ -154,17 +148,6 @@ impl StateOverlay {
         // A nonempty merged account now exists, even if it was missing when loaded.
         if !current.is_empty() {
             current.status.remove(AccountStatus::LoadedAsNotExisting);
-        }
-    }
-
-    pub(in crate::execution) fn api_slot_delta(key: U256, slot: &EvmStorageSlot) -> Option<U256> {
-        match ScalarKeyCodec::decode(key) {
-            Some((_, field, _))
-                if field == Property::PosDelta as u8 || field == Property::NegDelta as u8 =>
-            {
-                Some(slot.present_value().wrapping_sub(slot.original_value()))
-            }
-            _ => None,
         }
     }
 

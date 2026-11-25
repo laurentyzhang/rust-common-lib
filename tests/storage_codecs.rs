@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, U256};
 use rust_common_lib::{
-    execution::{ApiAddress, CallHandler, ScalarKeyCodec, ScalarKind, U256Handler},
+    execution::{ApiAddress, CallHandler, scalar, U256Handler},
     namespace::{Namespace, NamespaceCodec},
     planner::meta::{MetaCodec, MetaFieldId as Property},
 };
@@ -11,22 +11,22 @@ fn scalar_preserves_existing_layout() {
     assert_eq!(Namespace::U256 as u8, 0x85);
     assert_eq!(Namespace::I256 as u8, 0x86);
     let handle = Address::repeat_byte(0x37);
-    for kind in [ScalarKind::U256, ScalarKind::I256] {
+    for kind in [scalar::Kind::U256, scalar::Kind::I256] {
         let namespace = Namespace::from(kind);
         for property in 0..=4 {
-            let slot = ScalarKeyCodec::encode(namespace, property, handle);
+            let slot = scalar::KeyCodec::encode(namespace, property, handle);
             let bytes = slot.to_be_bytes::<32>();
             assert_eq!(&bytes[..7], &NamespaceCodec::encode(namespace));
             assert_eq!(bytes[7], property);
             assert_eq!(&bytes[8..12], &[0; 4]);
             assert_eq!(&bytes[12..], handle.as_slice());
             assert_eq!(
-                ScalarKeyCodec::decode(slot),
+                scalar::KeyCodec::decode(slot),
                 Some((kind, property, bytes[8..].try_into().unwrap()))
             );
             for instance in [[0; 24], [0xff; 24]] {
                 assert_eq!(
-                    ScalarKeyCodec::decode(ScalarKeyCodec::encode_key(
+                    scalar::KeyCodec::decode(scalar::KeyCodec::encode_key(
                         namespace, property, instance
                     )),
                     Some((kind, property, instance))
@@ -39,10 +39,10 @@ fn scalar_preserves_existing_layout() {
 #[test]
 fn scalar_kinds_convert_only_scalar_namespaces() {
     for namespace in Namespace::iter() {
-        let kind = ScalarKind::try_from(namespace);
+        let kind = scalar::Kind::try_from(namespace);
         match namespace {
-            Namespace::U256 => assert_eq!(kind, Ok(ScalarKind::U256)),
-            Namespace::I256 => assert_eq!(kind, Ok(ScalarKind::I256)),
+            Namespace::U256 => assert_eq!(kind, Ok(scalar::Kind::U256)),
+            Namespace::I256 => assert_eq!(kind, Ok(scalar::Kind::I256)),
             _ => assert!(kind.is_err()),
         }
         if let Ok(kind) = kind {
@@ -81,13 +81,13 @@ fn meta_encodes_selector_before_property() {
 
 #[test]
 fn codecs_reject_other_namespaces_and_invalid_properties() {
-    let scalar = ScalarKeyCodec::encode(Namespace::U256, 2, Address::ZERO);
+    let scalar = scalar::KeyCodec::encode(Namespace::U256, 2, Address::ZERO);
     let meta = MetaCodec::encode(2, Address::ZERO, [0; 4], 0);
     for namespace in Namespace::iter() {
         let mut bytes = scalar.to_be_bytes::<32>();
         bytes[..7].copy_from_slice(&NamespaceCodec::encode(namespace));
         assert_eq!(
-            ScalarKeyCodec::decode(U256::from_be_bytes(bytes)).is_some(),
+            scalar::KeyCodec::decode(U256::from_be_bytes(bytes)).is_some(),
             matches!(namespace, Namespace::U256 | Namespace::I256)
         );
         let mut bytes = meta.to_be_bytes::<32>();
@@ -99,14 +99,14 @@ fn codecs_reject_other_namespaces_and_invalid_properties() {
     }
     for property in 5..=u8::MAX {
         assert!(
-            ScalarKeyCodec::decode(ScalarKeyCodec::encode(
+            scalar::KeyCodec::decode(scalar::KeyCodec::encode(
                 Namespace::U256,
                 property,
                 Address::ZERO
             ))
             .is_none()
         );
-        if property > Property::DeferredGas as u8 {
+        if property > Property::DeferredGasLimit as u8 {
             assert!(
                 MetaCodec::decode(MetaCodec::encode(property, Address::ZERO, [0; 4], 0)).is_none()
             );
@@ -117,7 +117,7 @@ fn codecs_reject_other_namespaces_and_invalid_properties() {
             let mut bytes = slot.to_be_bytes::<32>();
             bytes[index] ^= 0xff;
             let invalid = U256::from_be_bytes(bytes);
-            assert!(ScalarKeyCodec::decode(invalid).is_none());
+            assert!(scalar::KeyCodec::decode(invalid).is_none());
             assert!(MetaCodec::decode(invalid).is_none());
         }
     }
@@ -125,12 +125,12 @@ fn codecs_reject_other_namespaces_and_invalid_properties() {
 
 #[test]
 fn api_routing_uses_only_the_shared_prefix() {
-    let scalar = ScalarKeyCodec::encode(Namespace::U256, 2, Address::ZERO);
+    let scalar = scalar::KeyCodec::encode(Namespace::U256, 2, Address::ZERO);
     let meta = Property::ConflictCount.slot(Address::ZERO, [0; 4], 0);
     assert!(ApiAddress::is_api_storage_key(scalar));
     assert!(U256Handler.is_valid_slot(scalar));
     assert!(!ApiAddress::is_api_storage_key(meta));
     assert!(!U256Handler.is_valid_slot(meta));
-    assert!(ScalarKeyCodec::decode(meta).is_none());
+    assert!(scalar::KeyCodec::decode(meta).is_none());
     assert!(MetaCodec::decode(scalar).is_none());
 }

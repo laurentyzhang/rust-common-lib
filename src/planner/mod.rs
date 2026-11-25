@@ -80,7 +80,7 @@ impl<DB: Database, K> Planner<DB, K> {
                 CalleeProfile {
                     conflict_peers: meta.conflict_peers.clone(),
                     sequential_only: meta.sequential_only,
-                    deferrable: meta.deferred_gas > 0,
+                    deferrable: meta.deferred_gas_limit > 0,
                 },
             );
         }

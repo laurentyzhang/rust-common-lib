@@ -17,8 +17,8 @@ pub enum MetaFieldId {
     ConflictIndex = 2,
     /// Deferred peer list: index 0 holds its byte length, indexes 1.. its chunks.
     DeferredIndex = 4,
-    /// Required prepaid gas for this function; zero disables deferral.
-    DeferredGas = 5,
+    /// Gas limit of this function's deferred call, set once; zero disables deferral.
+    DeferredGasLimit = 5,
 }
 
 // Key: [ARCO:4][version:1][namespace:1][reserved:1][selector:4][property:1][slot index:4][host prefix:16].
@@ -50,7 +50,7 @@ pub struct MetaCodec;
 impl MetaCodec {
     /// Recognizes metadata fields with CRDT updates.
     pub fn is_crdt(key: U256) -> bool {
-        matches!(Self::decode(key), Some((property, _, _, _)) if property == MetaFieldId::DeferredGas as u8)
+        matches!(Self::decode(key), Some((property, _, _, _)) if property == MetaFieldId::DeferredGasLimit as u8)
     }
 
     pub fn encode(property: u8, contract: Address, selector: [u8; 4], index: u32) -> U256 {

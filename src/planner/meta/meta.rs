@@ -21,7 +21,7 @@ pub struct Meta {
     pub conflict_list: Vec<u64>,
     pub sequential_only: bool,
     pub deferred_peers: BTreeSet<u64>,
-    pub deferred_gas: u64,
+    pub deferred_gas_limit: u64,
     /// Sorted peer IDs staged for the current conflict meta_lookup update.
     pub pending_peers: Vec<u64>,
 }
@@ -92,10 +92,10 @@ impl Meta {
         };
         let deferred_peers =
             Self::load_peers(db, contract, selector, MetaFieldId::DeferredIndex)?;
-        let deferred_gas = db
+        let deferred_gas_limit = db
             .storage(
                 contract,
-                MetaFieldId::DeferredGas.slot(contract, selector, 0),
+                MetaFieldId::DeferredGasLimit.slot(contract, selector, 0),
             )
             .map_err(BlockExecutionError::other)?;
 
@@ -105,7 +105,7 @@ impl Meta {
             conflict_list,
             sequential_only,
             deferred_peers: deferred_peers.into_iter().collect(),
-            deferred_gas: Self::decode_u64(deferred_gas, "deferred gas")?,
+            deferred_gas_limit: Self::decode_u64(deferred_gas_limit, "deferred gas limit")?,
             ..meta
         })
     }
