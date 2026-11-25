@@ -2,13 +2,14 @@
 
 use alloy_evm::revm::{
     Database, DatabaseRef,
-    state::{AccountInfo, Bytecode},
+    state::{Account, AccountInfo, Bytecode, EvmStorageSlot, TransactionId},
 };
 use alloy_primitives::{Address, B256, U256};
 
 use super::StateDb;
+use super::overlay::OverlayState;
 
-impl<DB: DatabaseRef> Database for StateDb<DB> {
+impl<DB: DatabaseRef, Store: OverlayState> Database for StateDb<DB, Store> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
@@ -28,33 +29,38 @@ impl<DB: DatabaseRef> Database for StateDb<DB> {
     }
 }
 
-impl<DB: DatabaseRef> DatabaseRef for StateDb<DB> {
+impl<DB: DatabaseRef, Store: OverlayState> DatabaseRef for StateDb<DB, Store> {
     type Error = DB::Error;
 
     /// Return account information unless the account is absent or deleted.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        if let Some(account) = self.inner().get(&address) {
-            if account.is_selfdestructed()
-                || (account.is_loaded_as_not_existing() && !account.is_created())
-            {
-                return Ok(None);
-            }
-            return Ok(Some(account.info.clone()));
+        let found = self.inner().account(address, |account| {
+            account.map(|account| {
+                (!(account.is_selfdestructed()
+                    || (account.is_loaded_as_not_existing() && !account.is_created())))
+                .then(|| account.info.clone())
+            })
+        });
+        if let Some(info) = found {
+            return Ok(info);
         }
         match &self.fallback {
-            Some(db) => db.basic_ref(address),
+            Some(db) => {
+                let info = db.basic_ref(address)?;
+                // A shared store keeps the loaded account for later readers; a missing one is not
+                // cached.
+                if let Some(info) = &info {
+                    self.inner().cache_account(address, Account::from(info.clone()));
+                }
+                Ok(info)
+            }
             None => Ok(None),
         }
     }
 
     /// Find embedded bytecode before consulting the fallback.
     fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        if let Some(code) = self
-            .inner()
-            .values()
-            .filter(|account| account.info.code_hash == code_hash)
-            .find_map(|account| account.info.code.clone())
-        {
+        if let Some(code) = self.inner().code(code_hash) {
             return Ok(code);
         }
         match &self.fallback {
@@ -65,21 +71,41 @@ impl<DB: DatabaseRef> DatabaseRef for StateDb<DB> {
 
     /// Local values and account resets take precedence over fallback storage.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        if let Some(account) = self.inner().get(&address) {
-            if account.is_selfdestructed()
-                || (account.is_loaded_as_not_existing() && !account.is_created())
-            {
+        // The account's status decides whether its slots exist; a slot may sit in another shard.
+        let status = self.inner().account(address, |account| {
+            account.map(|account| {
+                (
+                    account.is_selfdestructed()
+                        || (account.is_loaded_as_not_existing() && !account.is_created()),
+                    account.is_created(),
+                )
+            })
+        });
+        if let Some((removed, created)) = status {
+            if removed {
                 return Ok(U256::ZERO);
             }
-            if let Some(slot) = account.storage.get(&index) {
-                return Ok(slot.present_value());
+            if let Some(value) = self
+                .inner()
+                .slot(address, index, |slot| slot.map(|slot| slot.present_value()))
+            {
+                return Ok(value);
             }
-            if account.is_created() {
+            if created {
                 return Ok(U256::ZERO);
             }
         }
         match &self.fallback {
-            Some(db) => db.storage_ref(address, index),
+            Some(db) => {
+                let value = db.storage_ref(address, index)?;
+                // A shared store keeps the loaded value, unchanged, for later readers.
+                self.inner().cache_slot(
+                    address,
+                    index,
+                    EvmStorageSlot::new(value, TransactionId::ZERO),
+                );
+                Ok(value)
+            }
             None => Ok(U256::ZERO),
         }
     }

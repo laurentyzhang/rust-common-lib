@@ -148,7 +148,7 @@ fn commit_rebases_slots_on_fallback_and_keeps_their_originals() {
         (value, U256::from(42), U256::from(47)),
         (ordinary, U256::from(55), U256::from(60)),
     ]));
-    // Scalar deltas are merged by scalar::Merger, so a plain commit takes the incoming value.
+    // Scalar deltas are merged by scalar::Applier, so a plain commit takes the incoming value.
     for (key, original, present) in [(delta, 10, 15), (value, 42, 47), (ordinary, 50, 60)] {
         let slot = &db.inner()[&Address::ZERO].storage[&key];
         assert_eq!(slot.original_value(), U256::from(original));

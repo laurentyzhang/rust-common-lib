@@ -11,5 +11,5 @@ mod tests;
 
 pub use indexer::Indexer;
 pub use key_codec::{KeyCodec, Property};
-pub use merger::Merger;
+pub use merger::{Applier, Delta};
 pub use converter::Converter;

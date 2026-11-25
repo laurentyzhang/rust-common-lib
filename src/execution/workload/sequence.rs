@@ -17,7 +17,8 @@ use alloy_primitives::Address;
 use std::io::Error;
 
 use crate::execution::evm::state::StateOverlay;
-use crate::execution::{ArcologyEvmFactory, DeltaMerger, EvmStateCommitter, Recorder, StateDb, scalar};
+use crate::execution::slot::CrdtSlot;
+use crate::execution::{ArcologyEvmFactory, Recorder, StateDb};
 
 /// Transactions in one sequence execute in order; sequences in a generation may run in parallel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -234,16 +235,12 @@ impl<Tx> JobSequence<Tx> {
                 .result_and_state()
                 .as_ref()
                 .map_err(|error| Error::other(error.to_string()))?;
-            // Scalar deltas add up across jobs; the other slots take the later job's values.
-            let mut state = executed.state.clone();
-            let scalars =
-                EvmStateCommitter::split(&mut state, |key| scalar::KeyCodec::decode(key).is_some());
-            db.commit(state);
+            // CRDT slots go through their appliers; the other slots take the later job's values.
+            let native = CrdtSlot::apply_sequential(&mut db, executed.state.clone())
+                .map_err(Error::other)?;
+            db.commit(native);
             if let Some(error) = db.commit_error() {
                 return Err(Error::other(error.to_string()));
-            }
-            for (owner, slots) in scalars {
-                scalar::Merger::merge(&mut db, owner, &slots).map_err(Error::other)?;
             }
         }
         Ok(db.into_inner())

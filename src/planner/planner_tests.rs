@@ -1,3 +1,4 @@
+use alloy_evm::revm::database_interface::EmptyDB;
 use super::*;
 use crate::{
     common::codec::CodecError,
@@ -240,7 +241,7 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
         assert!(empty.is_empty());
         drop(planner);
 
-        let mut committer = EvmStateCommitter::with_target(db.into_inner());
+        let mut committer = EvmStateCommitter::with_target(db.into_inner(), EmptyDB::default());
         committer.buffer(ID::new(0, u64::MAX), result);
 
         committer.flush().unwrap();
@@ -303,7 +304,7 @@ fn contract_metadata_survives_generations_and_keeps_functions_separate() {
     assert_eq!(count.present_value(), U256::from(16));
     drop(planner);
 
-    let mut committer = EvmStateCommitter::with_target(db.into_inner());
+    let mut committer = EvmStateCommitter::with_target(db.into_inner(), EmptyDB::default());
     committer.buffer(ID::new(0, u64::MAX), result);
 
     committer.flush().unwrap();
@@ -350,7 +351,7 @@ fn same_contract_metadata_keeps_each_function_pair_separate() {
             .is_empty()
     );
 
-    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
+    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner(), EmptyDB::default());
     committer.buffer(ID::new(0, u64::MAX), result);
 
     committer.flush().unwrap();
@@ -468,10 +469,10 @@ fn conflict_metadata_is_committed_alongside_accepted_job_state() {
         U256::from(7),
         EvmStorageSlot::new_changed(U256::ZERO, U256::from(99), Default::default()),
     );
-    let mut committer = EvmStateCommitter::new_parallel();
+    let mut committer = EvmStateCommitter::new_parallel(EmptyDB::default());
     committer.buffer(accepted_id, EvmState::from_iter([(a, accepted)]));
     committer.buffer(record(2, 7, false).id, EvmState::from_iter([(a, rejected)]));
-    committer.stage(accepted_ids(&conflicts));
+    committer.stage(accepted_ids(&conflicts)).unwrap();
     committer.flush().unwrap();
     let mut db = StateDb::new(committer.into_inner());
     let metadata = planner
@@ -697,7 +698,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     let result = planner
         .build_conflict_meta_updates(&conflicts, &EvmState::default())
         .unwrap();
-    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
+    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner(), EmptyDB::default());
     committer.buffer(ID::new(0, u64::MAX), result);
 
     committer.flush().unwrap();
@@ -744,7 +745,7 @@ fn packed_metadata_appends_across_partial_and_full_slots() {
     expected[8..16].copy_from_slice(&callee(b, 25).to_be_bytes());
     assert_eq!(second.present_value(), U256::from_be_bytes(expected));
 
-    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner());
+    let mut committer = EvmStateCommitter::with_target(planner.db.into_inner(), EmptyDB::default());
     committer.buffer(ID::new(0, u64::MAX), result);
 
     committer.flush().unwrap();

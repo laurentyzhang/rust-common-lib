@@ -2034,15 +2034,15 @@ fn constructor_configuration_persists_and_drives_scheduling() {
     );
     assert_ne!(result.state[&host].info.code_hash, KECCAK256_EMPTY);
     let id = ID::new(0, 7);
-    let mut rejected = EvmStateCommitter::new_parallel();
+    let mut rejected = EvmStateCommitter::new_parallel(EmptyDB::default());
     rejected.buffer(id, result.state.clone());
-    rejected.stage(Vec::new());
+    rejected.stage(Vec::new()).unwrap();
     rejected.flush().unwrap();
     assert!(rejected.inner().is_empty());
 
-    let mut accepted = EvmStateCommitter::new_parallel();
+    let mut accepted = EvmStateCommitter::new_parallel(EmptyDB::default());
     accepted.buffer(id, result.state);
-    accepted.stage(vec![id]);
+    accepted.stage(vec![id]).unwrap();
     accepted.flush().unwrap();
     let db = StateDb::new(accepted.into_inner());
     let mut planner = Planner::<_, u64>::new(db, Default::default());

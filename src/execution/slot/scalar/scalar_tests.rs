@@ -1,4 +1,7 @@
-use super::{Property, Indexer};
+use super::{Applier, Delta, Property, Indexer};
+use crate::execution::ApplyDelta;
+use crate::execution::workload::ID;
+use alloy_evm::revm::state::{EvmStorage, EvmStorageSlot};
 use crate::crdt::{self, state::DeltaOp};
 use crate::execution::evm::storage::ApiStore;
 use super::KeyCodec;
@@ -288,4 +291,43 @@ fn scalar_store_records_writes_without_internal_reads() {
         assert_eq!(record.data.operations.removes.count(), 0);
     }
     assert!(recorder.drain().is_empty());
+}
+
+#[test]
+fn merged_deltas_apply_like_the_states_in_turn() {
+    let owner = Address::ZERO;
+    let slots = Indexer::new(KeyCodec::encode(Namespace::U256, Property::Value as u8, owner));
+    let slot = |original: u64, present: u64| {
+        EvmStorageSlot::new_changed(U256::from(original), U256::from(present), Default::default())
+    };
+    let a: EvmStorage = [(slots.pos_delta, slot(0, 5)), (slots.neg_delta, slot(0, 1))]
+        .into_iter()
+        .collect();
+    let b: EvmStorage = [
+        (slots.pos_delta, slot(0, 2)),
+        (slots.neg_delta, slot(0, 4)),
+        (slots.max, slot(0, 9)),
+    ]
+    .into_iter()
+    .collect();
+
+    // Applied one state at a time.
+    let mut in_turn = StateDb::default();
+    for state in [&a, &b] {
+        let mut delta = Delta::default();
+        Applier::merge_delta(&mut delta, ID::default(), state).unwrap();
+        Applier::apply(&mut in_turn, owner, delta).unwrap();
+    }
+
+    // Merged without a store, then applied once: deltas add up, the changed bound is taken.
+    let mut delta = Delta::default();
+    for state in [&a, &b] {
+        Applier::merge_delta(&mut delta, ID::default(), state).unwrap();
+    }
+    let mut once = StateDb::default();
+    Applier::apply(&mut once, owner, delta).unwrap();
+    for (key, expected) in [(slots.pos_delta, 7), (slots.neg_delta, 5), (slots.max, 9)] {
+        assert_eq!(once.read(owner, key).unwrap(), U256::from(expected));
+        assert_eq!(once.read(owner, key).unwrap(), in_turn.read(owner, key).unwrap());
+    }
 }

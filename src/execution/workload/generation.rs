@@ -1,10 +1,10 @@
 use super::{JobResult, JobSequence, ReceiptStatus, TransactionGasLimit};
-use crate::execution::evm::state::StateOverlay;
+use crate::execution::evm::state::sharded;
 use crate::planner::scheduler::sender::{Sender, SenderNonceOffset};
 use alloy_evm::{
     EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
-    revm::{DatabaseRef, state::EvmState},
+    revm::DatabaseRef,
 };
 use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use rayon::{ThreadPool, prelude::*};
@@ -31,18 +31,19 @@ impl<Tx> Default for Generation<Tx> {
 }
 
 impl<Tx> Generation<Tx> {
-    /// Runs each parallel sequence with its own gas budget, then merges finalized states.
-    pub fn run<F, Fallback>(
+    /// Runs each parallel sequence with its own gas budget against the block `state`, then folds
+    /// the finalized sequence states into it and returns it.
+    pub fn run<F, Fallback, const N: usize>(
         self,
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         checker: &mut impl Checker<Key>,
-        fallback: &Fallback,
+        state: StateDb<Fallback, sharded::Shared<N>>,
     ) -> Result<
         (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-            EvmState,
+            StateDb<Fallback, sharded::Shared<N>>,
         ),
         Error,
     >
@@ -59,12 +60,6 @@ impl<Tx> Generation<Tx> {
             + TransactionGasLimit
             + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        // Use previously committed state as the base for this generation.
-        let gen_db = StateDb::with_fallback(
-            StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
-            Some(fallback),
-        );
-
         // Execute sequences in parallel while preserving their planned order.
         let results: Result<Vec<_>, Error> = pool.install(|| {
             self.sequences
@@ -73,7 +68,7 @@ impl<Tx> Generation<Tx> {
                     let gas_limit = sequence.gas_limit()?;
                     sequence.execute(
                         factory,
-                        &gen_db,
+                        &state,
                         config.env.clone(),
                         config.ctx.clone(),
                         gas_limit,
@@ -91,8 +86,8 @@ impl<Tx> Generation<Tx> {
 
         // Check gas limits, numeric bounds, and conflicts between sequences.
         let verdicts = checker.check();
-        let mut committer = EvmStateCommitter::with_target(gen_db.into_inner());
         let mut raws = Vec::new();
+        let mut finalized = Vec::new();
         for (mut results, mut committed) in sequences {
             // Attach checker decisions, then reject jobs dependent on an earlier rejection.
             for raw in &mut results {
@@ -103,15 +98,19 @@ impl<Tx> Generation<Tx> {
             JobSequence::<Tx>::assign_verdicts(results.iter_mut().map(|raw| &mut raw.verdict));
             // Rebuild affected sequences using finalized job results.
             if !JobSequence::<Tx>::is_all_accepted(&results) {
-                committed = JobSequence::<Tx>::rebuild_sequence_state(&mut results, fallback)?;
+                committed = JobSequence::<Tx>::rebuild_sequence_state(&mut results, &state)?;
             }
             if let Some(raw) = results.first() {
-                committer.buffer(raw.id, committed);
+                finalized.push((raw.id, committed));
             }
             raws.extend(results);
         }
-        // Merge finalized sequence states in their scheduled order.
-        Ok((raws, committer.commit(fallback)?))
+        // Fold the finalized sequence states into the block state in their scheduled order.
+        let mut committer = EvmStateCommitter::with_state(state);
+        for (id, committed) in finalized {
+            committer.buffer(id, committed);
+        }
+        Ok((raws, committer.commit()?))
     }
 
     /// Sets each job ID's generation to the supplied index and its sequence/job

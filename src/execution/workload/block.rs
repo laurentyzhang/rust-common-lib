@@ -1,5 +1,5 @@
 use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
-use crate::execution::evm::state::StateOverlay;
+use crate::execution::evm::state::{StateOverlay, sharded};
 use crate::execution::{
     ArcologyEvmFactory, ArcologyParaBlockExecutor, FormatConverter, StateDb, key::Key, set,
 };
@@ -7,7 +7,7 @@ use crate::planner::{Planner, resolver::CommitDecision};
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
-    revm::{DatabaseCommit, DatabaseRef, state::EvmState},
+    revm::{DatabaseRef, state::EvmState},
 };
 use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use rayon::ThreadPool;
@@ -49,26 +49,28 @@ impl<Tx> Block<Tx> {
             + TransactionGasLimit
             + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        let mut block_db = StateDb::with_fallback(
-            StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+        // Shared by all sequences; each generation adds its sequences' balance and nonce deltas.
+        let mut state: StateDb<_, sharded::Shared> = StateDb::with_fallback(
+            StateOverlay::new(sharded::Shared::new(), StateOverlay::add_balance_nonce_deltas),
             Some(fallback),
         );
         let mut results = Vec::new();
         let mut remaining_gas = config.env.block_env.gas_limit;
         for generation in self.generations {
             planner.checker.set_gas_limit(remaining_gas);
-            let (raws, committed) =
-                generation.run(factory, config, pool, &mut planner.checker, &block_db)?;
+            let (raws, next) = generation.run(factory, config, pool, &mut planner.checker, state)?;
+            state = next;
             remaining_gas -= raws.iter().filter_map(|raw| raw.gas_used()).sum::<u64>();
-            // Publish accepted changes before executing the next generation.
-            block_db.commit(committed);
-            if let Some(error) = block_db.commit_error() {
-                return Err(Error::other(format!(
-                    "failed to commit generation state. {error}"
-                )));
-            }
             results.extend(raws);
         }
+
+        // The block end works on the plain merged state; accounts only read are dropped.
+        let mut merged = state.into_inner();
+        merged.retain(|_, account| account.is_touched());
+        let mut block_db = StateDb::with_fallback(
+            StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
+            Some(fallback),
+        );
 
         // Convert each touched Set back into the storage format.
         let sets: Vec<_> = block_db

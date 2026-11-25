@@ -1,5 +1,5 @@
 use super::*;
-use crate::execution::evm::state::StateOverlay;
+use crate::execution::evm::state::{StateOverlay, sharded};
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
 use crate::planner::resolver::{
     CommitDecision, CommitVerdict, ConflictDetector, accepted_ids, rejected_ids,
@@ -20,6 +20,14 @@ use op_alloy::consensus::{OpTxEnvelope, TxDeposit};
 use op_revm::OpSpecId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
+
+/// Builds the block state shared by a generation's sequences, as `Block::run` does.
+pub(super) fn block_state<DB>(fallback: DB) -> StateDb<DB, sharded::Shared> {
+    StateDb::with_fallback(
+        StateOverlay::new(sharded::Shared::new(), StateOverlay::add_balance_nonce_deltas),
+        Some(fallback),
+    )
+}
 
 fn pairs<R, H>(raws: &[JobResult<R, H>]) -> BTreeSet<(ID, ID)> {
     raws.iter()
@@ -241,8 +249,9 @@ fn parallel_storage_reads_do_not_conflict() {
                 &config,
                 &pool,
                 &mut ConflictDetector::new(),
-                &fallback,
+                block_state(&fallback),
             )
+            .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         assert!(
             outcomes
@@ -293,7 +302,8 @@ fn single_sequence_gets_accepted_verdicts_from_checker() {
         .unwrap();
     let mut checker = ConflictDetector::new();
     let (outcomes, _) = generation
-        .run(&factory, &config, &pool, &mut checker, &StateDb::default())
+        .run(&factory, &config, &pool, &mut checker, block_state(StateDb::default()))
+        .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
     assert_eq!(outcomes[0].verdict.decision, CommitDecision::Accepted);
     assert!(checker.check().is_empty());
@@ -340,9 +350,9 @@ fn sequence_nonce_offsets_are_local_and_checked() {
             assert_eq!(executed.state[&caller].info.nonce, expected);
             assert_eq!(committed[&caller].info.nonce, expected);
             assert_eq!(committed[&caller].original_info().nonce, nonce + offset);
-            let mut generation = EvmStateCommitter::new_parallel();
+            let mut generation = EvmStateCommitter::new_parallel(&fallback);
             generation.buffer(ID::new(0, 0), committed);
-            let committed = generation.commit(&fallback).unwrap();
+            let committed = generation.commit().unwrap().into_inner();
             assert_eq!(committed[&caller].info.nonce, nonce + 1);
             assert_eq!(committed[&caller].original_info().nonce, nonce);
         } else {
@@ -400,7 +410,8 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect(),
         };
         let (mut outcomes, committed_state) = generation
-            .run(&factory, &config, &pool, &mut checker, &persistent)
+            .run(&factory, &config, &pool, &mut checker, block_state(&persistent))
+            .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         assert_eq!(outcomes.len(), 2);
         assert_eq!(
@@ -474,7 +485,8 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             Some(&persistent),
         );
         let (mut outcomes, committed_state) = generation
-            .run(&factory, &config, &pool, &mut checker, &fallback)
+            .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+            .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(
@@ -571,7 +583,8 @@ fn commits_all_conflict_free_parallel_jobs() {
         .build()
         .unwrap();
     let (outcomes, committed_state) = generation
-        .run(&factory, &config, &pool, &mut checker, &fallback)
+        .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+        .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
     assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
     assert_eq!(
@@ -839,7 +852,8 @@ fn sequence_keeps_api_transitions_for_rejected_suffixes() {
                 }],
             }],
         }
-        .run(&factory, &config, &pool, &mut checker, &fallback)
+        .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+        .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
         let account = &committed[&caller];
         assert_eq!(account.original_info().nonce, 7);
@@ -913,7 +927,7 @@ fn execution_errors_are_reported_without_committing_state() {
         .build()
         .unwrap();
     let mut checker = ConflictDetector::new();
-    let result = generation.run(&factory, &config, &pool, &mut checker, &StateDb::default());
+    let result = generation.run(&factory, &config, &pool, &mut checker, block_state(StateDb::default()));
     assert!(matches!(result, Err(error) if error.to_string().contains(
         "transaction gas limit 100001 is more than blocks available gas 100000"
     )));

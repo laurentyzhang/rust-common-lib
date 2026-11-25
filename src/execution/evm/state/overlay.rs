@@ -1,23 +1,132 @@
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, AccountStatus, EvmState, EvmStorageSlot},
+    state::{Account, AccountStatus, Bytecode, EvmState, EvmStorageSlot},
 };
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use rayon::prelude::*;
 
 use crate::crdt::state::CrdtError;
 use crate::crdt::{Crdt, Scalar, Type};
 use crate::store::traits::StoreError;
 
+/// Storage behind a `StateOverlay`: a plain `EvmState` for sequential use, or a
+/// `sharded::Shared` state used by parallel sequences.
+pub trait OverlayState {
+    /// Reads `address`'s account; its storage may hold only part of the account's slots.
+    fn account<R>(&self, address: Address, f: impl FnOnce(Option<&Account>) -> R) -> R;
+
+    /// Reads `address`'s slot `key`.
+    fn slot<R>(
+        &self,
+        address: Address,
+        key: U256,
+        f: impl FnOnce(Option<&EvmStorageSlot>) -> R,
+    ) -> R;
+
+    /// Returns the code with `code_hash` held by any account.
+    fn code(&self, code_hash: B256) -> Option<Bytecode>;
+
+    /// Updates `address`'s account info, inserting `init()` if absent; slots go through
+    /// `slot_mut`.
+    fn account_mut<R>(
+        &mut self,
+        address: Address,
+        init: impl FnOnce() -> Account,
+        f: impl FnOnce(&mut Account) -> R,
+    ) -> R;
+
+    /// Updates `address`'s slot `key`, inserting `init()` if absent.
+    fn slot_mut<R>(
+        &mut self,
+        address: Address,
+        key: U256,
+        init: impl FnOnce() -> EvmStorageSlot,
+        f: impl FnOnce(&mut EvmStorageSlot) -> R,
+    ) -> R;
+
+    /// Keeps `account`, loaded from the fallback, unless `address` already has an entry; only a
+    /// shared store caches.
+    fn cache_account(&self, address: Address, account: Account);
+
+    /// Keeps `slot`, loaded from the fallback, unless `address`'s slot `key` already exists; only a
+    /// shared store caches.
+    fn cache_slot(&self, address: Address, key: U256, slot: EvmStorageSlot);
+
+    /// Returns all accounts as one `EvmState`.
+    fn into_evm_state(self) -> EvmState;
+}
+
+impl OverlayState for EvmState {
+    /// Reads the account entry.
+    fn account<R>(&self, address: Address, f: impl FnOnce(Option<&Account>) -> R) -> R {
+        f(self.get(&address))
+    }
+
+    /// Reads the slot from the account's storage.
+    fn slot<R>(
+        &self,
+        address: Address,
+        key: U256,
+        f: impl FnOnce(Option<&EvmStorageSlot>) -> R,
+    ) -> R {
+        f(self.get(&address).and_then(|account| account.storage.get(&key)))
+    }
+
+    /// Searches every account for the code.
+    fn code(&self, code_hash: B256) -> Option<Bytecode> {
+        self.values()
+            .filter(|account| account.info.code_hash == code_hash)
+            .find_map(|account| account.info.code.clone())
+    }
+
+    /// Updates the account entry, inserting `init()` if absent.
+    fn account_mut<R>(
+        &mut self,
+        address: Address,
+        init: impl FnOnce() -> Account,
+        f: impl FnOnce(&mut Account) -> R,
+    ) -> R {
+        f(self.entry(address).or_insert_with(init))
+    }
+
+    /// Updates the slot in the account's storage, inserting `init()` if absent.
+    fn slot_mut<R>(
+        &mut self,
+        address: Address,
+        key: U256,
+        init: impl FnOnce() -> EvmStorageSlot,
+        f: impl FnOnce(&mut EvmStorageSlot) -> R,
+    ) -> R {
+        f(self
+            .entry(address)
+            .or_default()
+            .storage
+            .entry(key)
+            .or_insert_with(init))
+    }
+
+    /// Does nothing: a sequential state is not shared, so it does not cache reads.
+    fn cache_account(&self, _address: Address, _account: Account) {}
+
+    /// Does nothing: a sequential state is not shared, so it does not cache reads.
+    fn cache_slot(&self, _address: Address, _key: U256, _slot: EvmStorageSlot) {}
+
+    /// Returns the state itself.
+    fn into_evm_state(self) -> EvmState {
+        self
+    }
+}
+
 #[derive(Debug)]
-pub struct StateOverlay {
-    state: EvmState,
+pub struct StateOverlay<Store = EvmState> {
+    state: Store,
     balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
 }
 
-impl StateOverlay {
+impl<Store> StateOverlay<Store> {
+    /// Wraps `state` with the balance and nonce strategy used when applying changes.
     pub fn new(
-        state: EvmState,
+        state: Store,
         balance_nonce_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
     ) -> Self {
         Self {
@@ -26,16 +135,19 @@ impl StateOverlay {
         }
     }
 
-    pub(super) fn inner(&self) -> &EvmState {
+    pub(super) fn inner(&self) -> &Store {
         &self.state
     }
 
-    pub(super) fn inner_mut(&mut self) -> &mut EvmState {
+    pub(super) fn inner_mut(&mut self) -> &mut Store {
         &mut self.state
     }
+}
 
+impl<Store: OverlayState> StateOverlay<Store> {
+    /// Returns all accounts as one `EvmState`.
     pub(in crate::execution) fn into_inner(self) -> EvmState {
-        self.state
+        self.state.into_evm_state()
     }
 
     /// Applies account changes using the selected balance and nonce strategy.
@@ -59,9 +171,11 @@ impl StateOverlay {
             .into_iter()
             .map(|(address, incoming)| {
                 let mut current = self.take_current(address, fallback, &incoming)?;
-                // Load missing slots before applying deltas, retaining their base values.
+                // Take the incoming slots from the overlay, or load them keeping their base values.
                 for (&key, slot) in &incoming.storage {
-                    if !current.storage.contains_key(&key) {
+                    if let Some(stored) = self.state.slot(address, key, |stored| stored.cloned()) {
+                        current.storage.insert(key, stored);
+                    } else {
                         let original = match slot_fallback {
                             Some(db) => db
                                 .storage_ref(address, key)
@@ -89,8 +203,19 @@ impl StateOverlay {
             })
             .collect::<Result<_, StoreError>>()?;
 
-        // Step 3 (serial): put the merged accounts back into the overlay.
-        self.state.extend(merged_accounts);
+        // Step 3 (serial): put the merged accounts and their slots back into the overlay.
+        for (address, mut account) in merged_accounts {
+            let storage = std::mem::take(&mut account.storage);
+            // Replace the account but keep the slots already stored with it.
+            self.state.account_mut(address, Account::default, |current| {
+                account.storage = std::mem::take(&mut current.storage);
+                *current = account;
+            });
+            for (key, slot) in storage {
+                self.state
+                    .slot_mut(address, key, Default::default, |current| *current = slot);
+            }
+        }
         Ok(())
     }
 
@@ -151,15 +276,24 @@ impl StateOverlay {
         }
     }
 
-    /// Clones the current account from the overlay or loads it from the fallback.
+    /// Clones the current account without its storage from the overlay, or loads it from the
+    /// fallback.
     fn take_current<DB: DatabaseRef>(
         &self,
         address: Address,
         fallback: Option<&DB>,
         incoming: &Account,
     ) -> Result<Account, StoreError> {
-        if let Some(current) = self.state.get(&address) {
-            return Ok(current.clone());
+        if let Some(current) = self.state.account(address, |current| {
+            current.map(|current| {
+                let mut account = Account::from(current.info.clone());
+                *account.original_info_mut() = current.original_info();
+                account.transaction_id = current.transaction_id;
+                account.status = current.status;
+                account
+            })
+        }) {
+            return Ok(current);
         }
 
         match fallback {
@@ -177,6 +311,9 @@ impl StateOverlay {
         }
     }
 
+}
+
+impl StateOverlay {
     /// Adds the incoming balance and nonce changes to the current account.
     pub fn add_balance_nonce_deltas(
         current: &mut Account,

@@ -197,7 +197,7 @@ The pending changes accumulate across the jobs of one sequence.
 
 ## Merging at generation commit
 
-At each generation commit, `Merger::merge` applies every accepted sequence's pending changes to
+At each generation commit, `Applier::apply` applies every accepted sequence's pending changes to
 the execution format, in sequence order. Conflict detection guarantees that the sequences'
 changes are independent, so the merge is a plain union:
 

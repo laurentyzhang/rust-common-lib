@@ -1,4 +1,5 @@
 use crate::execution::evm::state::StateOverlay;
+use super::generation_tests::block_state;
 use crate::execution::{
     ArcologyBlockExecutorFactory, ArcologyEvmFactory, ArcologyTx, CallRouter, JobResult,
     ParaBlockConfig, Recorder, StateDb,
@@ -165,8 +166,9 @@ fn parallel_conflicts_keep_every_fee_and_nonce() {
                 &config,
                 &pool,
                 &mut ConflictDetector::new(),
-                &fallback,
+                block_state(&fallback),
             )
+            .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         let mut gas = 0;
         let mut accepted = 0;
@@ -406,7 +408,8 @@ fn single_sequence_respects_total_gas_limit() {
         .build()
         .unwrap();
     let (outcomes, _) = generation
-        .run(&factory(), &config, &pool, &mut checker, &fallback)
+        .run(&factory(), &config, &pool, &mut checker, block_state(&fallback))
+        .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
 
     assert_eq!(

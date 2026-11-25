@@ -1,7 +1,8 @@
-use super::{Indexer, KeyCodec, Property, Converter};
+use super::{Applier, Delta, Indexer, KeyCodec, Property, Converter};
+use std::collections::BTreeMap;
 use crate::execution::evm::storage::ApiStore;
 use crate::execution::{
-    ApiAddress, CallInput, CallOutput, CallRouter, CallScheme, FormatConverter, EvmStateCommitter, ISet,
+    ApiAddress, ApplyDelta, CallInput, CallOutput, CallRouter, CallScheme, FormatConverter, EvmStateCommitter, ISet,
     Recorder, SetHandler, StateDb,
 };
 use crate::planner::scheduler::ID;
@@ -321,9 +322,9 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
     assert!(stage(&mut b, set, 6, false));
     assert!(stage(&mut b, set, 1, false));
 
-    let mut committer = EvmStateCommitter::with_target(base);
-    committer.buffer(ID::new(0, 1), a.inner.state);
-    committer.buffer(ID::new(0, 2), b.inner.state);
+    let mut committer = EvmStateCommitter::with_target(base, EmptyDB::default());
+    committer.buffer(ID { sequence: 1, ..ID::new(0, 1) }, a.inner.state);
+    committer.buffer(ID { sequence: 2, ..ID::new(0, 2) }, b.inner.state);
     committer.flush().unwrap();
     let merged = committer.into_inner();
 
@@ -339,7 +340,7 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
 
     // A later generation re-adds a removed element at the end of the index.
     assert!(stage(&mut next, set, 2, true));
-    let mut committer = EvmStateCommitter::with_target(merged);
+    let mut committer = EvmStateCommitter::with_target(merged, EmptyDB::default());
     committer.buffer(ID::new(0, 3), next.inner.state);
     committer.flush().unwrap();
 
@@ -371,7 +372,7 @@ fn persist_links_element_zero_as_an_empty_node() {
     let mut journal = sequence(set, &[7]);
     assert!(stage(&mut journal, set, 0, true));
     assert!(stage(&mut journal, set, 8, true));
-    let mut committer = EvmStateCommitter::with_target(sequence(set, &[7]).inner.state);
+    let mut committer = EvmStateCommitter::with_target(sequence(set, &[7]).inner.state, EmptyDB::default());
     committer.buffer(ID::new(0, 1), journal.inner.state);
     committer.flush().unwrap();
 
@@ -385,4 +386,67 @@ fn persist_links_element_zero_as_an_empty_node() {
     assert_eq!(slot(&mut db, KeyCodec::head(id)), U256::from(7));
     assert_eq!(slot(&mut db, KeyCodec::tail(id)), U256::from(8));
     assert_eq!(elements(&mut reload(db.inner()), set), vec![7, 0, 8]);
+}
+
+#[test]
+fn merged_deltas_apply_like_the_sequences_in_turn() {
+    let set = B256::repeat_byte(1);
+    let base = sequence(set, &[1, 2, 3]).inner.state;
+    let mut a = sequence(set, &[1, 2, 3]);
+    assert!(stage(&mut a, set, 2, false));
+    assert!(stage(&mut a, set, 4, true));
+    let mut b = sequence(set, &[1, 2, 3]);
+    assert!(stage(&mut b, set, 5, true));
+    assert!(stage(&mut b, set, 6, true));
+    assert!(stage(&mut b, set, 6, false));
+    assert!(stage(&mut b, set, 1, false));
+    let states = [(ID { sequence: 1, ..ID::new(0, 1) }, &a.inner.state), (ID { sequence: 2, ..ID::new(0, 2) }, &b.inner.state)];
+
+    // Applied one sequence at a time.
+    let mut in_turn = StateDb::new(base.clone());
+    for (id, state) in states {
+        let mut delta = Delta::default();
+        Applier::merge_delta(&mut delta, id, &state[&OWNER].storage).unwrap();
+        Applier::apply(&mut in_turn, OWNER, delta).unwrap();
+    }
+
+    // Merged without a store, then applied once.
+    let mut delta = Delta::default();
+    for (id, state) in states {
+        Applier::merge_delta(&mut delta, id, &state[&OWNER].storage).unwrap();
+    }
+    let mut once = StateDb::new(base);
+    Applier::apply(&mut once, OWNER, delta).unwrap();
+
+    // An absent slot reads as zero, so only non-zero values are compared.
+    let values = |state: &EvmState| {
+        state[&OWNER]
+            .storage
+            .iter()
+            .filter(|(_, slot)| !slot.present_value.is_zero())
+            .map(|(&key, slot)| (key, slot.present_value))
+            .collect::<BTreeMap<_, _>>()
+    };
+    assert_eq!(values(once.inner()), values(in_turn.inner()));
+    assert_eq!(elements(&mut reload(once.inner()), set), vec![3, 4, 5]);
+}
+
+#[test]
+fn the_same_addition_from_two_states_is_indexed_once() {
+    let set = B256::repeat_byte(1);
+    let base = sequence(set, &[1, 2, 3]).inner.state;
+    let mut a = sequence(set, &[1, 2, 3]);
+    assert!(stage(&mut a, set, 4, true));
+    let mut b = sequence(set, &[1, 2, 3]);
+    assert!(stage(&mut b, set, 4, true));
+
+    // Both states add 4; the lower ID's copy is kept and Length counts it once.
+    let mut delta = Delta::default();
+    Applier::merge_delta(&mut delta, ID { sequence: 2, ..ID::new(0, 2) }, &b.inner.state[&OWNER].storage).unwrap();
+    Applier::merge_delta(&mut delta, ID { sequence: 1, ..ID::new(0, 1) }, &a.inner.state[&OWNER].storage).unwrap();
+    let mut db = StateDb::new(base);
+    Applier::apply(&mut db, OWNER, delta).unwrap();
+    let mut next = reload(db.inner());
+    assert_eq!(elements(&mut next, set), vec![1, 2, 3, 4]);
+    assert_eq!(length(&mut next, set), U256::from(4));
 }

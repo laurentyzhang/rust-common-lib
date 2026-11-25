@@ -20,11 +20,11 @@ fn flush_combines_only_accepted_deltas_and_clears_the_buffer() {
         );
         EvmState::from_iter([(Address::ZERO, account)])
     };
-    let mut committer = EvmStateCommitter::with_target(changes(0, 10));
+    let mut committer = EvmStateCommitter::with_target(changes(0, 10), EmptyDB::default());
     committer.buffer(ID::new(0, 2), changes(10, 13));
     committer.buffer(ID::new(0, 1), changes(10, 12));
     committer.buffer(ID::new(0, 3), changes(10, 99));
-    committer.stage(vec![ID::new(0, 1), ID::new(0, 2)]);
+    committer.stage(vec![ID::new(0, 1), ID::new(0, 2)]).unwrap();
     committer.flush().unwrap();
     assert_eq!(
         committer.inner()[&Address::ZERO].storage[&key].present_value(),
@@ -62,10 +62,10 @@ fn sequential_committer_uses_execution_order_instead_of_global_order() {
     first.job = 0;
     let mut second = ID::new(0, 1);
     second.job = 1;
-    let mut committer = EvmStateCommitter::new_sequential();
+    let mut committer = EvmStateCommitter::new_sequential(&fallback);
     committer.buffer(second, account_change(base.clone(), U256::from(120), 2));
     committer.buffer(first, account_change(base, U256::from(110), 1));
-    let committed = committer.commit(&fallback).unwrap();
+    let committed = committer.commit().unwrap().into_inner();
     assert_eq!(committed[&Address::ZERO].info.balance, U256::from(120));
     assert_eq!(committed[&Address::ZERO].info.nonce, 2);
 }
@@ -79,7 +79,7 @@ fn commit_rebases_account_deltas_and_preserves_the_base_across_layers() {
         Address::ZERO,
         Account::from(base.clone()),
     )]));
-    let mut sequence = EvmStateCommitter::new_parallel();
+    let mut sequence = EvmStateCommitter::new_parallel(&fallback);
     sequence.buffer(
         ID::new(0, 2),
         account_change(
@@ -100,18 +100,18 @@ fn commit_rebases_account_deltas_and_preserves_the_base_across_layers() {
             8,
         ),
     );
-    let committed = sequence.commit(&fallback).unwrap();
+    let committed = sequence.commit().unwrap().into_inner();
     assert_eq!(committed[&Address::ZERO].info.balance, U256::from(56));
     assert_eq!(committed[&Address::ZERO].info.nonce, 7);
     assert_eq!(committed[&Address::ZERO].original_info(), base);
 
-    let mut generation = EvmStateCommitter::new_parallel();
+    let mut generation = EvmStateCommitter::new_parallel(&fallback);
     generation.buffer(ID::new(0, 1), committed);
     generation.buffer(
         ID::new(0, 3),
         account_change(base.clone(), U256::from(54), 6),
     );
-    let committed = generation.commit(&fallback).unwrap();
+    let committed = generation.commit().unwrap().into_inner();
     assert_eq!(committed[&Address::ZERO].info.balance, U256::from(60));
     assert_eq!(committed[&Address::ZERO].info.nonce, 8);
     assert_eq!(committed[&Address::ZERO].original_info(), base);

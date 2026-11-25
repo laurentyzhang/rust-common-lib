@@ -1,126 +1,127 @@
 use std::collections::{BTreeMap, HashSet};
 
-use alloy_evm::revm::{
-    DatabaseRef,
-    state::{Account, EvmState, EvmStorage},
-};
-use alloy_primitives::{Address, U256};
+use alloy_evm::revm::{DatabaseRef, database_interface::EmptyDB, state::EvmState};
 use std::io::Error;
 
-use super::{StateDb, overlay::StateOverlay};
-use crate::crdt::state::CrdtError;
+use super::{
+    StateDb,
+    overlay::{OverlayState, StateOverlay},
+};
+use crate::execution::slot::CrdtSlot;
 use crate::execution::workload::ID;
-use crate::execution::{DeltaMerger, scalar, set};
 use crate::store::traits::{Committer, StoreError};
 
 /// Buffers transaction states and commits accepted changes.
 #[derive(Debug)]
-pub struct EvmStateCommitter {
-    state: StateDb,
-    buffered: BTreeMap<(u64, u64, u64, u64, u64), EvmState>,
-    nonce_fee_handler: fn(&mut Account, &Account) -> Result<(), CrdtError>,
+pub struct EvmStateCommitter<DB = EmptyDB, Store = EvmState> {
+    /// Merged target over the readonly base; the overlay carries the balance and nonce rule.
+    state: StateDb<DB, Store>,
+    buffered: BTreeMap<(u64, u64, u64, u64, u64), (ID, EvmState)>,
+    /// CRDT changes of the imported states, applied once by `flush` or `commit`.
+    crdt: CrdtSlot,
 }
 
-impl EvmStateCommitter {
-    pub fn new_sequential() -> Self {
+impl<DB: DatabaseRef> EvmStateCommitter<DB> {
+    /// Creates a committer over `readonly` whose merged balances and nonces take the incoming values.
+    pub fn new_sequential(readonly: DB) -> Self {
         Self {
-            state: StateDb::default(),
+            state: StateDb::with_fallback(
+                StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+                Some(readonly),
+            ),
             buffered: BTreeMap::new(),
-            nonce_fee_handler: StateOverlay::copy_balance_nonce,
+            crdt: CrdtSlot::default(),
         }
     }
 
-    pub fn new_parallel() -> Self {
+    /// Creates a committer over `readonly` whose merged balances and nonces add up the incoming deltas.
+    pub fn new_parallel(readonly: DB) -> Self {
+        Self::with_target(EvmState::default(), readonly)
+    }
+
+    /// Creates a parallel committer over `readonly` that merges into `target`.
+    pub fn with_target(target: EvmState, readonly: DB) -> Self {
         Self {
-            state: StateDb::default(),
+            state: StateDb::with_fallback(
+                StateOverlay::new(target, StateOverlay::add_balance_nonce_deltas),
+                Some(readonly),
+            ),
             buffered: BTreeMap::new(),
-            nonce_fee_handler: StateOverlay::add_balance_nonce_deltas,
+            crdt: CrdtSlot::default(),
         }
     }
+}
 
-    pub fn with_target(target: EvmState) -> Self {
+impl<DB: DatabaseRef, Store: OverlayState> EvmStateCommitter<DB, Store> {
+    /// Creates a committer that merges into `state`, using its overlay's balance and nonce rule.
+    pub fn with_state(state: StateDb<DB, Store>) -> Self {
         Self {
-            state: StateDb::new(target),
-            ..Self::new_parallel()
+            state,
+            buffered: BTreeMap::new(),
+            crdt: CrdtSlot::default(),
         }
     }
 
+    /// Orders buffered states by block, generation, sequence, job and global index.
     fn key(id: ID) -> (u64, u64, u64, u64, u64) {
         (id.block, id.generation, id.sequence, id.job, id.global)
     }
 
-    pub fn inner(&self) -> &EvmState {
+    /// Returns the merged target state.
+    pub fn inner(&self) -> &Store {
         self.state.inner()
     }
 
+    /// Consumes the committer and returns the merged target state.
     pub fn into_inner(self) -> EvmState {
         self.state.into_inner()
     }
 
-    /// Merges the buffered states against the shared base; CRDT slots go through their mergers.
-    pub(crate) fn commit<DB: DatabaseRef>(self, fallback: &DB) -> Result<EvmState, Error> {
-        let overlay = StateOverlay::new(self.state.into_inner(), self.nonce_fee_handler);
-        let mut db = StateDb::with_fallback(overlay, Some(fallback));
-        for incoming in self.buffered.into_values() {
-            Self::merge(&mut db, incoming).map_err(Error::other)?;
+    /// Merges the buffered states against the shared base and returns the merged state; nothing
+    /// is written back to `readonly`.
+    pub(crate) fn commit(mut self) -> Result<StateDb<DB, Store>, Error> {
+        for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
+            self.import(id, incoming).map_err(Error::other)?;
         }
-        Ok(db.into_inner())
+        self.crdt.apply(&mut self.state).map_err(Error::other)?;
+        Ok(self.state)
     }
 
-    /// Applies one state to `db`: plain slots through the overlay, Set and scalar slots through
-    /// their mergers.
-    fn merge<DB: DatabaseRef>(db: &mut StateDb<DB>, mut incoming: EvmState) -> Result<(), StoreError> {
-        let sets = Self::split(&mut incoming, |key| set::KeyCodec::decode(key).is_some());
-        let scalars = Self::split(&mut incoming, |key| scalar::KeyCodec::decode(key).is_some());
-        db.overlay.apply(incoming, db.fallback.as_ref())?;
-        for (owner, slots) in sets {
-            set::Merger::merge(db, owner, &slots)?;
-        }
-        for (owner, slots) in scalars {
-            scalar::Merger::merge(db, owner, &slots)?;
-        }
-        Ok(())
-    }
-
-    /// Moves each account's slots selected by `belongs` out of `incoming`, for a CRDT merger.
-    pub(crate) fn split(incoming: &mut EvmState, belongs: impl Fn(U256) -> bool) -> Vec<(Address, EvmStorage)> {
-        incoming
-            .iter_mut()
-            .filter_map(|(&owner, account)| {
-                let mut slots = EvmStorage::default();
-                account.storage.retain(|&key, slot| {
-                    if !belongs(key) {
-                        return true;
-                    }
-                    slots.insert(key, slot.clone());
-                    false
-                });
-                (!slots.is_empty()).then_some((owner, slots))
-            })
-            .collect()
+    /// Imports one accepted state: its CRDT slots join the collected deltas, its account fields
+    /// and plain slots go through the overlay.
+    fn import(&mut self, id: ID, incoming: EvmState) -> Result<(), StoreError> {
+        let native = self.crdt.merge_delta(id, incoming)?;
+        self.state
+            .overlay
+            .apply(native, self.state.fallback.as_ref())
     }
 }
 
-impl Committer<ID, EvmState> for EvmStateCommitter {
+impl<DB: DatabaseRef, Store: OverlayState> Committer<ID, EvmState>
+    for EvmStateCommitter<DB, Store>
+{
+    /// Holds a transaction's state until its verdict is known.
     fn buffer(&mut self, id: ID, state: EvmState) {
-        self.buffered.insert(Self::key(id), state);
+        self.buffered.insert(Self::key(id), (id, state));
     }
 
-    fn stage(&mut self, accepted: Vec<ID>) {
+    /// Imports the buffered states of the accepted transactions and drops the rest.
+    fn stage(&mut self, accepted: Vec<ID>) -> Result<(), StoreError> {
         let accepted = accepted.into_iter().map(Self::key).collect::<HashSet<_>>();
-        self.buffered.retain(|id, _| accepted.contains(id));
+        for (key, (id, incoming)) in std::mem::take(&mut self.buffered) {
+            if accepted.contains(&key) {
+                self.import(id, incoming)?;
+            }
+        }
+        Ok(())
     }
 
-    /// Merges the buffered states into the target; CRDT slots go through their mergers.
+    /// Imports any states still buffered, then applies the collected CRDT changes once.
     fn flush(&mut self) -> Result<(), StoreError> {
-        let overlay = StateOverlay::new(self.state.inner().clone(), self.nonce_fee_handler);
-        let mut db = StateDb::with_fallback(overlay, self.state.fallback);
-        for incoming in self.buffered.values() {
-            Self::merge(&mut db, incoming.clone())?;
+        for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
+            self.import(id, incoming)?;
         }
-        self.state.overlay = db.overlay;
-        self.buffered.clear();
-        Ok(())
+        self.crdt.apply(&mut self.state)
     }
 }
 

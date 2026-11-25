@@ -1,3 +1,4 @@
+use alloy_evm::revm::database_interface::EmptyDB;
 use super::super::{EvmStateCommitter, StateDb};
 use super::AccountStorage;
 use crate::execution::{ArcologyEvmFactory, ArcologyTx, CallRouter, Recorder, key::Key};
@@ -40,12 +41,12 @@ fn change(original_balance: u64, balance: u64, slots: &[(u64, u64)]) -> EvmState
 fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
     let cache = state(0, &[(99, 99)]);
     let original = cache.clone();
-    let mut accumulator = EvmStateCommitter::with_target(cache);
+    let mut accumulator = EvmStateCommitter::with_target(cache, EmptyDB::default());
     accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     assert_eq!(cache, original);
 
-    let mut accumulator = EvmStateCommitter::with_target(cache);
+    let mut accumulator = EvmStateCommitter::with_target(cache, EmptyDB::default());
     accumulator.buffer(ID::new(0, 1), change(0, 1, &[(1, 1)]));
     accumulator.flush().unwrap();
     // A later batch with a lower ID must not replay states from the first batch.
@@ -57,7 +58,7 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
         cache.get(&Address::ZERO).unwrap().info.balance,
         U256::from(2)
     );
-    let mut accumulator = EvmStateCommitter::with_target(cache);
+    let mut accumulator = EvmStateCommitter::with_target(cache, EmptyDB::default());
     accumulator.flush().unwrap();
     let cache = accumulator.into_inner();
     assert_eq!(cache, committed);
@@ -66,7 +67,9 @@ fn empty_commits_preserve_cache_and_later_commits_keep_previous_slots() {
 
 #[test]
 fn into_evm_state_returns_accumulated_state() {
-    let mut accumulator = EvmStateCommitter::with_target(state(1, &[(1, 10)]));
+    // The change was executed against a base holding slot 2.
+    let base = StateDb::new(state(1, &[(2, 20)]));
+    let mut accumulator = EvmStateCommitter::with_target(state(1, &[(1, 10)]), base);
     accumulator.buffer(ID::new(0, 2), change(1, 2, &[(2, 20)]));
 
     accumulator.flush().unwrap();
@@ -78,9 +81,9 @@ fn into_evm_state_returns_accumulated_state() {
 #[test]
 fn into_inner_excludes_rejected_and_unflushed_states() {
     let initial = state(1, &[(1, 10)]);
-    let mut accumulator = EvmStateCommitter::with_target(initial.clone());
+    let mut accumulator = EvmStateCommitter::with_target(initial.clone(), EmptyDB::default());
     accumulator.buffer(ID::new(0, 2), state(2, &[(2, 20)]));
-    accumulator.stage(Vec::new());
+    accumulator.stage(Vec::new()).unwrap();
     accumulator.flush().unwrap();
     accumulator.buffer(ID::new(0, 3), state(3, &[(3, 30)]));
 
@@ -109,7 +112,9 @@ fn commit_writes_account_and_storage_to_accumulated_state() {
     let mut changes = EvmState::default();
     changes.insert(address, account);
 
-    let mut accumulator = EvmStateCommitter::new_parallel();
+    // The change was executed against a base holding the account.
+    let base = StateDb::new(EvmState::from_iter([(address, Account::from(info.clone()))]));
+    let mut accumulator = EvmStateCommitter::new_parallel(base);
     accumulator.buffer(ID::new(0, 9), changes);
     accumulator.flush().unwrap();
     let mut db = StateDb::new(accumulator.into_inner());

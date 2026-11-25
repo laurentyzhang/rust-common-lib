@@ -1,3 +1,4 @@
+use alloy_evm::revm::database_interface::EmptyDB;
 use super::*;
 use crate::namespace::Namespace;
 use crate::{
@@ -154,7 +155,7 @@ fn zero_scalar_reads_keep_numeric_payloads_and_do_not_conflict() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new_parallel(),
+        &mut EvmStateCommitter::new_parallel(EmptyDB::default()),
     );
     assert!(results.iter().all(|result| result.result_and_state.is_ok()));
 }
@@ -168,7 +169,7 @@ fn scalar_creations_with_different_bounds_conflict() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new_parallel(),
+        &mut EvmStateCommitter::new_parallel(EmptyDB::default()),
     );
     assert!(results[0].result_and_state.is_ok());
     assert!(
@@ -187,7 +188,7 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
             successful_job(0, 21_000, scalar_state(original, [0, max, 42, 9, 0])),
             successful_job(1, 21_000, scalar_state(original, [0, max, 42, 10, 0])),
         ];
-        let mut accumulator = EvmStateCommitter::with_target(scalar_state(original, original));
+        let mut accumulator = EvmStateCommitter::with_target(scalar_state(original, original), EmptyDB::default());
         ArcologyParaBlockExecutor::resolve_generation(
             &mut results,
             &mut ConflictDetector::new(),
@@ -225,7 +226,7 @@ fn scalar_subtractions_are_checked_against_the_combined_lower_bound() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new_parallel(),
+        &mut EvmStateCommitter::new_parallel(EmptyDB::default()),
     );
     assert!(results.iter().any(|result| matches!(&result.result_and_state, Err(JobError::Violation(conflicts))
         if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, NumericError::BelowLowerLimit(_)))))));
@@ -272,7 +273,7 @@ fn rejected_jobs_report_all_conflicts_and_contribute_no_state_or_gas() {
     }
     let mut results = vec![writer, reader];
     let mut resolver = ConflictDetector::new();
-    let mut accumulator = EvmStateCommitter::with_target(state);
+    let mut accumulator = EvmStateCommitter::with_target(state, EmptyDB::default());
     ArcologyParaBlockExecutor::resolve_generation(&mut results, &mut resolver, &mut accumulator);
     let results = ArcologyParaBlockExecutor::finish_block(results, &|receipt, gas| *receipt = gas);
 
@@ -329,7 +330,7 @@ fn accepted_reverts_consume_gas_and_execution_errors_stay_distinct() {
     ArcologyParaBlockExecutor::resolve_generation(
         &mut results,
         &mut ConflictDetector::new(),
-        &mut EvmStateCommitter::new_parallel(),
+        &mut EvmStateCommitter::new_parallel(EmptyDB::default()),
     );
     let results = ArcologyParaBlockExecutor::finish_block(results, &|receipt, gas| *receipt = gas);
     assert_eq!(results[0].receipt, Some(21_000));
