@@ -1,6 +1,6 @@
 use alloy_primitives::{Address, U256};
 
-use crate::store::{StoreCodec, StoreError};
+use super::{StoreCodec, StoreError};
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Key {
@@ -18,9 +18,9 @@ const STORAGE_KEY_TAG: u8 = 0x03;
 const BLOCK_KEY_TAG: u8 = 0x04;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct SlotKeyCodec;
+pub struct StoreKeyCodec;
 
-impl StoreCodec<Key> for SlotKeyCodec {
+impl StoreCodec<Key> for StoreKeyCodec {
     fn encode(&self, key: &Key) -> Result<Vec<u8>, StoreError> {
         match key {
             Key::Account(address) => Ok(encode_tagged_address(ACCOUNT_KEY_TAG, address)),

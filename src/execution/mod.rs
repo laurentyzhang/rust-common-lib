@@ -8,7 +8,7 @@ mod slot;
 mod tracking;
 pub mod workload;
 pub use error::{AccountDecodeError, CallHookError, PrecompileCollisionError, RegisterHookError};
-pub use evm::storage::key;
+pub use crate::store::key;
 pub use evm::{EvmStateCommitter, StateDb};
 pub use executor::ArcologyParaBlockExecutor;
 pub use hooks::{

@@ -1,3 +1,4 @@
+use crate::crdt::state::{CrdtError, NumericError};
 use alloy_evm::revm::database_interface::EmptyDB;
 use super::*;
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
     planner::{
         meta::{CalleeId, Meta, MetaCodec, MetaFieldId as Property},
         resolver::{
-            AccessConflict, Checker, CommitDecision, CommitVerdict, NumericError, Reason,
+            AccessConflict, Checker, CommitDecision, CommitVerdict, Reason,
             accepted_ids, rejected_ids,
         },
         scheduler::ID,
@@ -859,7 +860,7 @@ fn numeric_diagnostics_do_not_update_conflict_metadata() {
         decision: CommitDecision::Rejected,
         conflicts: vec![(
             ID::new(0, 2),
-            Reason::NumericError(7, NumericError::AboveUpperLimit("limit".into())),
+            Reason::NumericError(7, CrdtError::U256(NumericError::AboveUpperLimit("limit".into()))),
         )],
     }];
 

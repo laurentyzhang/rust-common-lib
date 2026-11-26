@@ -1,6 +1,5 @@
 use alloy_evm::revm::database_interface::EmptyDB;
-use super::super::{EvmStateCommitter, StateDb};
-use super::AccountStorage;
+use super::{EvmStateCommitter, StateDb};
 use crate::execution::{ArcologyEvmFactory, ArcologyTx, CallRouter, Recorder, key::Key};
 use crate::planner::scheduler::ID;
 use crate::store::traits::Committer;
@@ -121,7 +120,7 @@ fn commit_writes_account_and_storage_to_accumulated_state() {
 
     assert_eq!(db.basic(address).unwrap(), Some(info));
     assert_eq!(db.storage(address, slot).unwrap(), storage_value);
-    assert_eq!(db.into_evm_state().len(), 1);
+    assert_eq!(db.into_inner().len(), 1);
 }
 
 #[test]

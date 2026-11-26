@@ -1,3 +1,4 @@
+use crate::crdt::state::{CrdtError, NumericError};
 use alloy_evm::revm::database_interface::EmptyDB;
 use super::*;
 use crate::namespace::Namespace;
@@ -8,7 +9,7 @@ use crate::{
     },
     execution::{EvmStateCommitter, scalar},
     planner::resolver::{
-        AccessConflict, CommitDecision, CommitVerdict, ConflictDetector, NumericError, Reason,
+        AccessConflict, CommitDecision, CommitVerdict, ConflictDetector, Reason,
     },
 };
 use alloy_evm::revm::{
@@ -198,7 +199,7 @@ fn scalar_bounds_reach_the_resolver_without_counting_existing_deltas_twice() {
         if rejected {
             assert!(
                 matches!(&results[1].result_and_state, Err(JobError::Violation(conflicts))
-                if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, NumericError::AboveUpperLimit(_)))))
+                if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, CrdtError::U256(NumericError::AboveUpperLimit(_))))))
             );
         } else {
             assert!(results[1].result_and_state.is_ok());
@@ -229,7 +230,7 @@ fn scalar_subtractions_are_checked_against_the_combined_lower_bound() {
         &mut EvmStateCommitter::new_parallel(EmptyDB::default()),
     );
     assert!(results.iter().any(|result| matches!(&result.result_and_state, Err(JobError::Violation(conflicts))
-        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, NumericError::BelowLowerLimit(_)))))));
+        if conflicts.iter().any(|(_, reason)| matches!(reason, Reason::NumericError(_, CrdtError::U256(NumericError::BelowLowerLimit(_))))))));
     assert_eq!(
         results
             .iter()

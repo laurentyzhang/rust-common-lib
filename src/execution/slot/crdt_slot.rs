@@ -5,10 +5,11 @@ use std::fmt::Debug;
 use alloy_evm::revm::state::{EvmState, EvmStorage};
 use alloy_primitives::map::HashMap;
 use alloy_primitives::{Address, U256};
+use rayon::prelude::*;
 
 use super::{ApplyDelta, scalar, set};
 use crate::common::codec::CodecError;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::workload::ID;
 use crate::store::StoreError;
 
@@ -44,6 +45,41 @@ impl CrdtSlot {
             scalar::Applier::apply(store, owner, delta)?;
         }
         Ok(())
+    }
+
+    /// Applies each owner's deltas on its own thread, into the store `store_for` makes for that
+    /// owner, and clears them; returns the stores. Owners are independent, so none reads another's
+    /// writes.
+    pub(crate) fn apply_by_owner<S>(
+        &mut self,
+        store_for: impl Fn(Address) -> S + Sync,
+    ) -> Result<Vec<S>, StoreError>
+    where
+        S: ApiStore + Send,
+        S::Error: Debug,
+    {
+        let mut owners = HashMap::<Address, (Option<set::Delta>, Option<scalar::Delta>)>::default();
+        for (owner, delta) in self.sets.drain() {
+            owners.entry(owner).or_default().0 = Some(delta);
+        }
+        for (owner, delta) in self.scalars.drain() {
+            owners.entry(owner).or_default().1 = Some(delta);
+        }
+        owners
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|(owner, (sets, scalars))| {
+                let mut store = store_for(owner);
+                if let Some(delta) = sets {
+                    set::Applier::apply(&mut store, owner, delta)?;
+                }
+                if let Some(delta) = scalars {
+                    scalar::Applier::apply(&mut store, owner, delta)?;
+                }
+                Ok(store)
+            })
+            .collect()
     }
 
     /// Applies the CRDT slots of `incoming` alone onto `store`; returns the plain slots.

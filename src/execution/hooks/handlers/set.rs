@@ -1,6 +1,6 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
-use crate::execution::{CallHookError, FormatConverter, Recorder, key::Key, set};
+use crate::execution::{CallHookError, Recorder, key::Key, set};
 use alloy_evm::EvmInternals;
 use alloy_primitives::U256;
 use alloy_sol_types::{SolInterface, SolValue, sol};
@@ -39,8 +39,6 @@ impl CallHandler for SetHandler {
         // Map the caller's set key to its private set ID.
         let set = set::KeyCodec::derive_key(key);
         let length = set::KeyCodec::length(set);
-        // The first touch in the block converts the list (storage format) into the execution format.
-        set::Converter::to_execution_format(internals, owner, set)?;
         match ISet::ISetCalls::abi_decode_validate(input.input) {
             Ok(ISet::ISetCalls::insert(_) | ISet::ISetCalls::remove(_))
                 if input.scheme == CallScheme::StaticCall =>

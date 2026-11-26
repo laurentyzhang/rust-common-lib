@@ -1,6 +1,6 @@
 use super::*;
 use crate::execution::evm::state::overlay::StateOverlay;
-use crate::execution::evm::storage::{AccountStorage, ApiStore};
+use crate::execution::evm::api_store::ApiStore;
 use alloy_evm::revm::{
     DatabaseCommit,
     database_interface::EmptyDB,
@@ -29,7 +29,7 @@ fn reads_fallback_and_keeps_writes_local() {
         StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
         Some(&fallback),
     );
-    assert_eq!(db.get(&owner).unwrap(), Some(info.clone()));
+    assert_eq!(db.basic_ref(owner).unwrap(), Some(info.clone()));
     assert_eq!(db.basic(owner).unwrap(), Some(info.clone()));
     assert_eq!(db.code_by_hash(info.code_hash).unwrap(), code);
     assert_eq!(db.read(owner, U256::from(7)).unwrap(), U256::from(70));
@@ -50,7 +50,7 @@ fn reads_fallback_and_keeps_writes_local() {
     );
     db.commit(EvmState::from_iter([(owner, changes)]));
     assert_eq!(db.basic(owner).unwrap().unwrap().balance, U256::from(99));
-    assert_eq!(db.get(&owner).unwrap().unwrap().balance, U256::from(99));
+    assert_eq!(db.basic_ref(owner).unwrap().unwrap().balance, U256::from(99));
     assert_eq!(db.read(owner, U256::from(7)).unwrap(), U256::ZERO);
     assert_eq!(db.read(owner, U256::from(8)).unwrap(), U256::from(80));
     assert_eq!(
@@ -88,7 +88,7 @@ fn local_account_resets_hide_fallback_storage() {
             Some(&fallback),
         );
         assert_eq!(db.basic(owner).unwrap().is_some(), exists);
-        assert_eq!(db.get(&owner).unwrap().is_some(), exists);
+        assert_eq!(db.basic_ref(owner).unwrap().is_some(), exists);
         assert_eq!(db.read(owner, U256::from(7)).unwrap(), U256::ZERO);
     }
 }
@@ -97,7 +97,7 @@ fn local_account_resets_hide_fallback_storage() {
 fn optional_fallback_controls_block_hash_reads() {
     let mut local = StateDb::new(EvmState::default());
     assert_eq!(local.basic(Address::ZERO).unwrap(), None);
-    assert_eq!(local.get(&Address::ZERO).unwrap(), None);
+    assert_eq!(local.basic_ref(Address::ZERO).unwrap(), None);
     assert_eq!(
         local.storage(Address::ZERO, U256::ZERO).unwrap(),
         U256::ZERO

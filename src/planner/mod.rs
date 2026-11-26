@@ -157,5 +157,5 @@ impl<DB: Database, K> Planner<DB, K> {
 }
 
 #[cfg(test)]
-#[path = "planner_tests.rs"]
+#[path = "tests/planner.rs"]
 mod tests;

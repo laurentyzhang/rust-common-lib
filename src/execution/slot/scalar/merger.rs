@@ -8,7 +8,7 @@ use alloy_primitives::{Address, U256};
 
 use super::{KeyCodec, Property};
 use crate::common::codec::CodecError;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::slot::{ApplyDelta, database};
 use crate::execution::workload::ID;
 use crate::store::StoreError;

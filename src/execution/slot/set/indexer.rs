@@ -6,7 +6,7 @@ use super::{KeyCodec, Property};
 use crate::collections::delta_set::DeltaSet;
 use crate::common::codec::CodecError;
 use crate::crdt::types::collections::SetDelta;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 
 /// Reads and writes caller-owned Sets in the execution format; `Converter` converts them in and out.
 pub struct Indexer;

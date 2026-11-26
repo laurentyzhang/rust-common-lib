@@ -4,7 +4,7 @@ mod kind;
 mod merger;
 
 #[cfg(test)]
-#[path = "scalar_tests.rs"]
+#[path = "tests/scalar.rs"]
 mod tests;
 
 pub use indexer::{Indexer, Property};

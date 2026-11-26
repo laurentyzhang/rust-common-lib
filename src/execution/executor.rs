@@ -14,6 +14,7 @@ use super::{
     op::backend::PostExecEvmFactoryAdapter,
     workload::{ID, Job, JobResult, ReceiptStatus},
 };
+use super::evm::state::sharded::Sharded;
 use crate::planner::Planner;
 
 /// Stateless processor that prepares block workloads and finalizes transaction outcomes.
@@ -59,6 +60,7 @@ impl ArcologyParaBlockExecutor {
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
+        cache: &mut Sharded,
         fallback: &'db Fallback,
         planner: &mut Planner<PDB, Key>,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
@@ -96,7 +98,7 @@ impl ArcologyParaBlockExecutor {
 
         planner.block_gas_limit = config.env.block_env.gas_limit;
         let block = planner.plan(jobs).map_err(Error::other)?;
-        block.run(factory, config, pool, set_cumulative, fallback, planner)
+        block.run(factory, config, pool, set_cumulative, cache, fallback, planner)
     }
 }
 

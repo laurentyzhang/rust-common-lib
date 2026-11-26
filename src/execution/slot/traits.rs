@@ -6,7 +6,7 @@ use alloy_evm::revm::state::EvmStorage;
 use alloy_primitives::{Address, U256};
 
 use crate::common::codec::CodecError;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::workload::ID;
 use crate::store::StoreError;
 

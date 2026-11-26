@@ -9,7 +9,7 @@ use alloy_primitives::{Address, U256};
 
 use super::{KeyCodec, Property};
 use crate::common::codec::CodecError;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::slot::{ApplyDelta, database};
 use crate::execution::workload::ID;
 use crate::store::StoreError;
@@ -24,15 +24,12 @@ pub struct Delta {
     additions: HashMap<[u8; 6], BTreeMap<(u64, u64, u64, u64), Vec<U256>>>,
     /// Removals of indexed elements per set, each element once.
     removals: HashMap<[u8; 6], HashSet<U256>>,
-    /// Execution-format slots (Index, Position, Indexed); parallel states convert the same list
-    /// identically, so the first value seen is kept.
-    conversion: HashMap<U256, U256>,
 }
 
 impl ApplyDelta for Applier {
     type Delta = Delta;
 
-    /// Keeps the state's conversion slots, its uncancelled additions under `id` and its removals.
+    /// Keeps the state's uncancelled additions under `id` and its removals.
     fn merge_delta(delta: &mut Delta, id: ID, slots: &EvmStorage) -> Result<(), CodecError> {
         let get = |key: U256| {
             slots
@@ -40,16 +37,9 @@ impl ApplyDelta for Applier {
                 .map_or(U256::ZERO, |slot| slot.present_value)
         };
         let mut sets = HashSet::<[u8; 6]>::default();
-        for (&key, slot) in slots {
-            let Some((set, property, ..)) = KeyCodec::decode(key) else {
-                continue;
-            };
-            sets.insert(set);
-            if matches!(
-                property,
-                Property::Index | Property::Position | Property::Indexed
-            ) {
-                delta.conversion.entry(key).or_insert(slot.present_value);
+        for &key in slots.keys() {
+            if let Some((set, ..)) = KeyCodec::decode(key) {
+                sets.insert(set);
             }
         }
         for set in sets {
@@ -88,35 +78,12 @@ impl ApplyDelta for Applier {
         Ok(())
     }
 
-    /// Adopts each set's conversion if the block has none yet, appends the additions in
-    /// (block, generation, sequence, job) order
-    /// with each element once, and turns the removals into holes; Length keeps the live count.
+    /// Appends the additions in (block, generation, sequence, job) order with each element once,
+    /// and turns the removals into holes; Length keeps the live count.
     fn apply<S: ApiStore>(store: &mut S, owner: Address, mut delta: Delta) -> Result<(), StoreError>
     where
         S::Error: Debug,
     {
-        let converted: HashSet<[u8; 6]> = delta
-            .conversion
-            .keys()
-            .filter_map(|&key| KeyCodec::decode(key))
-            .map(|(set, ..)| set)
-            .collect();
-        for set in converted {
-            let indexed = KeyCodec::indexed(set);
-            if store.read(owner, indexed).map_err(database)?.is_zero()
-                && delta
-                    .conversion
-                    .get(&indexed)
-                    .is_some_and(|value| !value.is_zero())
-            {
-                for (&key, &value) in &delta.conversion {
-                    if KeyCodec::decode(key).is_some_and(|(id, ..)| id == set) {
-                        store.write(owner, key, value).map_err(database)?;
-                    }
-                }
-            }
-        }
-
         let sets: HashSet<[u8; 6]> = delta
             .additions
             .keys()

@@ -3,7 +3,7 @@ use crate::crdt::{
     self, Scalar,
     state::{CrdtValue, DeltaOp, Status},
 };
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
     EvmStateCommitter, ExitStatus, JobResult, Recorder, StateDb, key::Key, scalar,
@@ -608,7 +608,7 @@ fn scalar_store_and_load_round_trip() {
         keys.store(&mut internals, owner, &state, &mut Recorder::new(0))
             .unwrap();
         assert_eq!(
-            keys.load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+            keys.load::<U256, _>(&mut internals, owner)
                 .unwrap(),
             (state, keys)
         );
@@ -639,7 +639,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
             )
             .unwrap();
         let (state, loaded_slots) = slots(Address::from_word(call.key))
-            .load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+            .load::<U256, _>(&mut internals, owner)
             .unwrap();
         assert_eq!(loaded_slots, slots(Address::from_word(call.key)));
         assert_eq!(state.value, U256::from(50));
@@ -649,7 +649,7 @@ fn scalar_load_sees_journal_changes_and_checkpoint_reverts() {
     journal.checkpoint_revert(checkpoint);
     let mut internals = EvmInternals::new(&mut journal, &block, &cfg, &tx);
     let (state, _) = slots(Address::from_word(call.key))
-        .load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+        .load::<U256, _>(&mut internals, owner)
         .unwrap();
     assert_eq!(state.value, U256::ZERO);
     assert_eq!((state.min, state.max), (call.min, call.max));
@@ -683,7 +683,7 @@ fn scalar_store_and_load_preserve_full_width_pending_deltas() {
         keys.store(&mut internals, owner, &state, &mut Recorder::new(0))
             .unwrap();
         assert_eq!(
-            keys.load::<U256, _>(&mut internals, owner, &mut Recorder::new(0))
+            keys.load::<U256, _>(&mut internals, owner)
                 .unwrap(),
             (state, keys)
         );

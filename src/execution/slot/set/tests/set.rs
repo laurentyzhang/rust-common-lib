@@ -1,6 +1,6 @@
 use super::{Applier, Delta, Indexer, KeyCodec, Property, Converter};
 use std::collections::BTreeMap;
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use crate::execution::{
     ApiAddress, ApplyDelta, CallInput, CallOutput, CallRouter, CallScheme, FormatConverter, EvmStateCommitter, ISet,
     Recorder, SetHandler, StateDb,
@@ -62,7 +62,8 @@ fn with_internals<R>(journal: &mut Journal<EmptyDB>, f: impl FnOnce(&mut EvmInte
     f(&mut EvmInternals::new(journal, &block, &cfg, &tx))
 }
 
-/// Seeds `set` with committed `elements` as a linked list: Length, Head, Tail and Node links.
+/// Seeds `set` with committed `elements` as the cache delivers them: stored as a linked list
+/// (Length, Head, Tail and Node links), then converted to the execution format.
 fn commit(journal: &mut Journal<EmptyDB>, set: B256, elements: &[u64]) {
     let id = KeyCodec::derive_key(set.into());
     with_internals(journal, |internals| {
@@ -74,6 +75,7 @@ fn commit(journal: &mut Journal<EmptyDB>, set: B256, elements: &[u64]) {
             // A Node of 0 stays empty.
             write(internals, KeyCodec::element(Property::Node, id, U256::from(pair[0])), U256::from(pair[1]));
         }
+        Converter::to_execution_format(internals, OWNER, id).unwrap();
     });
 }
 
@@ -289,12 +291,22 @@ fn exist(journal: &mut Journal<EmptyDB>) {
     account.status.remove(AccountStatus::LoadedAsNotExisting);
 }
 
-/// Copies OWNER's slots from `state` into a fresh journal, standing in for the next generation.
+/// Copies OWNER's slots from `state` into a fresh journal, standing in for the next generation or
+/// for a load through the cache, which converts a persisted Set to the execution format.
 fn reload(state: &EvmState) -> Journal<EmptyDB> {
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     with_internals(&mut journal, |internals| {
         for (&key, slot) in &state[&OWNER].storage {
             internals.write(OWNER, key, slot.present_value).unwrap();
+        }
+        let sets: std::collections::BTreeSet<_> = state[&OWNER]
+            .storage
+            .keys()
+            .filter_map(|&key| KeyCodec::decode(key))
+            .map(|(set, ..)| set)
+            .collect();
+        for set in sets {
+            Converter::to_execution_format(internals, OWNER, set).unwrap();
         }
     });
     exist(&mut journal);

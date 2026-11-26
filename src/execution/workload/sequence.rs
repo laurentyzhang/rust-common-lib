@@ -1,9 +1,6 @@
 use super::{Job, JobResult, ReceiptStatus, TransactionGasLimit};
 use crate::planner::scheduler::sender::SenderNonceOffset;
-use crate::{
-    crdt::state,
-    planner::resolver::{CommitDecision, CommitVerdict, Reason},
-};
+use crate::planner::resolver::{CommitDecision, CommitVerdict, Reason};
 use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},

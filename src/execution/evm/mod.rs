@@ -1,5 +1,5 @@
 mod internals;
 pub mod state;
-pub mod storage;
+pub mod api_store;
 
 pub use state::{EvmStateCommitter, StateDb};

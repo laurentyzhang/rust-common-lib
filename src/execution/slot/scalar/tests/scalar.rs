@@ -3,7 +3,7 @@ use crate::execution::ApplyDelta;
 use crate::execution::workload::ID;
 use alloy_evm::revm::state::{EvmStorage, EvmStorageSlot};
 use crate::crdt::{self, state::DeltaOp};
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use super::KeyCodec;
 use crate::execution::{Recorder, StateDb, key::Key};
 use crate::namespace::Namespace;
@@ -31,7 +31,7 @@ fn u256_values_and_full_width_deltas_round_trip() {
             .unwrap();
         assert_eq!(
             slots
-                .load::<U256, _>(&mut storage, owner, &mut recorder)
+                .load::<U256, _>(&mut storage, owner)
                 .unwrap(),
             (state, slots)
         );
@@ -63,7 +63,7 @@ fn i256_values_use_twos_complement_and_unsigned_delta_magnitudes() {
         assert_eq!(storage.read(owner, slots.value).unwrap(), value.into_raw());
         assert_eq!(
             slots
-                .load::<I256, _>(&mut storage, owner, &mut recorder)
+                .load::<I256, _>(&mut storage, owner)
                 .unwrap(),
             (state, slots)
         );
@@ -88,7 +88,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
     storage.write(owner, slots.value, U256::MAX).unwrap();
     assert_eq!(
         slots
-            .load::<U256, _>(&mut storage, owner, &mut recorder)
+            .load::<U256, _>(&mut storage, owner)
             .unwrap()
             .0
             .value,
@@ -107,7 +107,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
         storage.write(owner, slots.value, value.into_raw()).unwrap();
         assert_eq!(
             slots
-                .load::<I256, _>(&mut storage, owner, &mut recorder)
+                .load::<I256, _>(&mut storage, owner)
                 .unwrap()
                 .0
                 .value,
@@ -119,7 +119,7 @@ fn typed_loads_accept_full_width_values_and_magnitudes() {
     storage.write(owner, slots.pos_delta, U256::MAX).unwrap();
     assert_eq!(
         slots
-            .load::<I256, _>(&mut storage, owner, &mut recorder)
+            .load::<I256, _>(&mut storage, owner)
             .unwrap()
             .0
             .delta,
@@ -174,7 +174,7 @@ fn split_deltas_round_trip_and_clear_the_opposite_slot() {
         );
         assert_eq!(
             slots
-                .load::<U256, _>(&mut storage, owner, &mut recorder)
+                .load::<U256, _>(&mut storage, owner)
                 .unwrap(),
             (state, slots)
         );
@@ -212,7 +212,7 @@ fn load_combines_magnitudes_without_changing_storage() {
         storage.write(owner, slots.neg_delta, neg).unwrap();
         assert_eq!(
             slots
-                .load::<U256, _>(&mut storage, owner, &mut recorder)
+                .load::<U256, _>(&mut storage, owner)
                 .unwrap()
                 .0
                 .delta,
@@ -268,7 +268,7 @@ fn scalar_store_records_writes_without_internal_reads() {
             .store(&mut storage, owner, &state, &mut recorder)
             .unwrap();
         slots
-            .load::<U256, _>(&mut storage, owner, &mut recorder)
+            .load::<U256, _>(&mut storage, owner)
             .unwrap();
     }
     let records = recorder.drain();

@@ -39,11 +39,11 @@ impl<Tx> Generation<Tx> {
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         checker: &mut impl Checker<Key>,
-        state: StateDb<Fallback, sharded::Shared<N>>,
+        state: StateDb<Fallback, sharded::Sharded<N>>,
     ) -> Result<
         (
             Vec<JobResult<F::Receipt, <F::EvmFactory as EvmFactory>::HaltReason>>,
-            StateDb<Fallback, sharded::Shared<N>>,
+            StateDb<Fallback, sharded::Sharded<N>>,
         ),
         Error,
     >

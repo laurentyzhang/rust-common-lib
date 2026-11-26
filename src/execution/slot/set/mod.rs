@@ -6,7 +6,7 @@ mod merger;
 mod converter;
 
 #[cfg(test)]
-#[path = "set_tests.rs"]
+#[path = "tests/set.rs"]
 mod tests;
 
 pub use indexer::Indexer;

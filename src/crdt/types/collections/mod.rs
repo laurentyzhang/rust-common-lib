@@ -5,5 +5,5 @@ pub use set::Set;
 pub use set_delta::SetDelta;
 
 #[cfg(test)]
-#[path = "set_tests.rs"]
+#[path = "tests/set.rs"]
 mod tests;

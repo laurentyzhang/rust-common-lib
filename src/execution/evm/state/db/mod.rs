@@ -1,7 +1,12 @@
 use alloy_evm::revm::{database_interface::EmptyDB, state::EvmState};
 
-use super::overlay::{OverlayState, StateOverlay};
+use super::overlay::StateOverlay;
+use super::store::OverlayWrite;
 use crate::store::StoreError;
+
+mod commit;
+mod database;
+mod slot;
 
 #[derive(Debug)]
 pub struct StateDb<DB = EmptyDB, Store = EvmState> {
@@ -49,7 +54,7 @@ impl<DB, Store> StateDb<DB, Store> {
     }
 }
 
-impl<DB, Store: OverlayState> StateDb<DB, Store> {
+impl<DB, Store: OverlayWrite> StateDb<DB, Store> {
     /// Recover the owned EVM state.
     pub fn into_inner(self) -> EvmState {
         self.overlay.into_inner()

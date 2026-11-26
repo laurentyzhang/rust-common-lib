@@ -1,3 +1,4 @@
+use crate::crdt::state::{CrdtError, NumericError};
 use crate::{
     crdt::{
         Crdt, Scalar,
@@ -8,7 +9,7 @@ use crate::{
     execution::output::ExecutionOutput,
     planner::{
         resolver::{
-            AccessConflict, Checker, CommitDecision, CommitVerdict, ConflictDetector, NumericError,
+            AccessConflict, Checker, CommitDecision, CommitVerdict, ConflictDetector,
             Reason, accepted_ids, rejected_ids,
         },
         scheduler::ID,
@@ -469,7 +470,7 @@ fn combines_access_and_numeric_rejections_sorted_by_transaction_id() {
             conflicts.as_slice(),
             [(
                 _,
-                Reason::NumericError(20, NumericError::AboveUpperLimit(_))
+                Reason::NumericError(20, CrdtError::I256(NumericError::AboveUpperLimit(_)) | CrdtError::U256(NumericError::AboveUpperLimit(_)) | CrdtError::U64(NumericError::AboveUpperLimit(_)))
             )]
         ));
         assert_eq!(result[3].decision, CommitDecision::Rejected);
@@ -560,7 +561,7 @@ fn preserves_access_and_numeric_reasons_for_the_same_job() {
     )));
     assert!(conflicts.iter().any(|(_, reason)| matches!(
         reason,
-        Reason::NumericError(7, NumericError::AboveUpperLimit(_))
+        Reason::NumericError(7, CrdtError::I256(NumericError::AboveUpperLimit(_)) | CrdtError::U256(NumericError::AboveUpperLimit(_)) | CrdtError::U64(NumericError::AboveUpperLimit(_)))
     )));
 }
 
@@ -743,12 +744,12 @@ fn numeric_overflow_and_underflow_reach_the_checker_for_every_numeric_type() {
         if underflow {
             assert!(matches!(
                 conflicts[0].1,
-                Reason::NumericError(7, NumericError::Underflow(_))
+                Reason::NumericError(7, CrdtError::I256(NumericError::Underflow(_)) | CrdtError::U256(NumericError::Underflow(_)) | CrdtError::U64(NumericError::Underflow(_)))
             ));
         } else {
             assert!(matches!(
                 conflicts[0].1,
-                Reason::NumericError(7, NumericError::Overflow(_))
+                Reason::NumericError(7, CrdtError::I256(NumericError::Overflow(_)) | CrdtError::U256(NumericError::Overflow(_)) | CrdtError::U64(NumericError::Overflow(_)))
             ));
         }
     }

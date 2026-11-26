@@ -1,120 +1,22 @@
 use alloy_evm::revm::{
     DatabaseRef,
-    state::{Account, AccountStatus, Bytecode, EvmState, EvmStorageSlot},
+    state::{Account, AccountStatus, EvmState, EvmStorageSlot},
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, U256};
 use rayon::prelude::*;
 
+use super::store::OverlayWrite;
 use crate::crdt::state::CrdtError;
 use crate::crdt::{Crdt, Scalar, Type};
 use crate::store::traits::StoreError;
 
-/// Storage behind a `StateOverlay`: a plain `EvmState` for sequential use, or a
-/// `sharded::Shared` state used by parallel sequences.
-pub trait OverlayState {
-    /// Reads `address`'s account; its storage may hold only part of the account's slots.
-    fn account<R>(&self, address: Address, f: impl FnOnce(Option<&Account>) -> R) -> R;
-
-    /// Reads `address`'s slot `key`.
-    fn slot<R>(
-        &self,
-        address: Address,
-        key: U256,
-        f: impl FnOnce(Option<&EvmStorageSlot>) -> R,
-    ) -> R;
-
-    /// Returns the code with `code_hash` held by any account.
-    fn code(&self, code_hash: B256) -> Option<Bytecode>;
-
-    /// Updates `address`'s account info, inserting `init()` if absent; slots go through
-    /// `slot_mut`.
-    fn account_mut<R>(
-        &mut self,
-        address: Address,
-        init: impl FnOnce() -> Account,
-        f: impl FnOnce(&mut Account) -> R,
-    ) -> R;
-
-    /// Updates `address`'s slot `key`, inserting `init()` if absent.
-    fn slot_mut<R>(
-        &mut self,
-        address: Address,
-        key: U256,
-        init: impl FnOnce() -> EvmStorageSlot,
-        f: impl FnOnce(&mut EvmStorageSlot) -> R,
-    ) -> R;
-
-    /// Keeps `account`, loaded from the fallback, unless `address` already has an entry; only a
-    /// shared store caches.
-    fn cache_account(&self, address: Address, account: Account);
-
-    /// Keeps `slot`, loaded from the fallback, unless `address`'s slot `key` already exists; only a
-    /// shared store caches.
-    fn cache_slot(&self, address: Address, key: U256, slot: EvmStorageSlot);
-
-    /// Returns all accounts as one `EvmState`.
-    fn into_evm_state(self) -> EvmState;
-}
-
-impl OverlayState for EvmState {
-    /// Reads the account entry.
-    fn account<R>(&self, address: Address, f: impl FnOnce(Option<&Account>) -> R) -> R {
-        f(self.get(&address))
-    }
-
-    /// Reads the slot from the account's storage.
-    fn slot<R>(
-        &self,
-        address: Address,
-        key: U256,
-        f: impl FnOnce(Option<&EvmStorageSlot>) -> R,
-    ) -> R {
-        f(self.get(&address).and_then(|account| account.storage.get(&key)))
-    }
-
-    /// Searches every account for the code.
-    fn code(&self, code_hash: B256) -> Option<Bytecode> {
-        self.values()
-            .filter(|account| account.info.code_hash == code_hash)
-            .find_map(|account| account.info.code.clone())
-    }
-
-    /// Updates the account entry, inserting `init()` if absent.
-    fn account_mut<R>(
-        &mut self,
-        address: Address,
-        init: impl FnOnce() -> Account,
-        f: impl FnOnce(&mut Account) -> R,
-    ) -> R {
-        f(self.entry(address).or_insert_with(init))
-    }
-
-    /// Updates the slot in the account's storage, inserting `init()` if absent.
-    fn slot_mut<R>(
-        &mut self,
-        address: Address,
-        key: U256,
-        init: impl FnOnce() -> EvmStorageSlot,
-        f: impl FnOnce(&mut EvmStorageSlot) -> R,
-    ) -> R {
-        f(self
-            .entry(address)
-            .or_default()
-            .storage
-            .entry(key)
-            .or_insert_with(init))
-    }
-
-    /// Does nothing: a sequential state is not shared, so it does not cache reads.
-    fn cache_account(&self, _address: Address, _account: Account) {}
-
-    /// Does nothing: a sequential state is not shared, so it does not cache reads.
-    fn cache_slot(&self, _address: Address, _key: U256, _slot: EvmStorageSlot) {}
-
-    /// Returns the state itself.
-    fn into_evm_state(self) -> EvmState {
-        self
-    }
+/// Clones `account`'s info, original info, transaction id and status, leaving its storage out.
+pub(super) fn without_storage(account: &Account) -> Account {
+    let mut kept = Account::from(account.info.clone());
+    *kept.original_info_mut() = account.original_info();
+    kept.transaction_id = account.transaction_id;
+    kept.status = account.status;
+    kept
 }
 
 #[derive(Debug)]
@@ -144,7 +46,7 @@ impl<Store> StateOverlay<Store> {
     }
 }
 
-impl<Store: OverlayState> StateOverlay<Store> {
+impl<Store: OverlayWrite> StateOverlay<Store> {
     /// Returns all accounts as one `EvmState`.
     pub(in crate::execution) fn into_inner(self) -> EvmState {
         self.state.into_evm_state()
@@ -203,19 +105,9 @@ impl<Store: OverlayState> StateOverlay<Store> {
             })
             .collect::<Result<_, StoreError>>()?;
 
-        // Step 3 (serial): put the merged accounts and their slots back into the overlay.
-        for (address, mut account) in merged_accounts {
-            let storage = std::mem::take(&mut account.storage);
-            // Replace the account but keep the slots already stored with it.
-            self.state.account_mut(address, Account::default, |current| {
-                account.storage = std::mem::take(&mut current.storage);
-                *current = account;
-            });
-            for (key, slot) in storage {
-                self.state
-                    .slot_mut(address, key, Default::default, |current| *current = slot);
-            }
-        }
+        // Step 3: put the merged accounts and their slots back into the overlay.
+        self.state
+            .write_accounts(merged_accounts.into_iter().collect());
         Ok(())
     }
 
@@ -284,15 +176,10 @@ impl<Store: OverlayState> StateOverlay<Store> {
         fallback: Option<&DB>,
         incoming: &Account,
     ) -> Result<Account, StoreError> {
-        if let Some(current) = self.state.account(address, |current| {
-            current.map(|current| {
-                let mut account = Account::from(current.info.clone());
-                *account.original_info_mut() = current.original_info();
-                account.transaction_id = current.transaction_id;
-                account.status = current.status;
-                account
-            })
-        }) {
+        if let Some(current) = self
+            .state
+            .account(address, |current| current.map(without_storage))
+        {
             return Ok(current);
         }
 

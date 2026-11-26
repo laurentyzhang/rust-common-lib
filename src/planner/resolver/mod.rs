@@ -6,55 +6,9 @@ pub mod verdict;
 pub use detector::ConflictDetector;
 pub use verdict::{CommitDecision, CommitVerdict, accepted_ids, rejected_ids};
 
-use crate::crdt::state::{Status, Tracked};
+use crate::crdt::state::{CrdtError, Status, Tracked};
 use crate::execution::output::ExecutionOutput;
 use crate::planner::scheduler::ID;
-
-/// Numeric constraint or state failures encountered while accumulating deltas.
-#[derive(Debug, PartialEq, Eq, Clone)]
-pub enum NumericError {
-    InvalidLimits(String),
-    BelowLowerLimit(String),
-    AboveUpperLimit(String),
-    Overflow(String),
-    Underflow(String),
-    CannotAddDeltaToMissingValue,
-    TypeMismatch,
-}
-
-/// Preserves CRDT numeric error categories and diagnostic messages.
-impl From<crate::crdt::state::NumericError> for NumericError {
-    fn from(error: crate::crdt::state::NumericError) -> Self {
-        match error {
-            crate::crdt::state::NumericError::InvalidLimits(message) => {
-                Self::InvalidLimits(message)
-            }
-            crate::crdt::state::NumericError::BelowLowerLimit(message) => {
-                Self::BelowLowerLimit(message)
-            }
-            crate::crdt::state::NumericError::AboveUpperLimit(message) => {
-                Self::AboveUpperLimit(message)
-            }
-            crate::crdt::state::NumericError::Overflow(message) => Self::Overflow(message),
-            crate::crdt::state::NumericError::Underflow(message) => Self::Underflow(message),
-        }
-    }
-}
-
-/// Converts signed, unsigned, and state compatibility errors into numeric errors.
-impl From<crate::crdt::state::CrdtError> for NumericError {
-    fn from(error: crate::crdt::state::CrdtError) -> Self {
-        match error {
-            crate::crdt::state::CrdtError::I256(error)
-            | crate::crdt::state::CrdtError::U256(error)
-            | crate::crdt::state::CrdtError::U64(error) => error.into(),
-            crate::crdt::state::CrdtError::CannotAddDeltaToMissingValue => {
-                Self::CannotAddDeltaToMissingValue
-            }
-            crate::crdt::state::CrdtError::TypeMismatch => Self::TypeMismatch,
-        }
-    }
-}
 
 /// Incompatible accesses to the same key, with diagnostic details.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,7 +24,7 @@ pub enum AccessConflict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reason<K = ()> {
     GasLimitExceeded,
-    NumericError(K, NumericError),
+    NumericError(K, CrdtError),
     AccessConflict(K, AccessConflict),
     /// A rejected job that this job depends on.
     Dependency(ID),
@@ -99,5 +53,5 @@ pub trait Checker<K> {
 }
 
 #[cfg(test)]
-#[path = "resolver_tests.rs"]
+#[path = "tests/resolver.rs"]
 mod tests;

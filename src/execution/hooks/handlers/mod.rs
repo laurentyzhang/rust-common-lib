@@ -4,7 +4,7 @@ mod set;
 mod u256;
 
 #[cfg(test)]
-#[path = "handlers_tests.rs"]
+#[path = "tests/handlers.rs"]
 mod tests;
 
 pub use i256::{I256Handler, II256};

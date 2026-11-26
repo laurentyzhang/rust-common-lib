@@ -4,7 +4,7 @@ use alloy_primitives::{Address, U256};
 
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::execution::evm::storage::ApiStore;
+use crate::execution::evm::api_store::ApiStore;
 use super::KeyCodec;
 use crate::execution::{CallHookError, Recorder, key::Key};
 
@@ -50,7 +50,6 @@ impl Indexer {
         &self,
         storage: &mut S,
         owner: Address,
-        recorder: &mut Recorder,
     ) -> Result<(crdt::Scalar<T>, Self), CallHookError>
     where
         T: AbiCodec,

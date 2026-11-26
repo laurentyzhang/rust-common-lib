@@ -1,12 +1,13 @@
 mod committer;
-mod impl_account;
-mod impl_commit;
-mod impl_database;
-mod impl_slot;
 mod overlay;
+pub(crate) mod store;
 pub mod sharded;
-mod statedb;
+mod db;
 
 pub use committer::EvmStateCommitter;
 pub use overlay::StateOverlay;
-pub use statedb::StateDb;
+pub use db::StateDb;
+
+#[cfg(test)]
+#[path = "tests/storage.rs"]
+mod storage_tests;

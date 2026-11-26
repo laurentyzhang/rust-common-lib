@@ -138,7 +138,7 @@ impl<K, T: Type> SumChecker<K, T> {
                 diagnostics.push(Diagnostic {
                     id: record.id,
                     peers: contributors.clone(),
-                    reason: Reason::NumericError(record.key, error.into()),
+                    reason: Reason::NumericError(record.key, error),
                 });
                 rejected = true;
                 continue;

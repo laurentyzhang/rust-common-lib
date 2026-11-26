@@ -79,6 +79,7 @@ impl MetaCodec {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn encode_u64(value: u64) -> U256 {
         U256::from(value)
     }

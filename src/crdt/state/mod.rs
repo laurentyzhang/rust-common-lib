@@ -12,5 +12,5 @@ pub use tracked::Tracked;
 pub use value::{CrdtDelta, CrdtValue, DeltaOp};
 
 #[cfg(test)]
-#[path = "state_tests.rs"]
+#[path = "tests/state.rs"]
 mod tests;

@@ -1,8 +1,7 @@
 use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
 use crate::execution::evm::state::{StateOverlay, sharded};
-use crate::execution::{
-    ArcologyEvmFactory, ArcologyParaBlockExecutor, FormatConverter, StateDb, key::Key, set,
-};
+use crate::store::cache;
+use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
@@ -26,6 +25,7 @@ impl<Tx> Block<Tx> {
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
+        cache: &mut sharded::Sharded,
         fallback: &Fallback,
         planner: &mut Planner<PDB, Key>,
     ) -> Result<
@@ -49,10 +49,15 @@ impl<Tx> Block<Tx> {
             + TransactionGasLimit
             + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        // Shared by all sequences; each generation adds its sequences' balance and nonce deltas.
-        let mut state: StateDb<_, sharded::Shared> = StateDb::with_fallback(
-            StateOverlay::new(sharded::Shared::new(), StateOverlay::add_balance_nonce_deltas),
+        // The cache, kept across blocks in front of the store, holds Sets in the execution format.
+        let cache_db = StateDb::with_fallback(
+            StateOverlay::new(&*cache, StateOverlay::copy_balance_nonce),
             Some(fallback),
+        );
+        // Shared by all sequences; each generation adds its sequences' balance and nonce deltas.
+        let mut state: StateDb<_, sharded::Sharded> = StateDb::with_fallback(
+            StateOverlay::new(sharded::Sharded::new(), StateOverlay::add_balance_nonce_deltas),
+            Some(&cache_db),
         );
         let mut results = Vec::new();
         let mut remaining_gas = config.env.block_env.gas_limit;
@@ -64,31 +69,10 @@ impl<Tx> Block<Tx> {
             results.extend(raws);
         }
 
-        // The block end works on the plain merged state; accounts only read are dropped.
+        // The block's results, without accounts only read; the store gets them in the storage format.
         let mut merged = state.into_inner();
         merged.retain(|_, account| account.is_touched());
-        let mut block_db = StateDb::with_fallback(
-            StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
-            Some(fallback),
-        );
-
-        // Convert each touched Set back into the storage format.
-        let sets: Vec<_> = block_db
-            .inner()
-            .iter()
-            .map(|(&owner, account)| {
-                let keys: Vec<_> = account
-                    .storage
-                    .keys()
-                    .copied()
-                    .filter(|&key| set::KeyCodec::decode(key).is_some())
-                    .collect();
-                (owner, keys)
-            })
-            .collect();
-        for (owner, keys) in sets {
-            set::Converter::to_storage_format(&mut block_db, owner, &keys).map_err(Error::other)?;
-        }
+        let mut block_db = cache::to_storage(merged.clone(), &cache_db).map_err(Error::other)?;
 
         let metadata = planner
             .build_conflict_meta_updates(
@@ -103,9 +87,13 @@ impl<Tx> Block<Tx> {
             .commit_with_original_slots(metadata)
             .map_err(|error| Error::other(format!("failed to commit planner metadata. {error}")))?;
 
+        let persisted = block_db.into_inner();
+        // The cache keeps the block's results in the execution format, ready for the next block.
+        drop(cache_db);
+        sharded::update(cache, merged, persisted.clone());
         Ok((
             ArcologyParaBlockExecutor::finish_block(results, set_cumulative),
-            block_db.into_inner(),
+            persisted,
         ))
     }
 }

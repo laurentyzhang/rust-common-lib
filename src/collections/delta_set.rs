@@ -67,32 +67,6 @@ where
         }
     }
 
-    /// Rebuilds a clean, compact set from unique live elements in insertion order.
-    ///
-    /// Returns `None` if the input contains duplicates or cannot be indexed by `u64`.
-    pub(crate) fn try_from_elements(elements: Vec<K>) -> Option<Self>
-    where
-        K: Clone,
-    {
-        let sequence = u64::try_from(elements.len()).ok()?;
-        let mut keys = HashMap::new();
-
-        for (index, key) in elements.iter().cloned().enumerate() {
-            let index = u64::try_from(index).ok()?;
-            if keys.insert(key, index).is_some() {
-                return None;
-            }
-        }
-
-        Some(Self {
-            elements: elements.into_iter().map(Some).collect(),
-            committed: keys.clone(),
-            keys,
-            sequence,
-            first_hole: None,
-        })
-    }
-
     /// Rebuilds a clean set while preserving empty slots and stable indexes.
     pub(crate) fn try_from_slots(elements: Vec<Option<K>>) -> Option<Self>
     where
@@ -121,6 +95,7 @@ where
     }
 
     /// Returns all allocated slots, including slots left empty by removals.
+    #[cfg(test)]
     pub(crate) fn slots(&self) -> &[Option<K>] {
         &self.elements
     }
@@ -280,175 +255,9 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::DeltaSet;
-
-    fn key(value: &str) -> String {
-        value.to_owned()
-    }
-
-    #[test]
-    fn insert_and_get_by_key_and_index() {
-        let mut set = DeltaSet::new(4);
-
-        assert_eq!(set.insert(key("alpha")), Some(0));
-        assert_eq!(set.insert(key("beta")), Some(1));
-
-        assert_eq!(set.get(&key("alpha")).map(String::as_str), Some("alpha"));
-        assert_eq!(set.get_at(1).map(String::as_str), Some("beta"));
-        assert_eq!(set.get_at(2), None);
-    }
-
-    #[test]
-    fn duplicate_insert_is_rejected() {
-        let mut set = DeltaSet::new(0);
-
-        assert_eq!(set.insert(key("alpha")), Some(0));
-        assert_eq!(set.insert(key("alpha")), None);
-        assert_eq!(set.len(), 1);
-    }
-
-    #[test]
-    fn remove_by_key_and_index_clears_elements() {
-        let mut set = DeltaSet::new(0);
-        set.insert(key("alpha"));
-        set.insert(key("beta"));
-
-        assert_eq!(set.remove(&key("alpha")), Some((key("alpha"), 0)));
-        assert_eq!(set.get(&key("alpha")), None);
-        assert_eq!(set.get_at(0), None);
-
-        assert_eq!(set.remove_at(1), Some((key("beta"), 1)));
-        assert_eq!(set.get(&key("beta")), None);
-        assert_eq!(set.get_at(1), None);
-    }
-
-    #[test]
-    fn diff_reports_added_and_removed_keys() {
-        let mut set = DeltaSet::new(0);
-        set.insert(key("alpha"));
-        set.insert(key("beta"));
-        set.committed = set.keys.clone();
-
-        set.remove(&key("alpha"));
-        set.insert(key("gamma"));
-
-        let (mut added, mut removed) = set.diff();
-        added.sort();
-        removed.sort();
-
-        assert_eq!(added, vec![key("gamma")]);
-        assert_eq!(removed, vec![key("alpha")]);
-    }
-
-    #[test]
-    fn apply_delta_keeps_elements_and_keys_consistent() {
-        let mut set = DeltaSet::new(0);
-        set.insert(key("alpha"));
-        set.insert(key("beta"));
-
-        set.apply_delta(&[key("alpha")], &[key("gamma")]);
-
-        assert_eq!(set.get(&key("alpha")), None);
-        assert_eq!(set.get_at(0), None);
-        assert_eq!(set.get(&key("gamma")).map(String::as_str), Some("gamma"));
-    }
-
-    #[test]
-    fn compact_removes_holes_and_reindexes_remaining_keys() {
-        let mut set = DeltaSet::new(0);
-        set.insert(key("alpha"));
-        set.insert(key("beta"));
-        set.insert(key("gamma"));
-        set.remove(&key("beta"));
-
-        set.compact();
-
-        assert_eq!(set.get_at(0).map(String::as_str), Some("alpha"));
-        assert_eq!(set.get_at(1).map(String::as_str), Some("gamma"));
-        assert_eq!(set.get(&key("gamma")).map(String::as_str), Some("gamma"));
-        assert_eq!(set.insert(key("delta")), Some(2));
-        assert_eq!(set.get(&key("delta")).map(String::as_str), Some("delta"));
-    }
-}
+#[path = "tests/delta_set.rs"]
+mod tests;
 
 #[cfg(test)]
-mod convergence_tests {
-    use super::DeltaSet;
-
-    fn key(value: &str) -> String {
-        value.to_owned()
-    }
-
-    fn values(set: &DeltaSet<String>) -> Vec<String> {
-        let mut values: Vec<_> = set.elements.iter().flatten().cloned().collect();
-        values.sort();
-        values
-    }
-
-    fn commit(set: &mut DeltaSet<String>) {
-        set.committed = set.keys.clone();
-    }
-
-    #[test]
-    fn three_sets_converge_after_add_and_remove_deltas() {
-        let mut a = DeltaSet::new(0);
-        let mut b = DeltaSet::new(0);
-        let mut c = DeltaSet::new(0);
-
-        assert!(a.committed.is_empty());
-        assert!(b.committed.is_empty());
-        assert!(c.committed.is_empty());
-
-        for value in ["one", "two", "three"] {
-            a.insert(key(value));
-        }
-        for value in ["three", "four", "five"] {
-            b.insert(key(value));
-        }
-        for value in ["five", "six", "one"] {
-            c.insert(key(value));
-        }
-
-        let (a_added, a_removed) = a.diff();
-        let (b_added, b_removed) = b.diff();
-        let (c_added, c_removed) = c.diff();
-
-        for set in [&mut a, &mut b, &mut c] {
-            set.apply_delta(&a_removed, &a_added);
-            set.apply_delta(&b_removed, &b_added);
-            set.apply_delta(&c_removed, &c_added);
-        }
-
-        assert_eq!(values(&a), values(&b));
-        assert_eq!(values(&b), values(&c));
-
-        commit(&mut a);
-        commit(&mut b);
-        commit(&mut c);
-
-        for value in ["one", "two"] {
-            a.remove(&key(value));
-        }
-        for value in ["two", "three"] {
-            b.remove(&key(value));
-        }
-        for value in ["three", "four"] {
-            c.remove(&key(value));
-        }
-
-        let (a_added, a_removed) = a.diff();
-        let (b_added, b_removed) = b.diff();
-        let (c_added, c_removed) = c.diff();
-
-        for set in [&mut a, &mut b, &mut c] {
-            set.apply_delta(&a_removed, &a_added);
-            set.apply_delta(&b_removed, &b_added);
-            set.apply_delta(&c_removed, &c_added);
-        }
-
-        assert_eq!(values(&a), values(&b));
-        assert_eq!(values(&b), values(&c));
-        assert_eq!(values(&a), vec![key("five"), key("six")]);
-    }
-}
+#[path = "tests/delta_set_convergence.rs"]
+mod convergence_tests;

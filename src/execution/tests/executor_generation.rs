@@ -1,3 +1,4 @@
+use crate::execution::evm::state::sharded::Sharded;
 use super::*;
 use crate::execution::evm::state::{StateOverlay, sharded};
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
@@ -22,9 +23,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// Builds the block state shared by a generation's sequences, as `Block::run` does.
-pub(super) fn block_state<DB>(fallback: DB) -> StateDb<DB, sharded::Shared> {
+pub(super) fn block_state<DB>(fallback: DB) -> StateDb<DB, sharded::Sharded> {
     StateDb::with_fallback(
-        StateOverlay::new(sharded::Shared::new(), StateOverlay::add_balance_nonce_deltas),
+        StateOverlay::new(sharded::Sharded::new(), StateOverlay::add_balance_nonce_deltas),
         Some(fallback),
     )
 }
@@ -513,6 +514,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &config,
             &pool,
             &|_, _| {},
+            &mut Sharded::new_cache(),
             &persistent,
             &mut planner,
             [job(1, contract).tx, job(2, contract).tx],
@@ -630,6 +632,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
         &config,
         &pool,
         &|_, _| {},
+        &mut Sharded::new_cache(),
         &fallback,
         &mut planner,
         [job(1, Address::repeat_byte(0x99)).tx],
@@ -705,6 +708,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
                 &config,
                 &pool,
                 &|_, gas| cumulative.borrow_mut().push(gas),
+                &mut Sharded::new_cache(),
                 &fallback,
                 &mut planner,
             )

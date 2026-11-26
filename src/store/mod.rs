@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod codec;
 pub mod error;
+pub mod key;
 #[cfg(feature = "mdbx")]
 pub mod mdbx;
 pub mod traits;

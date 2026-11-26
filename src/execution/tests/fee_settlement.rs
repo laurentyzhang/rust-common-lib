@@ -1,3 +1,4 @@
+use crate::execution::evm::state::sharded::Sharded;
 use crate::execution::evm::state::StateOverlay;
 use super::generation_tests::block_state;
 use crate::execution::{
@@ -343,6 +344,7 @@ fn planner_rejects_blocks_exceeding_total_gas_limit() {
             &config,
             &pool,
             &|_, _| {},
+            &mut Sharded::new_cache(),
             &fallback,
             &mut planner,
             transactions,

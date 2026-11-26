@@ -16,5 +16,5 @@ pub use pass_through::PassThroughScheduler;
 pub use store::CalleeProfile;
 
 #[cfg(test)]
-#[path = "scheduler_tests.rs"]
+#[path = "tests/scheduler.rs"]
 mod tests;

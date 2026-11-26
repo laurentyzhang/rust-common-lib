@@ -112,5 +112,5 @@ impl Codec {
 }
 
 #[cfg(test)]
-#[path = "codec_tests.rs"]
+#[path = "tests/codec.rs"]
 mod tests;

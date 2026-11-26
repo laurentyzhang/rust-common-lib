@@ -7,9 +7,9 @@ use alloy_evm::revm::{
 use alloy_primitives::{Address, B256, U256};
 
 use super::StateDb;
-use super::overlay::OverlayState;
+use super::super::store::OverlayRead;
 
-impl<DB: DatabaseRef, Store: OverlayState> Database for StateDb<DB, Store> {
+impl<DB: DatabaseRef, Store: OverlayRead> Database for StateDb<DB, Store> {
     type Error = DB::Error;
 
     fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
@@ -29,7 +29,7 @@ impl<DB: DatabaseRef, Store: OverlayState> Database for StateDb<DB, Store> {
     }
 }
 
-impl<DB: DatabaseRef, Store: OverlayState> DatabaseRef for StateDb<DB, Store> {
+impl<DB: DatabaseRef, Store: OverlayRead> DatabaseRef for StateDb<DB, Store> {
     type Error = DB::Error;
 
     /// Return account information unless the account is absent or deleted.
@@ -71,6 +71,12 @@ impl<DB: DatabaseRef, Store: OverlayState> DatabaseRef for StateDb<DB, Store> {
 
     /// Local values and account resets take precedence over fallback storage.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        // A shared store converts a Set into the execution format on its first read.
+        self.inner()
+            .convert_on_read(address, index, |key| match &self.fallback {
+                Some(db) => db.storage_ref(address, key).ok(),
+                None => Some(U256::ZERO),
+            });
         // The account's status decides whether its slots exist; a slot may sit in another shard.
         let status = self.inner().account(address, |account| {
             account.map(|account| {

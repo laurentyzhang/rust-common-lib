@@ -34,7 +34,7 @@ impl I256Handler {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
         let (mut scalar, slots) =
-            scalar::Indexer::new(key).load::<I256, _>(internals, input.caller, recorder)?;
+            scalar::Indexer::new(key).load::<I256, _>(internals, input.caller)?;
         if scalar.add_delta(&delta).is_err() {
             return Ok(CallOutput::reverted(0, Vec::new()));
         }
@@ -79,7 +79,7 @@ impl CallHandler for I256Handler {
             }
             Ok(II256::II256Calls::get(_)) => {
                 let (mut scalar, slots) =
-                    scalar::Indexer::new(key).load::<I256, _>(internals, input.caller, api_reads)?;
+                    scalar::Indexer::new(key).load::<I256, _>(internals, input.caller)?;
                 api_reads.log_write(Key::Storage(input.caller, slots.value));
                 Ok(CallOutput::returned(
                     0,

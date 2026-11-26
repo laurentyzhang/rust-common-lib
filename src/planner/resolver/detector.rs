@@ -37,23 +37,6 @@ impl<K> ConflictDetector<K> {
         self.gas_limit_checker.gas_limit = remaining_gas;
     }
 
-    fn accept_all(&mut self, sequences: Vec<Vec<(ID, u64)>>) -> Vec<CommitVerdict<K>> {
-        let gas_limit = self.gas_limit_checker.gas_limit;
-        *self = Self::new();
-        self.set_gas_limit(gas_limit);
-        let mut verdicts: Vec<_> = sequences
-            .into_iter()
-            .flatten()
-            .map(|(id, _)| CommitVerdict {
-                id,
-                decision: CommitDecision::Accepted,
-                conflicts: Vec::new(),
-            })
-            .collect();
-        verdicts.sort_unstable_by_key(|verdict| verdict.id);
-        verdicts
-    }
-
     fn accumulate(&mut self) -> Vec<Vec<(ID, u64)>> {
         // Group jobs by their scheduled sequence.
         let mut sequences = Vec::<Vec<(ID, u64)>>::new();

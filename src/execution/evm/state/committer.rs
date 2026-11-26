@@ -5,7 +5,8 @@ use std::io::Error;
 
 use super::{
     StateDb,
-    overlay::{OverlayState, StateOverlay},
+    overlay::StateOverlay,
+    store::OverlayWrite,
 };
 use crate::execution::slot::CrdtSlot;
 use crate::execution::workload::ID;
@@ -52,7 +53,7 @@ impl<DB: DatabaseRef> EvmStateCommitter<DB> {
     }
 }
 
-impl<DB: DatabaseRef, Store: OverlayState> EvmStateCommitter<DB, Store> {
+impl<DB: DatabaseRef + Sync, Store: OverlayWrite> EvmStateCommitter<DB, Store> {
     /// Creates a committer that merges into `state`, using its overlay's balance and nonce rule.
     pub fn with_state(state: StateDb<DB, Store>) -> Self {
         Self {
@@ -83,7 +84,7 @@ impl<DB: DatabaseRef, Store: OverlayState> EvmStateCommitter<DB, Store> {
         for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
             self.import(id, incoming).map_err(Error::other)?;
         }
-        self.crdt.apply(&mut self.state).map_err(Error::other)?;
+        Store::apply_crdt(&mut self.state, &mut self.crdt).map_err(Error::other)?;
         Ok(self.state)
     }
 
@@ -97,7 +98,7 @@ impl<DB: DatabaseRef, Store: OverlayState> EvmStateCommitter<DB, Store> {
     }
 }
 
-impl<DB: DatabaseRef, Store: OverlayState> Committer<ID, EvmState>
+impl<DB: DatabaseRef + Sync, Store: OverlayWrite> Committer<ID, EvmState>
     for EvmStateCommitter<DB, Store>
 {
     /// Holds a transaction's state until its verdict is known.
@@ -121,7 +122,7 @@ impl<DB: DatabaseRef, Store: OverlayState> Committer<ID, EvmState>
         for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
             self.import(id, incoming)?;
         }
-        self.crdt.apply(&mut self.state)
+        Store::apply_crdt(&mut self.state, &mut self.crdt)
     }
 }
 

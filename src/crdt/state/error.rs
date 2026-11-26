@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NumericError {
     InvalidLimits(String),
     BelowLowerLimit(String),
@@ -9,7 +9,7 @@ pub enum NumericError {
     Underflow(String),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CrdtError {
     I256(NumericError),
     U256(NumericError),
