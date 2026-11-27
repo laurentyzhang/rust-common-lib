@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-mdbx = ["dep:reth-db"]
+mdbx = ["dep:reth-db", "dep:reth-primitives-traits"]
 
 [dependencies]
 im = "15.0.0"
@@ -19,6 +19,7 @@ op-revm = { git = "https://github.com/ethereum-optimism/optimism", branch = "dev
 rayon = "1.11.0"
 quick_cache = { path = "../../quick-cache" }
 reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "8e3b5e6a99439561b73c5dd31bd3eced2e994d60", optional = true }
+reth-primitives-traits = { git = "https://github.com/paradigmxyz/reth", rev = "8e3b5e6a99439561b73c5dd31bd3eced2e994d60", optional = true }
 strum_macros = "0.28.0"
 strum = "0.28.0"
 

@@ -315,14 +315,14 @@ fn merged_deltas_apply_like_the_states_in_turn() {
     let mut in_turn = StateDb::default();
     for state in [&a, &b] {
         let mut delta = Delta::default();
-        Applier::merge_delta(&mut delta, ID::default(), state).unwrap();
+        Applier::merge_delta_from(&mut delta, ID::default(), state).unwrap();
         Applier::apply(&mut in_turn, owner, delta).unwrap();
     }
 
     // Merged without a store, then applied once: deltas add up, the changed bound is taken.
     let mut delta = Delta::default();
     for state in [&a, &b] {
-        Applier::merge_delta(&mut delta, ID::default(), state).unwrap();
+        Applier::merge_delta_from(&mut delta, ID::default(), state).unwrap();
     }
     let mut once = StateDb::default();
     Applier::apply(&mut once, owner, delta).unwrap();

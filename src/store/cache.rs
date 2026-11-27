@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
-use alloy_evm::revm::{DatabaseRef, state::EvmState};
-use alloy_primitives::{Address, U256};
+use alloy_evm::revm::{
+    DatabaseRef,
+    state::{Account, AccountInfo, Bytecode, EvmState, EvmStorageSlot, TransactionId},
+};
+use alloy_primitives::{Address, B256, U256};
 
 use crate::execution::evm::api_store::ApiStore;
 use crate::execution::evm::state::{StateDb, StateOverlay, sharded::Sharded};
@@ -74,11 +77,98 @@ where
     }
 }
 
-// Sets are in the storage format only in the store; the cache and every layer above it hold the
-// execution format. Both conversions happen here, between the cache and the store.
+// Only the store keeps Sets compact; the cache and every layer above hold them expanded. Both
+// conversions happen here, between the cache and the store.
 
-/// Converts the Set `key` belongs to into the execution format in `cache` as it is loaded from the
-/// store, loading missing slots with `load`. Skipped once converted, or while the account has no
+/// The cache in front of the store, as the block state reads it: misses load from `store`, and
+/// Sets are expanded as they load.
+#[derive(Debug)]
+pub struct CacheDb<'a, DB, const N: usize> {
+    db: StateDb<Loader<'a, DB, N>, &'a Sharded<N>>,
+    store: &'a DB,
+}
+
+impl<'a, DB, const N: usize> CacheDb<'a, DB, N> {
+    /// Reads through `cache`, loading misses from `store`.
+    pub fn new(cache: &'a Sharded<N>, store: &'a DB) -> Self {
+        Self {
+            db: StateDb::with_fallback(
+                StateOverlay::new(cache, StateOverlay::copy_balance_nonce),
+                Some(Loader { cache, store }),
+            ),
+            store,
+        }
+    }
+}
+
+/// Loads the cache's misses from the store and keeps them in the cache.
+#[derive(Debug)]
+struct Loader<'a, DB, const N: usize> {
+    cache: &'a Sharded<N>,
+    store: &'a DB,
+}
+
+impl<DB: DatabaseRef, const N: usize> DatabaseRef for Loader<'_, DB, N> {
+    type Error = DB::Error;
+
+    /// Loads the account and keeps it in the cache; a missing one is not kept.
+    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        let info = self.store.basic_ref(address)?;
+        if let Some(info) = &info {
+            self.cache.cache_account(address, Account::from(info.clone()));
+        }
+        Ok(info)
+    }
+
+    /// Loads the code from the store.
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.store.code_by_hash_ref(code_hash)
+    }
+
+    /// Loads the slot and keeps it, unchanged, in the cache.
+    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        let value = self.store.storage_ref(address, index)?;
+        self.cache
+            .cache_slot(address, index, EvmStorageSlot::new(value, TransactionId::ZERO));
+        Ok(value)
+    }
+
+    /// Reads the block hash from the store.
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        self.store.block_hash_ref(number)
+    }
+}
+
+impl<DB: DatabaseRef, const N: usize> DatabaseRef for CacheDb<'_, DB, N> {
+    type Error = DB::Error;
+
+    /// Reads the account through the cache.
+    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        self.db.basic_ref(address)
+    }
+
+    /// Reads the code through the cache.
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        self.db.code_by_hash_ref(code_hash)
+    }
+
+    /// Expands the Set `index` belongs to as it loads from the store, then reads the slot through
+    /// the cache.
+    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        to_execution(*self.db.inner(), address, index, |key| {
+            self.store.storage_ref(address, key).ok()
+        });
+        self.db.storage_ref(address, index)
+    }
+
+    /// Reads the block hash from the store.
+    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
+        self.store.block_hash_ref(number)
+    }
+}
+
+/// Expands the Set `key` belongs to in `cache` as it is loaded from the store, loading missing
+/// slots with `load`. Skipped once converted, or while the account has no
 /// entry, so a written slot never stands in for the account; a failed conversion leaves the Set
 /// as loaded.
 pub(crate) fn to_execution<const N: usize>(
@@ -96,7 +186,7 @@ pub(crate) fn to_execution<const N: usize>(
     if converted || cache.read(address, |account| account.is_none()) {
         return;
     }
-    let _ = set::Converter::to_execution_format(&mut Converting { cache, load }, address, set);
+    let _ = set::Converter::expand(&mut Converting { cache, load }, address, set);
 }
 
 /// Store for converting a Set in the cache: reads from the cache or loads missing slots, writes
@@ -132,9 +222,9 @@ impl<const N: usize, F: Fn(U256) -> Option<U256>> ApiStore for Converting<'_, N,
     }
 }
 
-/// Converts the touched Sets in `changes` into the storage format for the store, reading their
-/// execution format from `changes` and then `cache`; returns the changes to persist, still open
-/// for further commits.
+/// Compacts the touched Sets in `changes` for the store, reading their indexed format from
+/// `changes`, then `cache`; returns the changes to persist, still open for further commits.
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
 pub(crate) fn to_storage<DB: DatabaseRef>(
     changes: EvmState,
     cache: &DB,
@@ -157,7 +247,7 @@ pub(crate) fn to_storage<DB: DatabaseRef>(
         })
         .collect();
     for (owner, keys) in sets {
-        set::Converter::to_storage_format(&mut db, owner, &keys)?;
+        set::Converter::compact(&mut db, owner, &keys)?;
     }
     Ok(db)
 }

@@ -1,15 +1,8 @@
 //! The storage behind a `StateOverlay`: the read and write interfaces, and their implementation for
 //! a plain `EvmState`, used sequentially. `Sharded` implements them for shared use in `sharded/`.
 
-use alloy_evm::revm::{
-    DatabaseRef,
-    state::{Account, Bytecode, EvmState, EvmStorageSlot},
-};
+use alloy_evm::revm::state::{Account, Bytecode, EvmState, EvmStorageSlot};
 use alloy_primitives::{Address, B256, U256};
-
-use super::StateDb;
-use crate::execution::slot::CrdtSlot;
-use crate::store::traits::StoreError;
 
 /// Read side of the storage behind a `StateOverlay`; `StateDb` reads through it.
 pub trait OverlayRead {
@@ -26,19 +19,6 @@ pub trait OverlayRead {
 
     /// Returns the code with `code_hash` held by any account.
     fn code(&self, code_hash: B256) -> Option<Bytecode>;
-
-    /// Keeps `account`, loaded from the fallback, unless `address` already has an entry; only a
-    /// shared store caches.
-    fn cache_account(&self, address: Address, account: Account);
-
-    /// Keeps `slot`, loaded from the fallback, unless `address`'s slot `key` already exists; only a
-    /// shared store caches.
-    fn cache_slot(&self, address: Address, key: U256, slot: EvmStorageSlot);
-
-    /// Runs before reading `address`'s slot `key`: a shared store converts the Set the key belongs
-    /// to into the execution format on its first read, loading missing slots with `load`; other
-    /// stores do nothing.
-    fn convert_on_read(&self, address: Address, key: U256, load: impl Fn(U256) -> Option<U256>);
 }
 
 /// Storage behind a `StateOverlay`: a plain `EvmState` for sequential use, or a
@@ -70,12 +50,13 @@ pub trait OverlayWrite: OverlayRead + Sized {
     /// shared one.
     fn write_accounts(&mut self, accounts: EvmState);
 
-    /// Applies `crdt`'s collected deltas into `db` and clears them: owner after owner for a
-    /// sequential store, all owners in parallel for a shared one.
-    fn apply_crdt<DB: DatabaseRef + Sync>(
-        db: &mut StateDb<DB, Self>,
-        crdt: &mut CrdtSlot,
-    ) -> Result<(), StoreError>;
+    /// Read-only view of the whole store, shared by threads while nothing writes.
+    type View<'a>: OverlayRead + Sync
+    where
+        Self: 'a;
+
+    /// Returns a read-only view of the whole store.
+    fn view(&mut self) -> Self::View<'_>;
 }
 
 impl<T: OverlayRead> OverlayRead for &T {
@@ -97,21 +78,6 @@ impl<T: OverlayRead> OverlayRead for &T {
     /// Reads through the referenced store.
     fn code(&self, code_hash: B256) -> Option<Bytecode> {
         (**self).code(code_hash)
-    }
-
-    /// Caches through the referenced store.
-    fn cache_account(&self, address: Address, account: Account) {
-        (**self).cache_account(address, account)
-    }
-
-    /// Caches through the referenced store.
-    fn cache_slot(&self, address: Address, key: U256, slot: EvmStorageSlot) {
-        (**self).cache_slot(address, key, slot)
-    }
-
-    /// Converts through the referenced store.
-    fn convert_on_read(&self, address: Address, key: U256, load: impl Fn(U256) -> Option<U256>) {
-        (**self).convert_on_read(address, key, load)
     }
 }
 
@@ -137,15 +103,6 @@ impl OverlayRead for EvmState {
             .filter(|account| account.info.code_hash == code_hash)
             .find_map(|account| account.info.code.clone())
     }
-
-    /// Does nothing: a sequential state is not shared, so it does not cache reads.
-    fn cache_account(&self, _address: Address, _account: Account) {}
-
-    /// Does nothing: a sequential state is not shared, so it does not cache reads.
-    fn cache_slot(&self, _address: Address, _key: U256, _slot: EvmStorageSlot) {}
-
-    /// Does nothing: a sequential state leaves Set conversion to the Set handler.
-    fn convert_on_read(&self, _address: Address, _key: U256, _load: impl Fn(U256) -> Option<U256>) {}
 }
 
 impl OverlayWrite for EvmState {
@@ -191,11 +148,10 @@ impl OverlayWrite for EvmState {
         }
     }
 
-    /// Applies the deltas owner after owner through `db`.
-    fn apply_crdt<DB: DatabaseRef + Sync>(
-        db: &mut StateDb<DB, Self>,
-        crdt: &mut CrdtSlot,
-    ) -> Result<(), StoreError> {
-        crdt.apply(db)
+    type View<'a> = &'a EvmState;
+
+    /// Views the state through a shared borrow.
+    fn view(&mut self) -> &EvmState {
+        self
     }
 }

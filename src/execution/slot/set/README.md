@@ -23,20 +23,17 @@ Reinserting a removed element puts it at the end, with one exception. If a seque
 and then reinserts an element that was already in the set when the sequence began,
 reinsertion cancels the removal and the element keeps its original position.
 
-## Storage and execution formats
+## Compact and indexed formats
 
-All of a set's data lives in its owner's storage slots in the `EvmState`, in one of two formats:
+All of a set's data lives in its owner's slots, in one of two formats:
 
-- **Storage format**: the persisted form, the one written to the database. A set stays in this
-  form until its first touch in a block. It is a linked list, one slot per element: compact,
-  but removing an element needs its predecessor, which means walking the list.
-- **Execution format**: the *working form* of a touched set, from its first touch until block end.
-  It is an array plus an element → position lookup, so appending, removing and membership checks
-  are O(1), at the cost of extra slots.
+- **Compact format**: a linked list, one slot per element. Small, but removing an element needs
+  its predecessor, which means walking the list.
+- **Indexed format**: an array plus an element → position lookup. Appending, removing and
+  membership checks are O(1), at the cost of extra slots.
 
-A touched set is converted twice per block: into the execution format on its first touch, and
-back into the storage format at block end. Each conversion is one O(n) pass; untouched sets are
-never converted.
+`Converter::expand` and `Converter::compact` convert between them, one O(n) pass each. Contract
+calls work on the indexed format; which layer converts, and when, is up to the caller.
 
 ## Slot key
 
@@ -54,7 +51,7 @@ index    = word number             logs; word 0 holds the byte length
 reserved = always 0; a key with a non-zero reserved byte isn't a Set key
 ```
 
-## Storage format: a linked list
+## Compact format: a linked list
 
 `Head` holds the first element and `Tail` the last. Each element `x` except the last has a
 `Node` slot, keyed by `x`'s hash, whose value is the element after `x`. The key holds only a
@@ -99,7 +96,7 @@ Appending `y` takes two writes: `Node[Tail] = y`, then `Tail = y`; on an empty s
 `Node[5]` is empty, `Node[0] = 6` and `Tail = 6`. An empty set has `Length = 0`, and `Head` and
 `Tail` are ignored.
 
-## Execution format: an indexed array
+## Indexed format: an array
 
 The elements sit in an array, one per slot, with a reverse lookup from element to position.
 Removing an element leaves a hole instead of shifting the array.
@@ -110,13 +107,13 @@ Removing an element leaves a hole instead of shifting the array.
 | 9  | `Index`    | index     | elements in order, zero when removed      |
 | 10 | `Position` | hash      | position + 1 in `Index`                   |
 | 11 | `Holes`    | index     | bitmap of removed positions, 256 per word |
-| 12 | `Indexed`  | zeros     | 1 once the set is in the execution format |
+| 12 | `Indexed`  | zeros     | 1 once the set is expanded                |
 
-Set `{1, 3, 4}` right after conversion:
+Set `{1, 3, 4}` right after `expand`:
 
 ```text
  slot              value   meaning
- Indexed             1     the set is in the execution format
+ Indexed             1     the set is expanded
  Length              3     number of live elements
  Index #0            1     element at position 0
  Index #1            3     element at position 1
@@ -151,25 +148,21 @@ A hole is marked in `Holes` because a zero entry alone could also be the element
 
 ## Converting between the formats
 
-`Converter` moves a set between the two formats:
-
-- **`to_execution_format`** runs before every `ISet` call and does nothing once `Indexed` is
-  set. Otherwise it walks the list from `Head`, writes each element to `Index` with its
-  `Position`, and sets `Indexed`.
-- **`to_storage_format`** runs at block end for each set with `Indexed` set. It takes the live
-  entries in index order and updates the list in place: only the `Node` slots whose next
-  element changed are written, then `Head` and `Tail`. It then clears `Index`, `Position`,
-  `Holes` and `Indexed`.
+- **`expand`** walks the list from `Head`, writes each element to `Index` with its `Position`,
+  and sets `Indexed`. It does nothing once `Indexed` is set.
+- **`compact`** takes each expanded set's live entries in index order and updates the list in
+  place: only the `Node` slots whose next element changed are written, then `Head` and `Tail`.
+  It then clears `Index`, `Position`, `Holes` and `Indexed`.
 
 ```text
- list 1 → 3 → 4 ─to_execution_format─▶ Index [1, 3, 4]
-                                         … block: remove 3, add 5 …
- list 1 → 4 → 5 ◀─to_storage_format─── Index [1, _, 4, 5]
+ list 1 → 3 → 4 ─expand─▶ Index [1, 3, 4]
+                            … remove 3, add 5 …
+ list 1 → 4 → 5 ◀─compact─ Index [1, _, 4, 5]
 ```
 
 ## Changes during a block
 
-A transaction's `insert` and `remove` don't touch the execution format. `Indexer` records them
+A transaction's `insert` and `remove` don't touch the indexed format. `Indexer` records them
 as pending changes on top of it:
 
 | # | Property          | Key field | Value                                       |
@@ -187,7 +180,7 @@ as pending changes on top of it:
 | remove an element already in the set | add to `PendingRemovals` (ascending); `Removed[x] = 1`                     |
 | re-insert a pending removal          | take it out of `PendingRemovals`; clear `Removed[x]`                       |
 
-Reads combine the execution format with the pending changes:
+Reads combine the indexed format with the pending changes:
 
 - **member(x):** pending added, or indexed without a pending removal.
 - **walk:** the index (skipping holes and pending removals), then the pending additions.
@@ -197,16 +190,15 @@ The pending changes accumulate across the jobs of one sequence.
 
 ## Merging at generation commit
 
-At each generation commit, `Applier::apply` applies every accepted sequence's pending changes to
-the execution format, in sequence order. Conflict detection guarantees that the sequences'
-changes are independent, so the merge is a plain union:
+At each generation commit, `Applier::merge_delta_from` collects every accepted sequence's pending
+changes, and `Applier::apply` writes them once into the indexed format. Conflict detection
+guarantees that the sequences' changes are independent, so the merge is a plain union:
 
-1. If the block has no execution format for the set yet, adopt the sequence's conversion.
-   Every sequence converts the same list the same way.
-2. Append the uncancelled additions to `Index` and set their `Position`.
-3. For each removal, zero its `Index` entry, set its `Holes` bit, and clear its `Position`
+1. Append the uncancelled additions to `Index` in (block, generation, sequence, job) order, each
+   element once, and set their `Position`.
+2. For each removal, zero its `Index` entry, set its `Holes` bit, and clear its `Position`
    and `Node`.
-4. Update `Length`.
+3. Update `Length`.
 
 The pending slots themselves are dropped and never reach the block state.
 
@@ -222,5 +214,5 @@ Example, starting from `{1, 3, 4}`:
           └─────┴─────┴─────┴─────┴─────┘
  Holes       0     1     0     0     0
 
- at block end: list 1 → 4 → 5 → 6, Head = 1, Tail = 6
+ compacted: list 1 → 4 → 5 → 6, Head = 1, Tail = 6
 ```

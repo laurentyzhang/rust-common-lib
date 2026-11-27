@@ -10,6 +10,6 @@ pub mod writer;
 pub use codec::{IdentityCodec, StoreCodec};
 pub use error::StoreError;
 #[cfg(feature = "mdbx")]
-pub use mdbx::MdbxStore;
+pub use mdbx::{MdbxCommitter, MdbxState, MdbxStore};
 pub use traits::FallbackStore;
 pub use writer::CachedStoreWriter;

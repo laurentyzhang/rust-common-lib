@@ -105,7 +105,7 @@ fn account(balance: u64, code: Bytes) -> Account {
 
 fn reject<R: crate::execution::ReceiptStatus, H: Clone>(
     mut outcome: JobResult<R, H>,
-    fallback: &impl DatabaseRef,
+    fallback: &(impl DatabaseRef + Sync),
 ) -> EvmState {
     outcome.verdict = CommitVerdict {
         id: outcome.id,
@@ -344,7 +344,7 @@ fn planner_rejects_blocks_exceeding_total_gas_limit() {
             &config,
             &pool,
             &|_, _| {},
-            &mut Sharded::new_cache(),
+            &mut Sharded::new(),
             &fallback,
             &mut planner,
             transactions,

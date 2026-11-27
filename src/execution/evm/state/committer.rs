@@ -3,10 +3,12 @@ use std::collections::{BTreeMap, HashSet};
 use alloy_evm::revm::{DatabaseRef, database_interface::EmptyDB, state::EvmState};
 use std::io::Error;
 
+use rayon::prelude::*;
+
 use super::{
     StateDb,
-    overlay::StateOverlay,
-    store::OverlayWrite,
+    overlay::{StateOverlay, clone_without_storage},
+    store::{OverlayRead, OverlayWrite},
 };
 use crate::execution::slot::CrdtSlot;
 use crate::execution::workload::ID;
@@ -84,14 +86,14 @@ impl<DB: DatabaseRef + Sync, Store: OverlayWrite> EvmStateCommitter<DB, Store> {
         for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
             self.import(id, incoming).map_err(Error::other)?;
         }
-        Store::apply_crdt(&mut self.state, &mut self.crdt).map_err(Error::other)?;
+        self.crdt.apply(&mut self.state).map_err(Error::other)?;
         Ok(self.state)
     }
 
     /// Imports one accepted state: its CRDT slots join the collected deltas, its account fields
     /// and plain slots go through the overlay.
     fn import(&mut self, id: ID, incoming: EvmState) -> Result<(), StoreError> {
-        let native = self.crdt.merge_delta(id, incoming)?;
+        let native = self.crdt.merge_delta_from(id, incoming)?;
         self.state
             .overlay
             .apply(native, self.state.fallback.as_ref())
@@ -122,8 +124,65 @@ impl<DB: DatabaseRef + Sync, Store: OverlayWrite> Committer<ID, EvmState>
         for (id, incoming) in std::mem::take(&mut self.buffered).into_values() {
             self.import(id, incoming)?;
         }
-        Store::apply_crdt(&mut self.state, &mut self.crdt)
+        self.crdt.apply(&mut self.state)
     }
+}
+
+/// Applies `crdt`'s deltas into `db` and clears them: every owner's writes are computed in
+/// parallel against a read-only view of the store, then written in one batch.
+pub(crate) fn apply_crdt<DB: DatabaseRef + Sync, Store: OverlayWrite>(
+    db: &mut StateDb<DB, Store>,
+    crdt: &mut CrdtSlot,
+) -> Result<(), StoreError> {
+    let fallback = db.fallback.as_ref();
+    let store = db.overlay.inner_mut();
+    let updates = {
+        let base = StateDb::with_fallback(
+            StateOverlay::new(store.view(), StateOverlay::copy_balance_nonce),
+            fallback,
+        );
+        // Phase 1: each owner writes into its own overlay over the view.
+        let stores = crdt
+            .drain()
+            .into_par_iter()
+            .map(|(owner, sets, scalars)| {
+                let mut store = StateDb::with_fallback(
+                    StateOverlay::new(EvmState::default(), StateOverlay::copy_balance_nonce),
+                    Some(&base),
+                );
+                CrdtSlot::apply_owner(&mut store, owner, sets, scalars)?;
+                Ok(store)
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let mut updates = EvmState::default();
+        for store in stores {
+            for (address, mut account) in store.into_inner() {
+                // Keep the stored account and the stored slots' original values; only mark the
+                // account touched.
+                if let Some(mut current) = base
+                    .inner()
+                    .account(address, |current| current.map(clone_without_storage))
+                {
+                    current.storage = std::mem::take(&mut account.storage);
+                    current.mark_touch();
+                    account = current;
+                }
+                for (&key, slot) in account.storage.iter_mut() {
+                    if let Some(original) = base
+                        .inner()
+                        .slot(address, key, |kept| kept.map(|kept| kept.original_value))
+                    {
+                        slot.original_value = original;
+                    }
+                }
+                updates.insert(address, account);
+            }
+        }
+        updates
+    };
+    // Phase 2: write the updates in one batch.
+    store.write_accounts(updates);
+    Ok(())
 }
 
 #[cfg(test)]

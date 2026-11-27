@@ -11,7 +11,7 @@ use crate::crdt::{Crdt, Scalar, Type};
 use crate::store::traits::StoreError;
 
 /// Clones `account`'s info, original info, transaction id and status, leaving its storage out.
-pub(super) fn without_storage(account: &Account) -> Account {
+pub(super) fn clone_without_storage(account: &Account) -> Account {
     let mut kept = Account::from(account.info.clone());
     *kept.original_info_mut() = account.original_info();
     kept.transaction_id = account.transaction_id;
@@ -178,7 +178,7 @@ impl<Store: OverlayWrite> StateOverlay<Store> {
     ) -> Result<Account, StoreError> {
         if let Some(current) = self
             .state
-            .account(address, |current| current.map(without_storage))
+            .account(address, |current| current.map(clone_without_storage))
         {
             return Ok(current);
         }
@@ -197,7 +197,6 @@ impl<Store: OverlayWrite> StateOverlay<Store> {
             None => Ok(Account::from(incoming.original_info())),
         }
     }
-
 }
 
 impl StateOverlay {

@@ -34,7 +34,7 @@ impl ApplyDelta for Applier {
 
     /// Adds the state's PosDelta and NegDelta changes; the other properties take the state's value
     /// where it changed them, as conflict detection lets only one state do so.
-    fn merge_delta(delta: &mut Delta, _id: ID, slots: &EvmStorage) -> Result<(), CodecError> {
+    fn merge_delta_from(delta: &mut Delta, _id: ID, slots: &EvmStorage) -> Result<(), CodecError> {
         for (&key, slot) in slots {
             let Some((_, property, _)) = KeyCodec::decode(key) else {
                 continue;

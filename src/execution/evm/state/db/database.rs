@@ -2,7 +2,7 @@
 
 use alloy_evm::revm::{
     Database, DatabaseRef,
-    state::{Account, AccountInfo, Bytecode, EvmStorageSlot, TransactionId},
+    state::{AccountInfo, Bytecode},
 };
 use alloy_primitives::{Address, B256, U256};
 
@@ -45,15 +45,7 @@ impl<DB: DatabaseRef, Store: OverlayRead> DatabaseRef for StateDb<DB, Store> {
             return Ok(info);
         }
         match &self.fallback {
-            Some(db) => {
-                let info = db.basic_ref(address)?;
-                // A shared store keeps the loaded account for later readers; a missing one is not
-                // cached.
-                if let Some(info) = &info {
-                    self.inner().cache_account(address, Account::from(info.clone()));
-                }
-                Ok(info)
-            }
+            Some(db) => db.basic_ref(address),
             None => Ok(None),
         }
     }
@@ -71,12 +63,6 @@ impl<DB: DatabaseRef, Store: OverlayRead> DatabaseRef for StateDb<DB, Store> {
 
     /// Local values and account resets take precedence over fallback storage.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        // A shared store converts a Set into the execution format on its first read.
-        self.inner()
-            .convert_on_read(address, index, |key| match &self.fallback {
-                Some(db) => db.storage_ref(address, key).ok(),
-                None => Some(U256::ZERO),
-            });
         // The account's status decides whether its slots exist; a slot may sit in another shard.
         let status = self.inner().account(address, |account| {
             account.map(|account| {
@@ -102,16 +88,7 @@ impl<DB: DatabaseRef, Store: OverlayRead> DatabaseRef for StateDb<DB, Store> {
             }
         }
         match &self.fallback {
-            Some(db) => {
-                let value = db.storage_ref(address, index)?;
-                // A shared store keeps the loaded value, unchanged, for later readers.
-                self.inner().cache_slot(
-                    address,
-                    index,
-                    EvmStorageSlot::new(value, TransactionId::ZERO),
-                );
-                Ok(value)
-            }
+            Some(db) => db.storage_ref(address, index),
             None => Ok(U256::ZERO),
         }
     }

@@ -8,18 +8,18 @@ use crate::namespace::{Namespace, NamespaceCodec, codec::PREFIX_LEN};
 #[repr(u8)]
 pub enum Property {
     Length = 0,          // Live element count, in both formats.
-    Head = 1,            // Storage format: first element of the list.
-    Tail = 2,            // Storage format: last element of the list.
-    Node = 3,            // Storage format: element after x; empty for Tail, and an empty Node before Tail means 0.
+    Head = 1,            // Compact format: first element of the list.
+    Tail = 2,            // Compact format: last element of the list.
+    Node = 3,            // Compact format: element after x; empty for Tail, and an empty Node before Tail means 0.
     Added = 4,           // Pending: position + 1 of an added element in DeltaAdded; dropped at generation commit.
     Removed = 5,         // Pending: removal flag of an indexed element; dropped at generation commit.
     DeltaAdded = 6,      // Pending: additions log, one element per word, zero when cancelled; dropped at generation commit.
     PendingRemovals = 7, // Pending: removals of indexed elements, ascending, one per word; dropped at generation commit.
     DeltaCancelled = 8,  // Pending: bitmap of cancelled additions, 256 positions per word; dropped at generation commit.
-    Index = 9,           // Execution format: elements in order, one per word, zero when removed; cleared at block end.
-    Position = 10,       // Execution format: position + 1 of an element in Index; cleared at block end.
-    Holes = 11,          // Execution format: bitmap of removed Index positions, 256 per word; cleared at block end.
-    Indexed = 12,        // Execution format: marks the set as converted; cleared at block end.
+    Index = 9,           // Indexed format: elements in order, one per word, zero when removed; cleared by compact.
+    Position = 10,       // Indexed format: position + 1 of an element in Index; cleared by compact.
+    Holes = 11,          // Indexed format: bitmap of removed Index positions, 256 per word; cleared by compact.
+    Indexed = 12,        // Indexed format: marks the set as expanded; cleared by compact.
 }
 
 const SET_ID_LEN: usize = 6;
@@ -50,17 +50,17 @@ impl KeyCodec {
         Self::encode(set, Property::Length, [0; 16])
     }
 
-    /// Builds the slot key holding the first element of a set's list (storage format).
+    /// Builds the slot key holding the first element of a set's list (compact format).
     pub fn head(set: [u8; 6]) -> U256 {
         Self::encode(set, Property::Head, [0; 16])
     }
 
-    /// Builds the slot key holding the last element of a set's list (storage format).
+    /// Builds the slot key holding the last element of a set's list (compact format).
     pub fn tail(set: [u8; 6]) -> U256 {
         Self::encode(set, Property::Tail, [0; 16])
     }
 
-    /// Builds the slot key marking a set as converted into the execution format.
+    /// Builds the slot key marking a set as expanded into the indexed format.
     pub fn indexed(set: [u8; 6]) -> U256 {
         Self::encode(set, Property::Indexed, [0; 16])
     }

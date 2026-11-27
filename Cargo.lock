@@ -4942,6 +4942,7 @@ dependencies = [
  "quick_cache",
  "rayon",
  "reth-db",
+ "reth-primitives-traits 1.10.2",
  "strum 0.28.0",
  "strum_macros 0.28.0",
  "tempfile",

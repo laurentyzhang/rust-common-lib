@@ -1,4 +1,4 @@
-//! Storage format of Sets: the linked list, and its conversion to and from the execution format.
+//! Converts Sets between the compact format, a linked list, and the indexed format.
 
 use std::fmt::Debug;
 
@@ -10,14 +10,12 @@ use crate::execution::evm::api_store::ApiStore;
 use crate::execution::slot::{FormatConverter, database};
 use crate::store::StoreError;
 
-/// Converts a Set between its two formats: the storage format, a linked list persisted to the database,
-/// and the execution format, an indexed array used from the set's first touch until block end.
+/// Converts a Set between the compact format (a linked list) and the indexed format (an array).
 pub struct Converter;
 
 impl FormatConverter<[u8; 6]> for Converter {
-    /// Converts the list into the execution format on the set's first touch in the block:
-    /// Index holds the elements in list order and Position(x) each one's position + 1.
-    fn to_execution_format<S: ApiStore>(
+    /// Expands the list: Index holds the elements in list order, Position(x) each one's position + 1.
+    fn expand<S: ApiStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -47,9 +45,9 @@ impl FormatConverter<[u8; 6]> for Converter {
         storage.write(owner, indexed, U256::from(1))
     }
 
-    /// Relinks each converted set's live elements, in index order, into the list in place, then
-    /// clears the execution format.
-    fn to_storage_format<S: ApiStore>(
+    /// Relinks each indexed set's live elements, in index order, into the list, then clears the
+    /// indexed format.
+    fn compact<S: ApiStore>(
         store: &mut S,
         owner: Address,
         keys: &[U256],

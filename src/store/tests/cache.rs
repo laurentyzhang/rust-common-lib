@@ -53,10 +53,7 @@ fn store() -> StateDb {
 /// Runs one block over `cache` that adds or removes `element` in SET, then persists it as
 /// `Block::run` does; returns what goes to the store.
 fn block(cache: &mut Sharded<8>, store: &StateDb, property: Property, element: u64) -> EvmState {
-    let cache_db = StateDb::with_fallback(
-        StateOverlay::new(&*cache, StateOverlay::copy_balance_nonce),
-        Some(store),
-    );
+    let cache_db = CacheDb::new(&*cache, store);
     cache_db.basic_ref(OWNER).unwrap();
     let mut block_db = StateDb::with_fallback(
         StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas),
@@ -70,7 +67,7 @@ fn block(cache: &mut Sharded<8>, store: &StateDb, property: Property, element: u
         })
         .unwrap();
     let mut delta = Delta::default();
-    Applier::merge_delta(&mut delta, ID::default(), &slots).unwrap();
+    Applier::merge_delta_from(&mut delta, ID::default(), &slots).unwrap();
     Applier::apply(&mut block_db, OWNER, delta).unwrap();
 
     let merged = block_db.into_inner();
@@ -88,7 +85,7 @@ fn persisted_slot(state: &EvmState, key: U256) -> Option<U256> {
 #[test]
 fn the_cache_keeps_the_execution_format_and_the_store_gets_the_list() {
     let store = store();
-    let mut cache = Sharded::<8>::new_cache();
+    let mut cache = Sharded::<8>::new();
     let node = |element: u64| KeyCodec::element(Property::Node, SET, U256::from(element));
 
     // Block 1 removes 20: the store gets the list 10, and the cache stays converted.

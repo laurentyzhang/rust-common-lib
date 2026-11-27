@@ -1,5 +1,5 @@
 use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
-use crate::execution::evm::state::{StateOverlay, sharded};
+use crate::execution::evm::state::{StateOverlay, sharded, store::OverlayWrite};
 use crate::store::cache;
 use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
@@ -49,11 +49,8 @@ impl<Tx> Block<Tx> {
             + TransactionGasLimit
             + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        // The cache, kept across blocks in front of the store, holds Sets in the execution format.
-        let cache_db = StateDb::with_fallback(
-            StateOverlay::new(&*cache, StateOverlay::copy_balance_nonce),
-            Some(fallback),
-        );
+        // The cache, kept across blocks in front of the store, holds Sets expanded.
+        let cache_db = cache::CacheDb::new(&*cache, fallback);
         // Shared by all sequences; each generation adds its sequences' balance and nonce deltas.
         let mut state: StateDb<_, sharded::Sharded> = StateDb::with_fallback(
             StateOverlay::new(sharded::Sharded::new(), StateOverlay::add_balance_nonce_deltas),
@@ -69,10 +66,13 @@ impl<Tx> Block<Tx> {
             results.extend(raws);
         }
 
-        // The block's results, without accounts only read; the store gets them in the storage format.
+        // The block's results, without accounts only read, in the execution format.
         let mut merged = state.into_inner();
         merged.retain(|_, account| account.is_touched());
-        let mut block_db = cache::to_storage(merged.clone(), &cache_db).map_err(Error::other)?;
+        let mut block_db = StateDb::with_fallback(
+            StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
+            Some(&cache_db),
+        );
 
         let metadata = planner
             .build_conflict_meta_updates(
@@ -87,13 +87,14 @@ impl<Tx> Block<Tx> {
             .commit_with_original_slots(metadata)
             .map_err(|error| Error::other(format!("failed to commit planner metadata. {error}")))?;
 
-        let persisted = block_db.into_inner();
-        // The cache keeps the block's results in the execution format, ready for the next block.
+        let changes = block_db.into_inner();
+        // The cache keeps the block's results in the execution format, ready for the next block;
+        // the store's committer compacts them.
         drop(cache_db);
-        sharded::update(cache, merged, persisted.clone());
+        cache.write_accounts(changes.clone());
         Ok((
             ArcologyParaBlockExecutor::finish_block(results, set_cumulative),
-            persisted,
+            changes,
         ))
     }
 }

@@ -1,4 +1,4 @@
-//! Merges Set slots: accepted states' pending changes into the execution format.
+//! Merges Set slots: accepted states' pending changes into the indexed format.
 
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -30,7 +30,7 @@ impl ApplyDelta for Applier {
     type Delta = Delta;
 
     /// Keeps the state's uncancelled additions under `id` and its removals.
-    fn merge_delta(delta: &mut Delta, id: ID, slots: &EvmStorage) -> Result<(), CodecError> {
+    fn merge_delta_from(delta: &mut Delta, id: ID, slots: &EvmStorage) -> Result<(), CodecError> {
         let get = |key: U256| {
             slots
                 .get(&key)

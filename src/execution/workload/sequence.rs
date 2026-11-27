@@ -1,6 +1,6 @@
 use super::{Job, JobResult, ReceiptStatus, TransactionGasLimit};
-use crate::planner::scheduler::sender::SenderNonceOffset;
 use crate::planner::resolver::{CommitDecision, CommitVerdict, Reason};
+use crate::planner::scheduler::sender::SenderNonceOffset;
 use alloy_evm::{
     EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
@@ -214,7 +214,7 @@ impl<Tx> JobSequence<Tx> {
     /// values, so their deltas can be applied to the rebuilt sequence state.
     ///
     /// `fallback` supplies the starting account and storage values.
-    pub(crate) fn rebuild_sequence_state<R: ReceiptStatus, H: Clone, DB: DatabaseRef>(
+    pub(crate) fn rebuild_sequence_state<R: ReceiptStatus, H: Clone, DB: DatabaseRef + Sync>(
         raws: &mut [JobResult<R, H>],
         fallback: &DB,
     ) -> Result<EvmState, Error> {
@@ -233,8 +233,8 @@ impl<Tx> JobSequence<Tx> {
                 .as_ref()
                 .map_err(|error| Error::other(error.to_string()))?;
             // CRDT slots go through their appliers; the other slots take the later job's values.
-            let native = CrdtSlot::apply_sequential(&mut db, executed.state.clone())
-                .map_err(Error::other)?;
+            let native =
+                CrdtSlot::merge_and_apply(&mut db, executed.state.clone()).map_err(Error::other)?;
             db.commit(native);
             if let Some(error) = db.commit_error() {
                 return Err(Error::other(error.to_string()));

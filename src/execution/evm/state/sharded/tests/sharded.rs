@@ -235,15 +235,9 @@ fn counting(address: Address) -> Counting {
     }
 }
 
-/// The cache over `db`: it converts Sets as they are loaded.
-fn cache<DB>(db: DB) -> StateDb<DB, Sharded<8>> {
-    StateDb::with_fallback(
-        super::super::StateOverlay::new(
-            Sharded::new_cache(),
-            super::super::StateOverlay::add_balance_nonce_deltas,
-        ),
-        Some(db),
-    )
+/// The cache in `shards` over `db`: it converts Sets as they are loaded.
+fn cache<'a, DB>(shards: &'a Sharded<8>, db: &'a DB) -> crate::store::cache::CacheDb<'a, DB, 8> {
+    crate::store::cache::CacheDb::new(shards, db)
 }
 
 /// A shared block state over `db`.
@@ -258,10 +252,11 @@ fn shared<DB>(db: DB) -> StateDb<DB, Sharded<8>> {
 }
 
 #[test]
-fn a_shared_state_loads_each_account_and_slot_once() {
+fn the_cache_loads_each_account_and_slot_once() {
     let address = Address::with_last_byte(1);
     let db = counting(address);
-    let state = shared(&db);
+    let shards = Sharded::new();
+    let state = cache(&shards, &db);
     for _ in 0..3 {
         assert_eq!(state.basic_ref(address).unwrap().unwrap().balance, U256::from(5));
         assert_eq!(state.storage_ref(address, U256::from(1)).unwrap(), U256::from(11));
@@ -271,7 +266,8 @@ fn a_shared_state_loads_each_account_and_slot_once() {
     assert_eq!(db.slots.load(Relaxed), 2);
 
     // Cached values are unchanged: original equals present.
-    let merged = state.into_inner();
+    drop(state);
+    let merged = shards.into_inner();
     assert!(merged[&address].storage.values().all(|slot| !slot.is_changed()));
     assert!(!merged[&address].is_touched());
 }
@@ -318,7 +314,8 @@ fn a_cached_read_does_not_replace_a_write() {
 fn a_slot_read_for_a_missing_account_does_not_create_it() {
     let missing = Address::with_last_byte(9);
     let db = counting(Address::with_last_byte(1));
-    let state = shared(&db);
+    let shards = Sharded::new();
+    let state = cache(&shards, &db);
     // Read many slots so some land in the account's own shard.
     for key in 0..64u64 {
         assert_eq!(state.storage_ref(missing, U256::from(key)).unwrap(), U256::ZERO);
@@ -333,7 +330,8 @@ fn a_slot_read_for_a_missing_account_does_not_create_it() {
 fn parallel_readers_share_the_loaded_values() {
     let address = Address::with_last_byte(1);
     let db = counting(address);
-    let state = shared(&db);
+    let shards = Sharded::new();
+    let state = cache(&shards, &db);
     // As in the EVM, the account is loaded before its slots.
     state.basic_ref(address).unwrap();
     (0..1000u64).into_par_iter().for_each(|i| {
@@ -341,7 +339,8 @@ fn parallel_readers_share_the_loaded_values() {
         assert_eq!(state.storage_ref(address, U256::from(i % 10 + 2)).unwrap(), U256::ZERO);
     });
     // Racing misses may each load, but every key ends up cached once with the loaded value.
-    let merged = state.into_inner();
+    drop(state);
+    let merged = shards.into_inner();
     assert_eq!(merged[&address].storage.len(), 11);
     assert_eq!(merged[&address].storage[&U256::from(1)].present_value, U256::from(11));
 }
@@ -517,7 +516,8 @@ fn the_cache_converts_a_set_on_its_first_load() {
     let owner = Address::with_last_byte(1);
     let set = [1u8; 6];
     let db = stored_set(owner, set);
-    let state = cache(&db);
+    let shards = Sharded::new();
+    let state = cache(&shards, &db);
     state.basic_ref(owner).unwrap();
 
     // Reading any of the Set's slots converts it in the shards.
@@ -545,7 +545,8 @@ fn a_sequence_over_the_block_state_finds_the_set_converted_by_the_cache() {
     let owner = Address::with_last_byte(1);
     let set = [1u8; 6];
     let db = stored_set(owner, set);
-    let cache = cache(&db);
+    let shards = Sharded::new();
+    let cache = cache(&shards, &db);
     cache.basic_ref(owner).unwrap();
     // The block state does not convert; it reads the Set converted from the cache.
     let state = shared(&cache);
@@ -570,7 +571,8 @@ fn a_set_is_not_converted_before_its_account_is_loaded() {
     let owner = Address::with_last_byte(1);
     let set = [1u8; 6];
     let db = stored_set(owner, set);
-    let state = cache(&db);
+    let shards = Sharded::new();
+    let state = cache(&shards, &db);
     assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::ZERO);
     state.basic_ref(owner).unwrap();
     assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::from(1));

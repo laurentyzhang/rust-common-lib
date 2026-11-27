@@ -1,4 +1,4 @@
-//! Execution format of Sets: contract reads and writes over the index plus the pending changes.
+//! Indexed format of Sets: contract reads and writes over the index plus the pending changes.
 
 use alloy_primitives::{Address, U256};
 
@@ -8,7 +8,7 @@ use crate::common::codec::CodecError;
 use crate::crdt::types::collections::SetDelta;
 use crate::execution::evm::api_store::ApiStore;
 
-/// Reads and writes caller-owned Sets in the execution format; `Converter` converts them in and out.
+/// Reads and writes caller-owned Sets in the indexed format.
 pub struct Indexer;
 
 impl Indexer {

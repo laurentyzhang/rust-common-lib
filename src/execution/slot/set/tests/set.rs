@@ -62,8 +62,8 @@ fn with_internals<R>(journal: &mut Journal<EmptyDB>, f: impl FnOnce(&mut EvmInte
     f(&mut EvmInternals::new(journal, &block, &cfg, &tx))
 }
 
-/// Seeds `set` with committed `elements` as the cache delivers them: stored as a linked list
-/// (Length, Head, Tail and Node links), then converted to the execution format.
+/// Seeds `set` with committed `elements` as the cache delivers them: a linked list (Length, Head,
+/// Tail and Node links), expanded.
 fn commit(journal: &mut Journal<EmptyDB>, set: B256, elements: &[u64]) {
     let id = KeyCodec::derive_key(set.into());
     with_internals(journal, |internals| {
@@ -75,7 +75,7 @@ fn commit(journal: &mut Journal<EmptyDB>, set: B256, elements: &[u64]) {
             // A Node of 0 stays empty.
             write(internals, KeyCodec::element(Property::Node, id, U256::from(pair[0])), U256::from(pair[1]));
         }
-        Converter::to_execution_format(internals, OWNER, id).unwrap();
+        Converter::expand(internals, OWNER, id).unwrap();
     });
 }
 
@@ -292,7 +292,7 @@ fn exist(journal: &mut Journal<EmptyDB>) {
 }
 
 /// Copies OWNER's slots from `state` into a fresh journal, standing in for the next generation or
-/// for a load through the cache, which converts a persisted Set to the execution format.
+/// a load through the cache, which expands each Set.
 fn reload(state: &EvmState) -> Journal<EmptyDB> {
     let mut journal: Journal<EmptyDB> = Journal::new(EmptyDB::default());
     with_internals(&mut journal, |internals| {
@@ -306,7 +306,7 @@ fn reload(state: &EvmState) -> Journal<EmptyDB> {
             .map(|(set, ..)| set)
             .collect();
         for set in sets {
-            Converter::to_execution_format(internals, OWNER, set).unwrap();
+            Converter::expand(internals, OWNER, set).unwrap();
         }
     });
     exist(&mut journal);
@@ -359,7 +359,7 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
     // Block end relinks the live elements in index order and clears the index.
     let mut db = StateDb::new(committer.into_inner());
     let keys: Vec<_> = db.inner()[&OWNER].storage.keys().copied().collect();
-    Converter::to_storage_format(&mut db, OWNER, &keys).unwrap();
+    Converter::compact(&mut db, OWNER, &keys).unwrap();
     let node = |element: u64| KeyCodec::element(Property::Node, id, U256::from(element));
     assert_eq!(slot(&mut db, KeyCodec::head(id)), U256::from(3));
     assert_eq!(slot(&mut db, KeyCodec::tail(id)), U256::from(2));
@@ -390,7 +390,7 @@ fn persist_links_element_zero_as_an_empty_node() {
 
     let mut db = StateDb::new(committer.into_inner());
     let keys: Vec<_> = db.inner()[&OWNER].storage.keys().copied().collect();
-    Converter::to_storage_format(&mut db, OWNER, &keys).unwrap();
+    Converter::compact(&mut db, OWNER, &keys).unwrap();
     // 7 -> 0 leaves Node[7] empty; 0 -> 8 is a plain link.
     let node = |element: u64| KeyCodec::element(Property::Node, id, U256::from(element));
     assert_eq!(slot(&mut db, node(7)), U256::ZERO);
@@ -418,14 +418,14 @@ fn merged_deltas_apply_like_the_sequences_in_turn() {
     let mut in_turn = StateDb::new(base.clone());
     for (id, state) in states {
         let mut delta = Delta::default();
-        Applier::merge_delta(&mut delta, id, &state[&OWNER].storage).unwrap();
+        Applier::merge_delta_from(&mut delta, id, &state[&OWNER].storage).unwrap();
         Applier::apply(&mut in_turn, OWNER, delta).unwrap();
     }
 
     // Merged without a store, then applied once.
     let mut delta = Delta::default();
     for (id, state) in states {
-        Applier::merge_delta(&mut delta, id, &state[&OWNER].storage).unwrap();
+        Applier::merge_delta_from(&mut delta, id, &state[&OWNER].storage).unwrap();
     }
     let mut once = StateDb::new(base);
     Applier::apply(&mut once, OWNER, delta).unwrap();
@@ -454,8 +454,8 @@ fn the_same_addition_from_two_states_is_indexed_once() {
 
     // Both states add 4; the lower ID's copy is kept and Length counts it once.
     let mut delta = Delta::default();
-    Applier::merge_delta(&mut delta, ID { sequence: 2, ..ID::new(0, 2) }, &b.inner.state[&OWNER].storage).unwrap();
-    Applier::merge_delta(&mut delta, ID { sequence: 1, ..ID::new(0, 1) }, &a.inner.state[&OWNER].storage).unwrap();
+    Applier::merge_delta_from(&mut delta, ID { sequence: 2, ..ID::new(0, 2) }, &b.inner.state[&OWNER].storage).unwrap();
+    Applier::merge_delta_from(&mut delta, ID { sequence: 1, ..ID::new(0, 1) }, &a.inner.state[&OWNER].storage).unwrap();
     let mut db = StateDb::new(base);
     Applier::apply(&mut db, OWNER, delta).unwrap();
     let mut next = reload(db.inner());
