@@ -4,12 +4,12 @@ use alloy_evm::revm::{
 };
 use alloy_primitives::{Address, U256};
 
-use super::super::super::api_store::ApiStore;
+use crate::store::SlotStore;
 use super::StateDb;
 use super::super::store::OverlayWrite;
 
 /// Reads and writes slots under their owning account in an EVM state map.
-impl<DB: DatabaseRef, Store: OverlayWrite> ApiStore for StateDb<DB, Store> {
+impl<DB: DatabaseRef, Store: OverlayWrite> SlotStore for StateDb<DB, Store> {
     type Error = DB::Error;
 
     fn read(&mut self, owner: Address, slot: U256) -> Result<U256, Self::Error> {

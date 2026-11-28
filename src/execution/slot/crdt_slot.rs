@@ -7,10 +7,12 @@ use alloy_evm::revm::state::{EvmState, EvmStorage};
 use alloy_primitives::map::HashMap;
 use alloy_primitives::{Address, U256};
 
-use super::{ApplyDelta, scalar, set};
+use super::{ApplyDelta, FormatConverter, scalar, set};
 use crate::common::codec::CodecError;
+use crate::namespace::Namespace;
+use crate::namespace::crdt::CrdtKeyCodec;
 use crate::execution::StateDb;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::evm::state::store::OverlayWrite;
 use crate::execution::workload::ID;
 use crate::store::StoreError;
@@ -68,7 +70,7 @@ impl CrdtSlot {
     }
 
     /// Applies one owner's Set and scalar deltas into `store`.
-    pub(crate) fn apply_owner<S: ApiStore>(
+    pub(crate) fn apply_owner<S: SlotStore>(
         store: &mut S,
         owner: Address,
         sets: Option<set::Delta>,
@@ -84,6 +86,36 @@ impl CrdtSlot {
             scalar::Applier::apply(store, owner, delta)?;
         }
         Ok(())
+    }
+
+    /// Returns `owner`'s CRDT slots in the compact format, each namespace converted by its own
+    /// type.
+    #[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+    pub(crate) fn compact<S: SlotStore>(
+        store: &mut S,
+        owner: Address,
+        slots: &EvmStorage,
+    ) -> Result<EvmStorage, StoreError>
+    where
+        S::Error: Debug,
+    {
+        let mut compacted = EvmStorage::default();
+        let mut sets = EvmStorage::default();
+        for (&key, slot) in slots {
+            match CrdtKeyCodec::decode(key) {
+                Some((Namespace::Set, _)) => {
+                    sets.insert(key, slot.clone());
+                }
+                // Scalars have one format.
+                _ => {
+                    compacted.insert(key, slot.clone());
+                }
+            }
+        }
+        if !sets.is_empty() {
+            compacted.extend(set::Converter::compact(store, owner, &sets)?);
+        }
+        Ok(compacted)
     }
 
     /// Applies the CRDT slots of `incoming` alone into `db`; returns the plain slots.

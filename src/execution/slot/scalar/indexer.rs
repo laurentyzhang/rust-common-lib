@@ -4,7 +4,7 @@ use alloy_primitives::{Address, U256};
 
 use crate::crdt::state::DeltaOp;
 use crate::crdt::{self, codecs::abi::AbiCodec};
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use super::KeyCodec;
 use crate::execution::{CallHookError, Recorder, key::Key};
 
@@ -54,7 +54,7 @@ impl Indexer {
     where
         T: AbiCodec,
         T::Magnitude: AbiCodec,
-        S: ApiStore,
+        S: SlotStore,
         S::Error: std::fmt::Display,
     {
         // Read all five scalar fields from storage into a temporary array.
@@ -113,7 +113,7 @@ impl Indexer {
     where
         T: AbiCodec,
         T::Magnitude: AbiCodec,
-        S: ApiStore,
+        S: SlotStore,
         S::Error: std::fmt::Display,
     {
         let (pos_delta, neg_delta) = match state.delta {

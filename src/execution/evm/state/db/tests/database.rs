@@ -1,6 +1,6 @@
 use super::*;
 use crate::execution::evm::state::overlay::StateOverlay;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use alloy_evm::revm::{
     DatabaseCommit,
     database_interface::EmptyDB,

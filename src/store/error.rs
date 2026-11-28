@@ -25,6 +25,8 @@ impl std::fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+impl alloy_evm::revm::database_interface::DBErrorMarker for StoreError {}
+
 impl From<crate::common::codec::CodecError> for StoreError {
     /// Reports a slot codec failure as a store codec error.
     fn from(error: crate::common::codec::CodecError) -> Self {

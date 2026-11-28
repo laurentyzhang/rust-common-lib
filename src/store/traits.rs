@@ -1,3 +1,5 @@
+use alloy_primitives::{Address, U256};
+
 pub use super::error::StoreError;
 
 pub trait Committer<K, V> {
@@ -8,18 +10,20 @@ pub trait Committer<K, V> {
     fn flush(&mut self) -> Result<(), StoreError>;
 }
 
-pub trait FallbackStore<K, V>: Send + Sync {
+pub trait PhysicalStore<K, V>: Send + Sync {
     fn contains_key(&self, key: &K) -> Result<bool, StoreError> {
-        self.get_untracked(key).map(|value| value.is_some())
+        self.get(key).map(|value| value.is_some())
     }
 
     fn get(&self, key: &K) -> Result<Option<V>, StoreError>;
+}
 
-    // This is useful when one VM cache serves as the fallback for another,
-    // as in nested VM cache scenarios. Without this method, an access may
-    // leave tracked state in the parent store, which is not always desirable.
-    // For other fallback stores, it is identical to `get` by default.
-    fn get_untracked(&self, key: &K) -> Result<Option<V>, StoreError> {
-        self.get(key)
-    }
+/// Reads and writes 32-byte slots by owner and key, on whatever store sits underneath.
+pub trait SlotStore {
+    type Error;
+
+    /// Reads `owner`'s slot `key`.
+    fn read(&mut self, owner: Address, key: U256) -> Result<U256, Self::Error>;
+    /// Writes `value` into `owner`'s slot `key`.
+    fn write(&mut self, owner: Address, key: U256, value: U256) -> Result<(), Self::Error>;
 }

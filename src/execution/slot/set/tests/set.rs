@@ -1,6 +1,6 @@
 use super::{Applier, Delta, Indexer, KeyCodec, Property, Converter};
 use std::collections::BTreeMap;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::{
     ApiAddress, ApplyDelta, CallInput, CallOutput, CallRouter, CallScheme, FormatConverter, EvmStateCommitter, ISet,
     Recorder, SetHandler, StateDb,
@@ -75,7 +75,7 @@ fn commit(journal: &mut Journal<EmptyDB>, set: B256, elements: &[u64]) {
             // A Node of 0 stays empty.
             write(internals, KeyCodec::element(Property::Node, id, U256::from(pair[0])), U256::from(pair[1]));
         }
-        Converter::expand(internals, OWNER, id).unwrap();
+        Converter::expand(internals, OWNER, KeyCodec::length(id)).unwrap();
     });
 }
 
@@ -306,11 +306,20 @@ fn reload(state: &EvmState) -> Journal<EmptyDB> {
             .map(|(set, ..)| set)
             .collect();
         for set in sets {
-            Converter::expand(internals, OWNER, set).unwrap();
+            Converter::expand(internals, OWNER, KeyCodec::length(set)).unwrap();
         }
     });
     exist(&mut journal);
     journal
+}
+
+/// Returns `merged` as the store keeps it: OWNER's Sets in the compact format.
+fn compact(merged: EvmState) -> EvmState {
+    let slots = merged[&OWNER].storage.clone();
+    let mut persisted = merged.clone();
+    persisted.get_mut(&OWNER).unwrap().storage =
+        Converter::compact(&mut StateDb::new(merged), OWNER, &slots).unwrap();
+    persisted
 }
 
 /// Reads one of OWNER's slots from `db`.
@@ -356,10 +365,8 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
     committer.buffer(ID::new(0, 3), next.inner.state);
     committer.flush().unwrap();
 
-    // Block end relinks the live elements in index order and clears the index.
-    let mut db = StateDb::new(committer.into_inner());
-    let keys: Vec<_> = db.inner()[&OWNER].storage.keys().copied().collect();
-    Converter::compact(&mut db, OWNER, &keys).unwrap();
+    // Block end relinks the live elements in index order; the index never leaves the Set.
+    let mut db = StateDb::new(compact(committer.into_inner()));
     let node = |element: u64| KeyCodec::element(Property::Node, id, U256::from(element));
     assert_eq!(slot(&mut db, KeyCodec::head(id)), U256::from(3));
     assert_eq!(slot(&mut db, KeyCodec::tail(id)), U256::from(2));
@@ -388,9 +395,7 @@ fn persist_links_element_zero_as_an_empty_node() {
     committer.buffer(ID::new(0, 1), journal.inner.state);
     committer.flush().unwrap();
 
-    let mut db = StateDb::new(committer.into_inner());
-    let keys: Vec<_> = db.inner()[&OWNER].storage.keys().copied().collect();
-    Converter::compact(&mut db, OWNER, &keys).unwrap();
+    let mut db = StateDb::new(compact(committer.into_inner()));
     // 7 -> 0 leaves Node[7] empty; 0 -> 8 is a plain link.
     let node = |element: u64| KeyCodec::element(Property::Node, id, U256::from(element));
     assert_eq!(slot(&mut db, node(7)), U256::ZERO);

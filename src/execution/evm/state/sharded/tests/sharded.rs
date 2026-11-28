@@ -1,8 +1,8 @@
 use super::*;
-use rayon::prelude::*;
-use alloy_evm::revm::state::EvmStorageSlot;
 use alloy_evm::revm::state::Bytecode;
+use alloy_evm::revm::state::EvmStorageSlot;
 use alloy_primitives::{B256, U256};
+use rayon::prelude::*;
 
 #[test]
 fn an_absent_account_reads_as_none() {
@@ -12,11 +12,15 @@ fn an_absent_account_reads_as_none() {
 
 #[test]
 fn a_written_account_and_slot_are_read_back() {
-    let state = Sharded::<4>::new();
+    let mut state = Sharded::<4>::new();
     let address = Address::with_last_byte(1);
-    state.write(address, |account| account.info.balance = U256::from(7));
-    state.write(address, |account| account.info.nonce = 3);
-    state.write_slot(address, U256::from(1), |slot| slot.present_value = U256::from(9));
+    state.account_mut(address, Account::default, |account| {
+        account.info.balance = U256::from(7)
+    });
+    state.account_mut(address, Account::default, |account| account.info.nonce = 3);
+    state.slot_mut(address, U256::from(1), EvmStorageSlot::default, |slot| {
+        slot.present_value = U256::from(9)
+    });
 
     state.read(address, |account| {
         let account = account.unwrap();
@@ -33,11 +37,11 @@ fn a_written_account_and_slot_are_read_back() {
 
 #[test]
 fn one_accounts_slots_spread_across_shards_and_merge_back() {
-    let state = Sharded::<8>::new();
+    let mut state = Sharded::<8>::new();
     let address = Address::with_last_byte(1);
-    state.write(address, |account| account.info.nonce = 5);
+    state.account_mut(address, Account::default, |account| account.info.nonce = 5);
     for key in 0..100u64 {
-        state.write_slot(address, U256::from(key), |slot| {
+        state.slot_mut(address, U256::from(key), EvmStorageSlot::default, |slot| {
             *slot = EvmStorageSlot::new(U256::from(key + 1), Default::default())
         });
     }
@@ -45,7 +49,7 @@ fn one_accounts_slots_spread_across_shards_and_merge_back() {
     let holding = state
         .shards
         .iter()
-        .filter(|shard| shard.read().unwrap().contains_key(&address))
+        .filter(|shard| shard.contains_key(&address))
         .count();
     assert!(holding > 1);
 
@@ -55,65 +59,44 @@ fn one_accounts_slots_spread_across_shards_and_merge_back() {
     assert_eq!(account.info.nonce, 5);
     assert_eq!(account.storage.len(), 100);
     for key in 0..100u64 {
-        assert_eq!(account.storage[&U256::from(key)].present_value, U256::from(key + 1));
+        assert_eq!(
+            account.storage[&U256::from(key)].present_value,
+            U256::from(key + 1)
+        );
     }
 }
 
 #[test]
 fn into_inner_collects_every_shard() {
-    let state = Sharded::<8>::new();
+    let mut state = Sharded::<8>::new();
     for byte in 0..100u8 {
-        state.write(Address::with_last_byte(byte), |account| {
+        state.account_mut(Address::with_last_byte(byte), Account::default, |account| {
             account.info.nonce = byte as u64
         });
     }
     let merged = state.into_inner();
     assert_eq!(merged.len(), 100);
     for byte in 0..100u8 {
-        assert_eq!(merged[&Address::with_last_byte(byte)].info.nonce, byte as u64);
+        assert_eq!(
+            merged[&Address::with_last_byte(byte)].info.nonce,
+            byte as u64
+        );
     }
 }
 
 #[test]
 fn a_single_shard_holds_everything() {
-    let state = Sharded::<1>::new();
+    let mut state = Sharded::<1>::new();
     for byte in 0..10u8 {
-        state.write(Address::with_last_byte(byte), |_| ());
+        state.account_mut(Address::with_last_byte(byte), Account::default, |_| ());
     }
     assert_eq!(state.into_inner().len(), 10);
 }
 
 #[test]
-fn parallel_writes_are_not_lost() {
-    let state = Sharded::<16>::new();
-    let shared = Address::repeat_byte(0xff);
-    // Many threads write distinct accounts and slots, and all add to one shared account and slot.
-    (0..1000u64).into_par_iter().for_each(|i| {
-        state.write(Address::left_padding_from(&i.to_be_bytes()), |account| {
-            account.info.nonce = i
-        });
-        state.write(shared, |account| account.info.balance += U256::from(1));
-        state.write_slot(shared, U256::from(i), |slot| slot.present_value = U256::from(i));
-        state.write_slot(shared, U256::MAX, |slot| slot.present_value += U256::from(1));
-    });
-    assert_eq!(
-        state.read(shared, |account| account.unwrap().info.balance),
-        U256::from(1000)
-    );
-    let merged = state.into_inner();
-    assert_eq!(merged.len(), 1001);
-    for i in 0..1000u64 {
-        assert_eq!(merged[&Address::left_padding_from(&i.to_be_bytes())].info.nonce, i);
-        assert_eq!(merged[&shared].storage[&U256::from(i)].present_value, U256::from(i));
-    }
-    assert_eq!(merged[&shared].info.balance, U256::from(1000));
-    assert_eq!(merged[&shared].storage[&U256::MAX].present_value, U256::from(1000));
-}
-
-#[test]
 fn a_sharded_state_db_matches_a_plain_one() {
     use super::super::{StateDb, overlay::StateOverlay};
-    use crate::execution::evm::api_store::ApiStore;
+    use crate::store::SlotStore;
     use alloy_evm::revm::{Database, DatabaseCommit, state::AccountInfo};
 
     let address = Address::with_last_byte(1);
@@ -150,19 +133,23 @@ fn a_sharded_state_db_matches_a_plain_one() {
         Some(&base),
     );
     let mut sharded = StateDb::with_fallback(
-        StateOverlay::new(
-            Sharded::<8>::new(),
-            StateOverlay::add_balance_nonce_deltas,
-        ),
+        StateOverlay::new(Sharded::<8>::new(), StateOverlay::add_balance_nonce_deltas),
         Some(&base),
     );
     for db in [&mut plain as &mut dyn DatabaseCommit, &mut sharded] {
         db.commit(change.clone());
     }
-    plain.write(address, U256::from(100), U256::from(7)).unwrap();
-    sharded.write(address, U256::from(100), U256::from(7)).unwrap();
+    plain
+        .write(address, U256::from(100), U256::from(7))
+        .unwrap();
+    sharded
+        .write(address, U256::from(100), U256::from(7))
+        .unwrap();
 
-    assert_eq!(sharded.basic(address).unwrap(), plain.basic(address).unwrap());
+    assert_eq!(
+        sharded.basic(address).unwrap(),
+        plain.basic(address).unwrap()
+    );
     for key in [0u64, 25, 49, 100, 200] {
         assert_eq!(
             sharded.storage(address, U256::from(key)).unwrap(),
@@ -195,7 +182,8 @@ impl alloy_evm::revm::DatabaseRef for Counting {
         &self,
         address: Address,
     ) -> Result<Option<alloy_evm::revm::state::AccountInfo>, Self::Error> {
-        self.accounts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.accounts
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.db.basic_ref(address)
     }
 
@@ -206,7 +194,8 @@ impl alloy_evm::revm::DatabaseRef for Counting {
 
     /// Counts and forwards a slot read.
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        self.slots.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.slots
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.db.storage_ref(address, index)
     }
 
@@ -216,7 +205,15 @@ impl alloy_evm::revm::DatabaseRef for Counting {
     }
 }
 
+impl crate::store::traits::PhysicalStore<CacheKey, CacheVal> for Counting {
+    /// Loads the key through the counted reads.
+    fn get(&self, key: &CacheKey) -> Result<Option<CacheVal>, crate::store::StoreError> {
+        crate::store::cache::load(self, key)
+    }
+}
+
 use super::super::StateDb;
+use crate::store::cache::{ByWeight, CacheKey, CacheVal, PersistentStore};
 use alloy_evm::revm::DatabaseRef;
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -226,18 +223,19 @@ fn counting(address: Address) -> Counting {
         balance: U256::from(5),
         ..Default::default()
     });
-    account
-        .storage
-        .insert(U256::from(1), EvmStorageSlot::new(U256::from(11), Default::default()));
+    account.storage.insert(
+        U256::from(1),
+        EvmStorageSlot::new(U256::from(11), Default::default()),
+    );
     Counting {
         db: StateDb::new(EvmState::from_iter([(address, account)])),
         ..Default::default()
     }
 }
 
-/// The cache in `shards` over `db`: it converts Sets as they are loaded.
-fn cache<'a, DB>(shards: &'a Sharded<8>, db: &'a DB) -> crate::store::cache::CacheDb<'a, DB, 8> {
-    crate::store::cache::CacheDb::new(shards, db)
+/// The cache over `db`: it converts Sets as they are loaded.
+fn cache(db: &Counting) -> PersistentStore<'_, 8> {
+    PersistentStore::new(1 << 20, ByWeight, Default::default(), Some(db))
 }
 
 /// A shared block state over `db`.
@@ -255,21 +253,23 @@ fn shared<DB>(db: DB) -> StateDb<DB, Sharded<8>> {
 fn the_cache_loads_each_account_and_slot_once() {
     let address = Address::with_last_byte(1);
     let db = counting(address);
-    let shards = Sharded::new();
-    let state = cache(&shards, &db);
+    let state = cache(&db);
     for _ in 0..3 {
-        assert_eq!(state.basic_ref(address).unwrap().unwrap().balance, U256::from(5));
-        assert_eq!(state.storage_ref(address, U256::from(1)).unwrap(), U256::from(11));
-        assert_eq!(state.storage_ref(address, U256::from(2)).unwrap(), U256::ZERO);
+        assert_eq!(
+            state.basic_ref(address).unwrap().unwrap().balance,
+            U256::from(5)
+        );
+        assert_eq!(
+            state.storage_ref(address, U256::from(1)).unwrap(),
+            U256::from(11)
+        );
+        assert_eq!(
+            state.storage_ref(address, U256::from(2)).unwrap(),
+            U256::ZERO
+        );
     }
     assert_eq!(db.accounts.load(Relaxed), 1);
     assert_eq!(db.slots.load(Relaxed), 2);
-
-    // Cached values are unchanged: original equals present.
-    drop(state);
-    let merged = shards.into_inner();
-    assert!(merged[&address].storage.values().all(|slot| !slot.is_changed()));
-    assert!(!merged[&address].is_touched());
 }
 
 #[test]
@@ -293,60 +293,79 @@ fn a_plain_state_does_not_cache() {
 }
 
 #[test]
-fn a_cached_read_does_not_replace_a_write() {
-    use crate::execution::evm::api_store::ApiStore;
+fn a_read_does_not_replace_a_write() {
+    use crate::store::SlotStore;
 
     let address = Address::with_last_byte(1);
     let db = counting(address);
     let mut state = shared(&db);
-    // Read (and cache) the old value, write a new one, then read again.
-    assert_eq!(state.storage_ref(address, U256::from(1)).unwrap(), U256::from(11));
+    // Read the old value, write a new one, then read again.
+    assert_eq!(
+        state.storage_ref(address, U256::from(1)).unwrap(),
+        U256::from(11)
+    );
     state.write(address, U256::from(1), U256::from(12)).unwrap();
-    assert_eq!(state.storage_ref(address, U256::from(1)).unwrap(), U256::from(12));
+    assert_eq!(
+        state.storage_ref(address, U256::from(1)).unwrap(),
+        U256::from(12)
+    );
     // The account keeps its loaded balance.
-    assert_eq!(state.basic_ref(address).unwrap().unwrap().balance, U256::from(5));
+    assert_eq!(
+        state.basic_ref(address).unwrap().unwrap().balance,
+        U256::from(5)
+    );
     let merged = state.into_inner();
     let slot = &merged[&address].storage[&U256::from(1)];
-    assert_eq!((slot.original_value, slot.present_value), (U256::from(11), U256::from(12)));
+    assert_eq!(
+        (slot.original_value, slot.present_value),
+        (U256::from(11), U256::from(12))
+    );
 }
 
 #[test]
 fn a_slot_read_for_a_missing_account_does_not_create_it() {
     let missing = Address::with_last_byte(9);
     let db = counting(Address::with_last_byte(1));
-    let shards = Sharded::new();
-    let state = cache(&shards, &db);
-    // Read many slots so some land in the account's own shard.
+    let state = cache(&db);
     for key in 0..64u64 {
-        assert_eq!(state.storage_ref(missing, U256::from(key)).unwrap(), U256::ZERO);
+        assert_eq!(
+            state.storage_ref(missing, U256::from(key)).unwrap(),
+            U256::ZERO
+        );
     }
     assert_eq!(state.basic_ref(missing).unwrap(), None);
     assert_eq!(state.basic_ref(missing).unwrap(), None);
-    // Missing accounts are not cached.
-    assert_eq!(db.accounts.load(Relaxed), 2);
+    // Missing accounts are not cached: each read asks the store again.
+    assert_eq!(db.accounts.load(Relaxed), 66);
 }
 
 #[test]
 fn parallel_readers_share_the_loaded_values() {
     let address = Address::with_last_byte(1);
     let db = counting(address);
-    let shards = Sharded::new();
-    let state = cache(&shards, &db);
+    let state = cache(&db);
     // As in the EVM, the account is loaded before its slots.
     state.basic_ref(address).unwrap();
     (0..1000u64).into_par_iter().for_each(|i| {
-        assert_eq!(state.storage_ref(address, U256::from(1)).unwrap(), U256::from(11));
-        assert_eq!(state.storage_ref(address, U256::from(i % 10 + 2)).unwrap(), U256::ZERO);
+        assert_eq!(
+            state.storage_ref(address, U256::from(1)).unwrap(),
+            U256::from(11)
+        );
+        assert_eq!(
+            state.storage_ref(address, U256::from(i % 10 + 2)).unwrap(),
+            U256::ZERO
+        );
     });
-    // Racing misses may each load, but every key ends up cached once with the loaded value.
-    drop(state);
-    let merged = shards.into_inner();
-    assert_eq!(merged[&address].storage.len(), 11);
-    assert_eq!(merged[&address].storage[&U256::from(1)].present_value, U256::from(11));
+    // Racing misses may each load, but afterwards every key is cached.
+    let loads = db.slots.load(Relaxed);
+    for key in 1..12u64 {
+        state.storage_ref(address, U256::from(key)).unwrap();
+    }
+    assert_eq!(db.slots.load(Relaxed), loads);
 }
 
 #[test]
-fn batched_inserts_match_locked_writes() {
+fn batched_inserts_match_single_writes() {
     let mut updates = EvmState::default();
     for byte in 0..20u8 {
         let mut account = Account::default();
@@ -360,57 +379,83 @@ fn batched_inserts_match_locked_writes() {
         updates.insert(Address::with_last_byte(byte), account);
     }
 
-    // The same updates written one by one under the locks.
-    let locked = Sharded::<8>::new();
+    // The same updates written one by one.
+    let mut single = Sharded::<8>::new();
     for (&address, account) in &updates {
-        locked.write(address, |current| current.info = account.info.clone());
+        single.account_mut(address, Account::default, |current| {
+            current.info = account.info.clone()
+        });
         for (&key, slot) in &account.storage {
-            locked.write_slot(address, key, |current| *current = slot.clone());
+            single.slot_mut(address, key, EvmStorageSlot::default, |current| {
+                *current = slot.clone()
+            });
         }
     }
 
-    // Partitioned into one batch per shard, then inserted without locks.
+    // Partitioned into one batch per shard, then inserted.
     let mut batched = Sharded::<8>::new();
     let batches = batched.partition(updates.clone());
     // Each batch holds only entries that belong to its shard.
     for (index, batch) in batches.iter().enumerate() {
-        assert!(batch.accounts.iter().all(|&(address, _)| batched.index(address) == index));
-        assert!(batch
-            .slots
-            .iter()
-            .all(|&(address, key, _)| batched.slot_index(address, key) == index));
+        assert!(
+            batch
+                .accounts
+                .iter()
+                .all(|&(address, _)| batched.index(address) == index)
+        );
+        assert!(
+            batch
+                .slots
+                .iter()
+                .all(|&(address, key, _)| batched.slot_index(address, key) == index)
+        );
     }
-    assert_eq!(batches.iter().map(|batch| batch.accounts.len()).sum::<usize>(), 20);
-    assert_eq!(batches.iter().map(|batch| batch.slots.len()).sum::<usize>(), 600);
-    batched.write_batches(batches);
     assert_eq!(
-        batched.into_inner(),
-        locked.into_inner()
+        batches
+            .iter()
+            .map(|batch| batch.accounts.len())
+            .sum::<usize>(),
+        20
     );
+    assert_eq!(
+        batches.iter().map(|batch| batch.slots.len()).sum::<usize>(),
+        600
+    );
+    batched.write_batches(batches);
+    assert_eq!(batched.into_inner(), single.into_inner());
 }
 
 #[test]
 fn batched_inserts_replace_info_and_keep_other_slots() {
     let address = Address::with_last_byte(1);
     let mut state = Sharded::<8>::new();
-    state.write(address, |account| account.info.nonce = 1);
+    state.account_mut(address, Account::default, |account| account.info.nonce = 1);
     for key in 0..10u64 {
-        state.write_slot(address, U256::from(key), |slot| slot.present_value = U256::from(1));
+        state.slot_mut(address, U256::from(key), EvmStorageSlot::default, |slot| {
+            slot.present_value = U256::from(1)
+        });
     }
 
     let mut account = Account::default();
     account.info.nonce = 2;
-    account
-        .storage
-        .insert(U256::from(3), EvmStorageSlot::new(U256::from(9), Default::default()));
+    account.storage.insert(
+        U256::from(3),
+        EvmStorageSlot::new(U256::from(9), Default::default()),
+    );
     let batches = state.partition(EvmState::from_iter([(address, account)]));
     state.write_batches(batches);
 
     let merged = state.into_inner();
     assert_eq!(merged[&address].info.nonce, 2);
     assert_eq!(merged[&address].storage.len(), 10);
-    assert_eq!(merged[&address].storage[&U256::from(3)].present_value, U256::from(9));
-    assert_eq!(merged[&address].storage[&U256::from(4)].present_value, U256::from(1));
+    assert_eq!(
+        merged[&address].storage[&U256::from(3)].present_value,
+        U256::from(9)
+    );
+    assert_eq!(
+        merged[&address].storage[&U256::from(4)].present_value,
+        U256::from(1)
+    );
 }
 
 #[test]
@@ -422,9 +467,8 @@ fn a_sharded_committer_applies_crdt_deltas_like_a_plain_one() {
     use crate::store::traits::Committer;
 
     let owners: Vec<Address> = (1..=20u8).map(Address::with_last_byte).collect();
-    let key = |owner| {
-        scalar::KeyCodec::encode(Namespace::U256, scalar::Property::PosDelta as u8, owner)
-    };
+    let key =
+        |owner| scalar::KeyCodec::encode(Namespace::U256, scalar::Property::PosDelta as u8, owner);
     let info = alloy_evm::revm::state::AccountInfo {
         balance: U256::from(100),
         ..Default::default()
@@ -435,9 +479,10 @@ fn a_sharded_committer_applies_crdt_deltas_like_a_plain_one() {
             .iter()
             .map(|&owner| {
                 let mut account = Account::from(info.clone());
-                account
-                    .storage
-                    .insert(key(owner), EvmStorageSlot::new(U256::from(10), Default::default()));
+                account.storage.insert(
+                    key(owner),
+                    EvmStorageSlot::new(U256::from(10), Default::default()),
+                );
                 (owner, account)
             })
             .collect(),
@@ -461,8 +506,15 @@ fn a_sharded_committer_applies_crdt_deltas_like_a_plain_one() {
             })
             .collect()
     };
-    let [first, second] = [(1, change(2)), (2, change(3))]
-        .map(|(sequence, state)| (ID { sequence, ..ID::new(0, sequence) }, state));
+    let [first, second] = [(1, change(2)), (2, change(3))].map(|(sequence, state)| {
+        (
+            ID {
+                sequence,
+                ..ID::new(0, sequence)
+            },
+            state,
+        )
+    });
 
     let mut plain = EvmStateCommitter::with_state(StateDb::with_fallback(
         super::super::StateOverlay::new(
@@ -482,7 +534,10 @@ fn a_sharded_committer_applies_crdt_deltas_like_a_plain_one() {
     assert_eq!(sharded, plain);
     for &owner in &owners {
         let slot = &sharded[&owner].storage[&key(owner)];
-        assert_eq!((slot.original_value, slot.present_value), (U256::from(10), U256::from(15)));
+        assert_eq!(
+            (slot.original_value, slot.present_value),
+            (U256::from(10), U256::from(15))
+        );
         assert_eq!(sharded[&owner].info.balance, U256::from(100));
     }
 }
@@ -498,12 +553,14 @@ fn stored_set(owner: Address, set: [u8; 6]) -> Counting {
     account.storage.insert(KeyCodec::length(set), slot(3));
     account.storage.insert(KeyCodec::head(set), slot(10));
     account.storage.insert(KeyCodec::tail(set), slot(30));
-    account
-        .storage
-        .insert(KeyCodec::element(Property::Node, set, U256::from(10)), slot(20));
-    account
-        .storage
-        .insert(KeyCodec::element(Property::Node, set, U256::from(20)), slot(30));
+    account.storage.insert(
+        KeyCodec::element(Property::Node, set, U256::from(10)),
+        slot(20),
+    );
+    account.storage.insert(
+        KeyCodec::element(Property::Node, set, U256::from(20)),
+        slot(30),
+    );
     Counting {
         db: StateDb::new(EvmState::from_iter([(owner, account)])),
         ..Default::default()
@@ -516,26 +573,38 @@ fn the_cache_converts_a_set_on_its_first_load() {
     let owner = Address::with_last_byte(1);
     let set = [1u8; 6];
     let db = stored_set(owner, set);
-    let shards = Sharded::new();
-    let state = cache(&shards, &db);
-    state.basic_ref(owner).unwrap();
+    let state = cache(&db);
 
     // Reading any of the Set's slots converts it in the shards.
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::from(1));
+    assert_eq!(
+        state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+        U256::from(1)
+    );
     let index = KeyCodec::delta(Property::Index, set);
-    assert_eq!(state.storage_ref(owner, index.key(0).unwrap()).unwrap(), U256::from(3 * 32));
+    assert_eq!(
+        state.storage_ref(owner, index.key(0).unwrap()).unwrap(),
+        U256::from(3 * 32)
+    );
     for (at, element) in [10u64, 20, 30].into_iter().enumerate() {
         assert_eq!(
-            state.storage_ref(owner, index.key(at as u64 + 1).unwrap()).unwrap(),
+            state
+                .storage_ref(owner, index.key(at as u64 + 1).unwrap())
+                .unwrap(),
             U256::from(element)
         );
         let position = KeyCodec::element(Property::Position, set, U256::from(element));
-        assert_eq!(state.storage_ref(owner, position).unwrap(), U256::from(at + 1));
+        assert_eq!(
+            state.storage_ref(owner, position).unwrap(),
+            U256::from(at + 1)
+        );
     }
 
     // Later reads find it converted and load nothing more.
     let loads = db.slots.load(Relaxed);
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::from(1));
+    assert_eq!(
+        state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+        U256::from(1)
+    );
     assert_eq!(db.slots.load(Relaxed), loads);
 }
 
@@ -545,8 +614,7 @@ fn a_sequence_over_the_block_state_finds_the_set_converted_by_the_cache() {
     let owner = Address::with_last_byte(1);
     let set = [1u8; 6];
     let db = stored_set(owner, set);
-    let shards = Sharded::new();
-    let cache = cache(&shards, &db);
+    let cache = cache(&db);
     cache.basic_ref(owner).unwrap();
     // The block state does not convert; it reads the Set converted from the cache.
     let state = shared(&cache);
@@ -561,21 +629,11 @@ fn a_sequence_over_the_block_state_finds_the_set_converted_by_the_cache() {
         ),
         Some(&state),
     );
-    assert_eq!(sequence.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::from(1));
+    assert_eq!(
+        sequence.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+        U256::from(1)
+    );
     assert!(sequence.into_inner().is_empty());
-}
-
-#[test]
-fn a_set_is_not_converted_before_its_account_is_loaded() {
-    use crate::execution::slot::set::KeyCodec;
-    let owner = Address::with_last_byte(1);
-    let set = [1u8; 6];
-    let db = stored_set(owner, set);
-    let shards = Sharded::new();
-    let state = cache(&shards, &db);
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::ZERO);
-    state.basic_ref(owner).unwrap();
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::from(1));
 }
 
 #[test]
@@ -592,7 +650,10 @@ fn a_plain_state_does_not_convert_sets() {
         Some(&db),
     );
     state.basic_ref(owner).unwrap();
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::ZERO);
+    assert_eq!(
+        state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+        U256::ZERO
+    );
 }
 
 #[test]
@@ -603,5 +664,31 @@ fn a_block_state_does_not_convert_sets() {
     let db = stored_set(owner, set);
     let state = shared(&db);
     state.basic_ref(owner).unwrap();
-    assert_eq!(state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(), U256::ZERO);
+    assert_eq!(
+        state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+        U256::ZERO
+    );
+}
+
+#[test]
+fn parallel_readers_of_an_unconverted_set_expand_it_once() {
+    use crate::execution::slot::set::KeyCodec;
+    let owner = Address::with_last_byte(1);
+    let set = [1u8; 6];
+
+    // The store reads one expansion takes.
+    let once = stored_set(owner, set);
+    cache(&once)
+        .storage_ref(owner, KeyCodec::indexed(set))
+        .unwrap();
+
+    let db = stored_set(owner, set);
+    let state = cache(&db);
+    (0..1000u64).into_par_iter().for_each(|_| {
+        assert_eq!(
+            state.storage_ref(owner, KeyCodec::indexed(set)).unwrap(),
+            U256::from(1)
+        );
+    });
+    assert_eq!(db.slots.load(Relaxed), once.slots.load(Relaxed));
 }

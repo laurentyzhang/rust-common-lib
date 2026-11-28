@@ -9,7 +9,7 @@ use alloy_primitives::{Address, U256};
 
 use super::{KeyCodec, Property};
 use crate::common::codec::CodecError;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::slot::{ApplyDelta, database};
 use crate::execution::workload::ID;
 use crate::store::StoreError;
@@ -80,7 +80,7 @@ impl ApplyDelta for Applier {
 
     /// Appends the additions in (block, generation, sequence, job) order with each element once,
     /// and turns the removals into holes; Length keeps the live count.
-    fn apply<S: ApiStore>(store: &mut S, owner: Address, mut delta: Delta) -> Result<(), StoreError>
+    fn apply<S: SlotStore>(store: &mut S, owner: Address, mut delta: Delta) -> Result<(), StoreError>
     where
         S::Error: Debug,
     {

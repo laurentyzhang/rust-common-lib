@@ -6,7 +6,7 @@ use super::{KeyCodec, Property};
 use crate::collections::delta_set::DeltaSet;
 use crate::common::codec::CodecError;
 use crate::crdt::types::collections::SetDelta;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 
 /// Reads and writes caller-owned Sets in the indexed format.
 pub struct Indexer;
@@ -14,7 +14,7 @@ pub struct Indexer;
 impl Indexer {
     /// Stages inserting `element`: an indexed element only has its pending removal cancelled;
     /// otherwise it is appended to the pending additions. Returns whether the pending delta changed.
-    pub fn insert<S: ApiStore>(
+    pub fn insert<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -56,7 +56,7 @@ impl Indexer {
 
     /// Stages removing `element`: a pending addition is cancelled; an indexed element joins the
     /// pending removals. Returns whether the pending delta changed.
-    pub fn remove<S: ApiStore>(
+    pub fn remove<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -103,7 +103,7 @@ impl Indexer {
     }
 
     /// Returns whether `element` is live: pending added, or indexed without a pending removal.
-    pub fn contains<S: ApiStore>(
+    pub fn contains<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -117,7 +117,7 @@ impl Indexer {
     }
 
     /// Returns whether `element` is in the index, i.e. in the set before the pending changes.
-    fn committed<S: ApiStore>(
+    fn committed<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -129,7 +129,7 @@ impl Indexer {
 
     /// Returns the first index element at or after position `from` that is neither a hole
     /// nor pending removal.
-    fn indexed_from<S: ApiStore>(
+    fn indexed_from<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -155,7 +155,7 @@ impl Indexer {
     }
 
     /// Returns the live element count: Length, minus pending removals, plus uncancelled additions.
-    pub fn length<S: ApiStore>(storage: &mut S, owner: Address, set: [u8; 6]) -> Result<U256, S::Error>
+    pub fn length<S: SlotStore>(storage: &mut S, owner: Address, set: [u8; 6]) -> Result<U256, S::Error>
     where
         S::Error: From<CodecError>,
     {
@@ -180,7 +180,7 @@ impl Indexer {
     }
 
     /// Returns the first live element: index order, then pending additions.
-    pub fn first<S: ApiStore>(
+    pub fn first<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -196,7 +196,7 @@ impl Indexer {
 
     /// Returns the live element after `element`, skipping pending removals and cancelled additions;
     /// `None` at the end or if `element` is neither indexed nor pending.
-    pub fn next<S: ApiStore>(
+    pub fn next<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -224,7 +224,7 @@ impl Indexer {
     }
 
     /// Returns the first uncancelled pending addition at or after position `from`.
-    fn pending_from<S: ApiStore>(
+    fn pending_from<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],
@@ -248,7 +248,7 @@ impl Indexer {
     }
 
     /// Reads the pending changes of `set` as a delta from its three logs; empty logs read as empty.
-    pub fn delta<S: ApiStore>(
+    pub fn delta<S: SlotStore>(
         storage: &mut S,
         owner: Address,
         set: [u8; 6],

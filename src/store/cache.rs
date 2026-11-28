@@ -1,255 +1,491 @@
-use std::collections::BTreeSet;
+//! `CachedStore`, sharded quick_caches over a physical_store, and `PersistentStore`, its EVM form over
+//! MDBX, which keeps accounts, slots and whole Sets in the execution format.
+//!
+//! Only MDBX keeps Sets compact; the cache and every layer above hold them expanded. A Set miss
+//! expands through `Expand`; MDBX's committer compacts through each namespace's converter.
+//! The cache holds only what MDBX holds: it is written after MDBX, with the same accepted batches.
+
+use std::fmt::Debug;
+use std::hash::{BuildHasher, Hash};
+use std::marker::PhantomData;
+use std::sync::RwLock;
 
 use alloy_evm::revm::{
     DatabaseRef,
+    primitives::KECCAK_EMPTY,
     state::{Account, AccountInfo, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
+use alloy_primitives::map::{DefaultHashBuilder, HashMap};
 use alloy_primitives::{Address, B256, U256};
+use quick_cache::{Lifecycle, UnitWeighter, Weighter, unsync};
+use rayon::prelude::*;
 
-use crate::execution::evm::api_store::ApiStore;
-use crate::execution::evm::state::{StateDb, StateOverlay, sharded::Sharded};
+use crate::store::SlotStore;
+use crate::execution::evm::state::{StateDb, store::OverlayRead};
 use crate::execution::{FormatConverter, set};
-use crate::store::traits::{FallbackStore, StoreError};
+use crate::store::traits::{PhysicalStore, StoreError};
 
-pub struct CachedStore<'a, K, V> {
-    pub(super) cache: quick_cache::sync::Cache<K, V>,
-    fallback: Option<&'a dyn FallbackStore<K, V>>,
+/// Converts a missing entry from a physical_store's format into a cache's, as the cache loads it.
+pub trait Load<K, V> {
+    /// Loads `key` from `physical_store` in the cache's format; `None` when the physical_store lacks it.
+    fn load(physical_store: &dyn PhysicalStore<K, V>, key: &K) -> Result<Option<V>, StoreError>;
 }
 
-impl<'a, K, V> CachedStore<'a, K, V>
-where
-    K: Eq + std::hash::Hash,
-    V: Clone,
+/// Loads entries as the physical_store holds them, for a physical_store in the cache's own format.
+#[derive(Debug, Default)]
+pub struct Plain;
+
+/// Reads the key from the physical_store unchanged.
+impl<K, V> Load<K, V> for Plain {
+    /// Returns the physical_store's value as is.
+    fn load(physical_store: &dyn PhysicalStore<K, V>, key: &K) -> Result<Option<V>, StoreError> {
+        physical_store.get(key)
+    }
+}
+
+/// A cache split into `N` shards, each a quick_cache behind its own lock, over an optional
+/// physical_store whose entries `Lo` converts as they load. Reads and misses lock one shard; `flush`
+/// writes through `&mut` without locks.
+pub struct CachedStore<
+    'a,
+    K,
+    V,
+    We = UnitWeighter,
+    L = unsync::DefaultLifecycle<K, V>,
+    Lo = Plain,
+    const N: usize = 64,
+> {
+    /// The quick_caches; a key lives in the shard `index` picks.
+    shards: [RwLock<unsync::Cache<K, V, We, quick_cache::DefaultHashBuilder, L>>; N],
+    /// Picks a key's shard.
+    hasher: DefaultHashBuilder,
+    /// The shards' eviction policy, kept for policy state shared across shards.
+    lifecycle: L,
+    /// Where misses load from.
+    physical_store: Option<&'a dyn PhysicalStore<K, V>>,
+    /// The physical_store-to-cache conversion, fixed by the type.
+    load: PhantomData<Lo>,
+}
+
+/// Construction, reads with loading on a miss, and lock-free writes.
+impl<'a, K: Eq + Hash, V, We: Weighter<K, V>, L: Lifecycle<K, V>, Lo: Load<K, V>, const N: usize>
+    CachedStore<'a, K, V, We, L, Lo, N>
 {
-    pub fn new(capacity: usize, fallback: Option<&'a dyn FallbackStore<K, V>>) -> Self {
+    /// Creates a cache holding up to `capacity` in weight, split evenly over the shards.
+    pub fn new(
+        capacity: u64,
+        weighter: We,
+        lifecycle: L,
+        physical_store: Option<&'a dyn PhysicalStore<K, V>>,
+    ) -> Self
+    where
+        We: Clone,
+        L: Clone,
+    {
+        let per_shard = capacity.div_ceil(N as u64).max(1);
         Self {
-            cache: quick_cache::sync::Cache::new(capacity),
-            fallback,
-        }
-    }
-}
-
-impl<'a, K, V> CachedStore<'a, K, V> {
-    pub fn into_cache(self) -> quick_cache::sync::Cache<K, V> {
-        self.cache
-    }
-
-    pub fn from_cache(
-        cache: quick_cache::sync::Cache<K, V>,
-        fallback: Option<&'a dyn FallbackStore<K, V>>,
-    ) -> Self {
-        Self { cache, fallback }
-    }
-}
-
-impl<K, V> FallbackStore<K, V> for CachedStore<'_, K, V>
-where
-    K: Eq + std::hash::Hash + Clone + Send + Sync,
-    V: Clone + Send + Sync,
-{
-    fn contains_key(&self, key: &K) -> Result<bool, StoreError> {
-        if self.cache.contains_key(key) {
-            return Ok(true);
-        }
-        match self.fallback {
-            Some(fallback) => fallback.contains_key(key),
-            None => Ok(false),
-        }
-    }
-
-    fn get(&self, key: &K) -> Result<Option<V>, StoreError> {
-        if let Some(value) = self.cache.get(key) {
-            return Ok(Some(value));
-        }
-
-        let Some(fallback) = self.fallback else {
-            return Ok(None);
-        };
-        let Some(value) = fallback.get(key)? else {
-            return Ok(None);
-        };
-        self.cache.insert(key.clone(), value.clone());
-        Ok(Some(value))
-    }
-
-    fn get_untracked(&self, key: &K) -> Result<Option<V>, StoreError> {
-        self.get(key)
-    }
-}
-
-// Only the store keeps Sets compact; the cache and every layer above hold them expanded. Both
-// conversions happen here, between the cache and the store.
-
-/// The cache in front of the store, as the block state reads it: misses load from `store`, and
-/// Sets are expanded as they load.
-#[derive(Debug)]
-pub struct CacheDb<'a, DB, const N: usize> {
-    db: StateDb<Loader<'a, DB, N>, &'a Sharded<N>>,
-    store: &'a DB,
-}
-
-impl<'a, DB, const N: usize> CacheDb<'a, DB, N> {
-    /// Reads through `cache`, loading misses from `store`.
-    pub fn new(cache: &'a Sharded<N>, store: &'a DB) -> Self {
-        Self {
-            db: StateDb::with_fallback(
-                StateOverlay::new(cache, StateOverlay::copy_balance_nonce),
-                Some(Loader { cache, store }),
-            ),
-            store,
-        }
-    }
-}
-
-/// Loads the cache's misses from the store and keeps them in the cache.
-#[derive(Debug)]
-struct Loader<'a, DB, const N: usize> {
-    cache: &'a Sharded<N>,
-    store: &'a DB,
-}
-
-impl<DB: DatabaseRef, const N: usize> DatabaseRef for Loader<'_, DB, N> {
-    type Error = DB::Error;
-
-    /// Loads the account and keeps it in the cache; a missing one is not kept.
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        let info = self.store.basic_ref(address)?;
-        if let Some(info) = &info {
-            self.cache.cache_account(address, Account::from(info.clone()));
-        }
-        Ok(info)
-    }
-
-    /// Loads the code from the store.
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.store.code_by_hash_ref(code_hash)
-    }
-
-    /// Loads the slot and keeps it, unchanged, in the cache.
-    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        let value = self.store.storage_ref(address, index)?;
-        self.cache
-            .cache_slot(address, index, EvmStorageSlot::new(value, TransactionId::ZERO));
-        Ok(value)
-    }
-
-    /// Reads the block hash from the store.
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.store.block_hash_ref(number)
-    }
-}
-
-impl<DB: DatabaseRef, const N: usize> DatabaseRef for CacheDb<'_, DB, N> {
-    type Error = DB::Error;
-
-    /// Reads the account through the cache.
-    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
-        self.db.basic_ref(address)
-    }
-
-    /// Reads the code through the cache.
-    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, Self::Error> {
-        self.db.code_by_hash_ref(code_hash)
-    }
-
-    /// Expands the Set `index` belongs to as it loads from the store, then reads the slot through
-    /// the cache.
-    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, Self::Error> {
-        to_execution(*self.db.inner(), address, index, |key| {
-            self.store.storage_ref(address, key).ok()
-        });
-        self.db.storage_ref(address, index)
-    }
-
-    /// Reads the block hash from the store.
-    fn block_hash_ref(&self, number: u64) -> Result<B256, Self::Error> {
-        self.store.block_hash_ref(number)
-    }
-}
-
-/// Expands the Set `key` belongs to in `cache` as it is loaded from the store, loading missing
-/// slots with `load`. Skipped once converted, or while the account has no
-/// entry, so a written slot never stands in for the account; a failed conversion leaves the Set
-/// as loaded.
-pub(crate) fn to_execution<const N: usize>(
-    cache: &Sharded<N>,
-    address: Address,
-    key: U256,
-    load: impl Fn(U256) -> Option<U256>,
-) {
-    let Some((set, ..)) = set::KeyCodec::decode(key) else {
-        return;
-    };
-    let converted = cache.read_slot(address, set::KeyCodec::indexed(set), |slot| {
-        slot.is_some_and(|slot| !slot.present_value.is_zero())
-    });
-    if converted || cache.read(address, |account| account.is_none()) {
-        return;
-    }
-    let _ = set::Converter::expand(&mut Converting { cache, load }, address, set);
-}
-
-/// Store for converting a Set in the cache: reads from the cache or loads missing slots, writes
-/// into the cache.
-struct Converting<'a, const N: usize, F> {
-    cache: &'a Sharded<N>,
-    load: F,
-}
-
-impl<const N: usize, F: Fn(U256) -> Option<U256>> ApiStore for Converting<'_, N, F> {
-    type Error = StoreError;
-
-    /// Reads the slot from the cache, or loads it.
-    fn read(&mut self, owner: Address, key: U256) -> Result<U256, StoreError> {
-        match self
-            .cache
-            .read_slot(owner, key, |slot| slot.map(|slot| slot.present_value))
-        {
-            Some(value) => Ok(value),
-            None => (self.load)(key).ok_or_else(|| {
-                StoreError::Database(format!(
-                    "failed to load account {owner} slot {key:#x} for Set conversion"
+            shards: std::array::from_fn(|_| {
+                RwLock::new(unsync::Cache::with(
+                    per_shard as usize,
+                    per_shard,
+                    weighter.clone(),
+                    Default::default(),
+                    lifecycle.clone(),
                 ))
             }),
+            hasher: DefaultHashBuilder::default(),
+            lifecycle,
+            physical_store,
+            load: PhantomData,
         }
     }
 
-    /// Writes the converted slot into the cache.
-    fn write(&mut self, owner: Address, key: U256, value: U256) -> Result<(), StoreError> {
-        self.cache
-            .write_slot(owner, key, |slot| slot.present_value = value);
+    /// Detaches the physical_store, keeping the cached entries.
+    pub fn into_cache<'b>(self) -> CachedStore<'b, K, V, We, L, Lo, N> {
+        CachedStore {
+            shards: self.shards,
+            hasher: self.hasher,
+            lifecycle: self.lifecycle,
+            physical_store: None,
+            load: PhantomData,
+        }
+    }
+
+    /// Attaches `physical_store` to the entries of `cache`.
+    pub fn from_cache(
+        cache: CachedStore<'_, K, V, We, L, Lo, N>,
+        physical_store: Option<&'a dyn PhysicalStore<K, V>>,
+    ) -> Self {
+        Self {
+            shards: cache.shards,
+            hasher: cache.hasher,
+            lifecycle: cache.lifecycle,
+            physical_store,
+            load: PhantomData,
+        }
+    }
+
+    /// Returns the index of the shard holding `key`.
+    fn index(&self, key: &K) -> usize {
+        self.hasher.hash_one(key) as usize % N
+    }
+
+    /// Reads `key` with `f` under its shard's read lock; on a miss, loads it from the physical_store
+    /// through `Lo` and keeps it, all under the shard's write lock, so only one reader loads a key.
+    /// A key the physical_store lacks reads as `None` and is not kept.
+    pub fn get_with<R>(&self, key: &K, f: impl FnOnce(&V) -> R) -> Result<Option<R>, StoreError>
+    where
+        K: Clone,
+    {
+        let shard = &self.shards[self.index(key)];
+        if let Some(value) = shard.read().unwrap().get(key) {
+            return Ok(Some(f(value)));
+        }
+        let mut shard = shard.write().unwrap();
+        // Another reader may have loaded it while this one waited for the lock.
+        if let Some(value) = shard.get(key) {
+            return Ok(Some(f(value)));
+        }
+        let Some(physical_store) = self.physical_store else {
+            return Ok(None);
+        };
+        let Some(value) = Lo::load(physical_store, key)? else {
+            return Ok(None);
+        };
+        let result = f(&value);
+        shard.insert(key.clone(), value);
+        Ok(Some(result))
+    }
+
+    /// Writes `updates` through `&mut`, without locks, every shard in parallel: `merge` gets the
+    /// cached value, if any, and returns what to insert for a missing key. Returns each shard's
+    /// eviction record.
+    pub fn flush(
+        &mut self,
+        updates: Vec<(K, V)>,
+        merge: impl Fn(Option<&mut V>, V) -> Option<V> + Sync,
+    ) -> Vec<L::RequestState>
+    where
+        K: Send,
+        V: Send,
+        We: Send,
+        L: Send,
+        L::RequestState: Send,
+    {
+        let mut batches: [Vec<(K, V)>; N] = std::array::from_fn(|_| Vec::new());
+        for (key, value) in updates {
+            batches[self.index(&key)].push((key, value));
+        }
+        self.shards
+            .par_iter_mut()
+            .zip(batches)
+            .map(|(shard, batch)| {
+                let shard = shard.get_mut().unwrap();
+                let mut evicted = L::RequestState::default();
+                for (key, value) in batch {
+                    let inserted = match shard.get_mut(&key) {
+                        Some(mut current) => merge(Some(&mut current), value),
+                        None => merge(None, value),
+                    };
+                    if let Some(value) = inserted {
+                        shard.insert_with_lifecycle(key, value, &mut evicted);
+                    }
+                }
+                evicted
+            })
+            .collect()
+    }
+
+    /// Drops `keys`, without locks.
+    pub fn remove(&mut self, keys: &[K]) {
+        for key in keys {
+            let index = self.index(key);
+            self.shards[index].get_mut().unwrap().remove(key);
+        }
+    }
+}
+
+/// A `Debug` that needs no bounds on the parameters.
+impl<K, V, We, L, Lo, const N: usize> Debug for CachedStore<'_, K, V, We, L, Lo, N> {
+    /// Shows the shard count; the shards and the physical_store have no useful `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedStore")
+            .field("shards", &N)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A key of the EVM cache: an account's info, a plain slot, a whole Set, code, or a block hash.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CacheKey {
+    /// An account's info, by address.
+    Account(Address),
+    /// A plain slot, by owner and slot key.
+    Slot(Address, U256),
+    /// A whole Set, by owner and Set id.
+    Set(Address, [u8; 6]),
+    /// Code, by its hash.
+    Code(B256),
+    /// A block hash, by block number.
+    BlockHash(u64),
+}
+
+/// A value of the EVM cache.
+#[derive(Clone, Debug)]
+pub enum CacheVal {
+    /// The account without its storage.
+    Account(Account),
+    /// A plain slot.
+    Slot(EvmStorageSlot),
+    /// Every slot of one Set, in the execution format.
+    Set(HashMap<U256, EvmStorageSlot>),
+    /// The code.
+    Code(Bytecode),
+    /// The block hash.
+    BlockHash(B256),
+}
+
+/// Weighs the EVM cache's entries.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ByWeight;
+
+/// Sizes Sets by their slots, so a large Set costs its share of the capacity.
+impl Weighter<CacheKey, CacheVal> for ByWeight {
+    /// One per slot of a Set, one for any other entry.
+    fn weight(&self, _key: &CacheKey, value: &CacheVal) -> u64 {
+        match value {
+            CacheVal::Set(slots) => slots.len().max(1) as u64,
+            _ => 1,
+        }
+    }
+}
+
+/// The persistent store execution reads: the cache over MDBX, one store to callers.
+pub type PersistentStore<'a, const N: usize = 64> = CachedStore<
+    'a,
+    CacheKey,
+    CacheVal,
+    ByWeight,
+    unsync::DefaultLifecycle<CacheKey, CacheVal>,
+    Expand,
+    N,
+>;
+
+/// Splits execution-format changes into cache entries: accounts, plain slots, code, and the
+/// changed slots of each Set.
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+pub(crate) fn entries(changes: EvmState) -> Vec<(CacheKey, CacheVal)> {
+    let mut entries = Vec::new();
+    let mut sets: HashMap<(Address, [u8; 6]), HashMap<U256, EvmStorageSlot>> = HashMap::default();
+    for (address, mut account) in changes {
+        for (key, slot) in std::mem::take(&mut account.storage) {
+            match set::KeyCodec::decode(key) {
+                Some((set, ..)) => {
+                    sets.entry((address, set)).or_default().insert(key, slot);
+                }
+                None => entries.push((CacheKey::Slot(address, key), CacheVal::Slot(slot))),
+            }
+        }
+        let info = &account.info;
+        if let Some(code) = info.code.clone().filter(|_| info.code_hash != KECCAK_EMPTY) {
+            entries.push((CacheKey::Code(info.code_hash), CacheVal::Code(code)));
+        }
+        entries.push((CacheKey::Account(address), CacheVal::Account(account)));
+    }
+    for ((address, set), slots) in sets {
+        entries.push((CacheKey::Set(address, set), CacheVal::Set(slots)));
+    }
+    entries
+}
+
+/// Writes accepted changes into the cache once MDBX holds them.
+impl<const N: usize> PersistentStore<'_, N> {
+    /// Writes `entries` without locks: a cached Set takes the changed slots, a Set not cached is
+    /// skipped, as it expands whole from MDBX on its next read; any other entry is replaced.
+    pub fn write(&mut self, entries: Vec<(CacheKey, CacheVal)>) -> Result<(), StoreError> {
+        self.flush(entries, |current, new| match (current, new) {
+            (Some(CacheVal::Set(slots)), CacheVal::Set(new)) => {
+                slots.extend(new);
+                None
+            }
+            (None, CacheVal::Set(_)) => None,
+            (Some(current), new) => {
+                *current = new;
+                None
+            }
+            (None, new) => Some(new),
+        });
         Ok(())
     }
 }
 
-/// Compacts the touched Sets in `changes` for the store, reading their indexed format from
-/// `changes`, then `cache`; returns the changes to persist, still open for further commits.
-#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
-pub(crate) fn to_storage<DB: DatabaseRef>(
-    changes: EvmState,
-    cache: &DB,
-) -> Result<StateDb<&DB>, StoreError> {
-    let mut db = StateDb::with_fallback(
-        StateOverlay::new(changes, StateOverlay::copy_balance_nonce),
-        Some(cache),
-    );
-    let sets: Vec<(Address, Vec<U256>)> = db
-        .inner()
-        .iter()
-        .map(|(&owner, account)| {
-            let indexed: BTreeSet<U256> = account
-                .storage
-                .keys()
-                .filter_map(|&key| set::KeyCodec::decode(key))
-                .map(|(set, ..)| set::KeyCodec::indexed(set))
-                .collect();
-            (owner, indexed.into_iter().collect())
-        })
-        .collect();
-    for (owner, keys) in sets {
-        set::Converter::compact(&mut db, owner, &keys)?;
+/// Serves the EVM's reads, so the persistent store is the block state's physical_store.
+impl<const N: usize> DatabaseRef for PersistentStore<'_, N> {
+    type Error = StoreError;
+
+    /// Reads the account unless it is absent or removed.
+    fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, StoreError> {
+        let info = self.get_with(&CacheKey::Account(address), |value| match value {
+            CacheVal::Account(account)
+                if !(account.is_selfdestructed()
+                    || (account.is_loaded_as_not_existing() && !account.is_created())) =>
+            {
+                Some(account.info.clone())
+            }
+            _ => None,
+        })?;
+        Ok(info.flatten())
     }
-    Ok(db)
+
+    /// Reads the code by its hash; missing code reads as empty.
+    fn code_by_hash_ref(&self, code_hash: B256) -> Result<Bytecode, StoreError> {
+        let code = self.get_with(&CacheKey::Code(code_hash), |value| match value {
+            CacheVal::Code(code) => code.clone(),
+            _ => Bytecode::default(),
+        })?;
+        Ok(code.unwrap_or_default())
+    }
+
+    /// Reads the slot: a removed account's slots read as zero, a created one's from the cache
+    /// only. A Set's slot reads from the whole Set.
+    fn storage_ref(&self, address: Address, index: U256) -> Result<U256, StoreError> {
+        let status = self.get_with(&CacheKey::Account(address), |value| match value {
+            CacheVal::Account(account) => (
+                account.is_selfdestructed()
+                    || (account.is_loaded_as_not_existing() && !account.is_created()),
+                account.is_created(),
+            ),
+            _ => (false, false),
+        })?;
+        let (removed, created) = status.unwrap_or_default();
+        if removed {
+            return Ok(U256::ZERO);
+        }
+        let key = match set::KeyCodec::decode(index) {
+            Some((set, ..)) => CacheKey::Set(address, set),
+            None => CacheKey::Slot(address, index),
+        };
+        let read = |value: &CacheVal| match value {
+            CacheVal::Set(slots) => slots.get(&index).map(|slot| slot.present_value),
+            CacheVal::Slot(slot) => Some(slot.present_value),
+            _ => None,
+        };
+        let value = match created {
+            true => self.shards[self.index(&key)]
+                .read()
+                .unwrap()
+                .get(&key)
+                .and_then(read),
+            false => self.get_with(&key, read)?.flatten(),
+        };
+        Ok(value.unwrap_or_default())
+    }
+
+    /// Reads the block hash.
+    fn block_hash_ref(&self, number: u64) -> Result<B256, StoreError> {
+        let hash = self.get_with(&CacheKey::BlockHash(number), |value| match value {
+            CacheVal::BlockHash(hash) => *hash,
+            _ => B256::ZERO,
+        })?;
+        Ok(hash.unwrap_or_default())
+    }
+}
+
+/// Loads the persistent store's entries from MDBX's format: Sets are expanded from the store's
+/// list into the indexed format, any other key read as is.
+#[derive(Debug, Default)]
+pub struct Expand;
+
+/// Expands a Set as the cache loads it.
+impl Load<CacheKey, CacheVal> for Expand {
+    /// Loads `key`, expanding a Set from its list.
+    fn load(
+        physical_store: &dyn PhysicalStore<CacheKey, CacheVal>,
+        key: &CacheKey,
+    ) -> Result<Option<CacheVal>, StoreError> {
+        let CacheKey::Set(owner, set) = *key else {
+            return physical_store.get(key);
+        };
+        let mut expanding = Expanding {
+            physical_store,
+            slots: HashMap::default(),
+        };
+        set::Converter::expand(&mut expanding, owner, set::KeyCodec::length(set))?;
+        Ok(Some(CacheVal::Set(expanding.slots)))
+    }
+}
+
+/// Expands one Set from the store's list into a map: reads keep the loaded slots, writes the
+/// converted ones.
+struct Expanding<'a> {
+    /// The store the list is read from.
+    physical_store: &'a dyn PhysicalStore<CacheKey, CacheVal>,
+    /// The Set's slots, which become its cache entry.
+    slots: HashMap<U256, EvmStorageSlot>,
+}
+
+/// The slot access `Converter::expand` runs on.
+impl SlotStore for Expanding<'_> {
+    type Error = StoreError;
+
+    /// Reads the slot from the map, or loads it as a plain slot from the store and keeps it.
+    fn read(&mut self, owner: Address, key: U256) -> Result<U256, StoreError> {
+        if let Some(slot) = self.slots.get(&key) {
+            return Ok(slot.present_value);
+        }
+        let value = match self.physical_store.get(&CacheKey::Slot(owner, key))? {
+            Some(CacheVal::Slot(slot)) => slot.present_value,
+            _ => U256::ZERO,
+        };
+        self.slots
+            .insert(key, EvmStorageSlot::new(value, TransactionId::ZERO));
+        Ok(value)
+    }
+
+    /// Writes the converted slot into the map.
+    fn write(&mut self, _owner: Address, key: U256, value: U256) -> Result<(), StoreError> {
+        self.slots.entry(key).or_default().present_value = value;
+        Ok(())
+    }
+}
+
+/// Lets a `StateDb` serve as the persistent store's physical_store, as in tests.
+impl<DB, Store> PhysicalStore<CacheKey, CacheVal> for StateDb<DB, Store>
+where
+    DB: DatabaseRef + Send + Sync,
+    DB::Error: Debug,
+    Store: OverlayRead + Send + Sync,
+{
+    /// Loads the key from this state.
+    fn get(&self, key: &CacheKey) -> Result<Option<CacheVal>, StoreError> {
+        load(self, key)
+    }
+}
+
+/// Loads a plain key from `db`. A store holds no Set entries: the cache expands Sets itself.
+pub(crate) fn load<DB: DatabaseRef>(db: &DB, key: &CacheKey) -> Result<Option<CacheVal>, StoreError>
+where
+    DB::Error: Debug,
+{
+    let error = |error: DB::Error| StoreError::Database(format!("{error:?}"));
+    Ok(match *key {
+        CacheKey::Account(address) => db
+            .basic_ref(address)
+            .map_err(error)?
+            .map(|info| CacheVal::Account(Account::from(info))),
+        CacheKey::Slot(address, key) => {
+            let value = db.storage_ref(address, key).map_err(error)?;
+            Some(CacheVal::Slot(EvmStorageSlot::new(
+                value,
+                TransactionId::ZERO,
+            )))
+        }
+        CacheKey::Set(..) => None,
+        CacheKey::Code(hash) => Some(CacheVal::Code(db.code_by_hash_ref(hash).map_err(error)?)),
+        CacheKey::BlockHash(number) => Some(CacheVal::BlockHash(
+            db.block_hash_ref(number).map_err(error)?,
+        )),
+    })
 }
 
 #[cfg(test)]

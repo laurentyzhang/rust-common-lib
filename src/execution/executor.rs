@@ -6,7 +6,7 @@ use alloy_op_evm::OpBlockExecutionCtx;
 use rayon::ThreadPool;
 use std::io::Error;
 
-use alloy_evm::revm::{DatabaseRef, context_interface::Transaction, state::EvmState};
+use alloy_evm::revm::{context_interface::Transaction, state::EvmState};
 
 use super::{
     ArcologyEvmFactory, ParaBlockConfig,
@@ -14,8 +14,8 @@ use super::{
     op::backend::PostExecEvmFactoryAdapter,
     workload::{ID, Job, JobResult, ReceiptStatus},
 };
-use super::evm::state::sharded::Sharded;
 use crate::planner::Planner;
+use crate::store::cache::PersistentStore;
 
 /// Stateless processor that prepares block workloads and finalizes transaction outcomes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -54,14 +54,14 @@ impl ArcologyParaBlockExecutor {
         cumulative
     }
 
-    /// Prepares jobs, validates and schedules them against the block gas limit, and executes them.
-    pub fn execute_block<'db, F, PDB, Fallback, TxEnv, R>(
+    /// Prepares jobs, validates and schedules them against the block gas limit, and executes them
+    /// over `cache`; returns the results and the changes, committed once consensus accepts them.
+    pub fn execute_block<F, PDB, TxEnv, R>(
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
-        cache: &mut Sharded,
-        fallback: &'db Fallback,
+        cache: &PersistentStore<'_>,
         planner: &mut Planner<PDB, Key>,
         transactions: impl IntoIterator<Item = (TxEnv, R)>,
     ) -> Result<
@@ -79,7 +79,6 @@ impl ArcologyParaBlockExecutor {
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         PDB: Database,
-        Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send + ReceiptStatus,
         TxEnv: Transaction,
         (TxEnv, R): Send + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
@@ -98,7 +97,7 @@ impl ArcologyParaBlockExecutor {
 
         planner.block_gas_limit = config.env.block_env.gas_limit;
         let block = planner.plan(jobs).map_err(Error::other)?;
-        block.run(factory, config, pool, set_cumulative, cache, fallback, planner)
+        block.run(factory, config, pool, set_cumulative, cache, planner)
     }
 }
 

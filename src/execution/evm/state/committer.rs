@@ -129,7 +129,7 @@ impl<DB: DatabaseRef + Sync, Store: OverlayWrite> Committer<ID, EvmState>
 }
 
 /// Applies `crdt`'s deltas into `db` and clears them: every owner's writes are computed in
-/// parallel against a read-only view of the store, then written in one batch.
+/// parallel against the store, read-only, then written in one batch.
 pub(crate) fn apply_crdt<DB: DatabaseRef + Sync, Store: OverlayWrite>(
     db: &mut StateDb<DB, Store>,
     crdt: &mut CrdtSlot,
@@ -138,10 +138,10 @@ pub(crate) fn apply_crdt<DB: DatabaseRef + Sync, Store: OverlayWrite>(
     let store = db.overlay.inner_mut();
     let updates = {
         let base = StateDb::with_fallback(
-            StateOverlay::new(store.view(), StateOverlay::copy_balance_nonce),
+            StateOverlay::new(&*store, StateOverlay::copy_balance_nonce),
             fallback,
         );
-        // Phase 1: each owner writes into its own overlay over the view.
+        // Phase 1: each owner writes into its own overlay over the store.
         let stores = crdt
             .drain()
             .into_par_iter()

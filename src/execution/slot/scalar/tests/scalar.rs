@@ -3,7 +3,7 @@ use crate::execution::ApplyDelta;
 use crate::execution::workload::ID;
 use alloy_evm::revm::state::{EvmStorage, EvmStorageSlot};
 use crate::crdt::{self, state::DeltaOp};
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use super::KeyCodec;
 use crate::execution::{Recorder, StateDb, key::Key};
 use crate::namespace::Namespace;

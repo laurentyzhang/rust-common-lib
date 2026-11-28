@@ -6,7 +6,7 @@ use alloy_evm::revm::state::EvmStorage;
 use alloy_primitives::{Address, U256};
 
 use crate::common::codec::CodecError;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::workload::ID;
 use crate::store::StoreError;
 
@@ -21,28 +21,27 @@ pub trait ApplyDelta {
     fn merge_delta_from(delta: &mut Self::Delta, id: ID, slots: &EvmStorage) -> Result<(), CodecError>;
 
     /// Writes `owner`'s collected `delta` into the committed values in `store`.
-    fn apply<S: ApiStore>(store: &mut S, owner: Address, delta: Self::Delta) -> Result<(), StoreError>
+    fn apply<S: SlotStore>(store: &mut S, owner: Address, delta: Self::Delta) -> Result<(), StoreError>
     where
         S::Error: Debug;
 }
 
-/// Converts one CRDT namespace between its compact format and its indexed format.
-pub trait FormatConverter<Id> {
-    /// Expands `owner`'s value `id` into the indexed format; does nothing once expanded.
-    fn expand<S: ApiStore>(
-        store: &mut S,
-        owner: Address,
-        id: Id,
-    ) -> Result<(), S::Error>
+/// Converts one CRDT namespace between its compact format and its indexed format; each namespace
+/// knows its own keys and layout.
+pub trait FormatConverter {
+    /// Expands `owner`'s value that `key` belongs to into the indexed format; does nothing once
+    /// expanded.
+    fn expand<S: SlotStore>(store: &mut S, owner: Address, key: U256) -> Result<(), S::Error>
     where
         S::Error: From<CodecError>;
 
-    /// Compacts the indexed values among `owner`'s `keys` back into the compact format.
-    fn compact<S: ApiStore>(
+    /// Returns `owner`'s changed values among `slots` in the compact format, reading what `slots`
+    /// doesn't hold from `store`.
+    fn compact<S: SlotStore>(
         store: &mut S,
         owner: Address,
-        keys: &[U256],
-    ) -> Result<(), StoreError>
+        slots: &EvmStorage,
+    ) -> Result<EvmStorage, StoreError>
     where
         S::Error: Debug;
 }

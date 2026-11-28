@@ -8,7 +8,7 @@ use alloy_primitives::{Address, U256};
 
 use super::{KeyCodec, Property};
 use crate::common::codec::CodecError;
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::slot::{ApplyDelta, database};
 use crate::execution::workload::ID;
 use crate::store::StoreError;
@@ -51,7 +51,7 @@ impl ApplyDelta for Applier {
 
     /// Adds the summed PosDelta and NegDelta changes to the stored totals and writes the other
     /// changed properties.
-    fn apply<S: ApiStore>(store: &mut S, owner: Address, delta: Delta) -> Result<(), StoreError>
+    fn apply<S: SlotStore>(store: &mut S, owner: Address, delta: Delta) -> Result<(), StoreError>
     where
         S::Error: Debug,
     {

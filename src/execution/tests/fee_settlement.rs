@@ -1,6 +1,5 @@
-use crate::execution::evm::state::sharded::Sharded;
+use super::generation_tests::{block_state, cache};
 use crate::execution::evm::state::StateOverlay;
-use super::generation_tests::block_state;
 use crate::execution::{
     ArcologyBlockExecutorFactory, ArcologyEvmFactory, ArcologyTx, CallRouter, JobResult,
     ParaBlockConfig, Recorder, StateDb,
@@ -344,8 +343,7 @@ fn planner_rejects_blocks_exceeding_total_gas_limit() {
             &config,
             &pool,
             &|_, _| {},
-            &mut Sharded::new(),
-            &fallback,
+            &cache(&fallback),
             &mut planner,
             transactions,
         )
@@ -410,7 +408,13 @@ fn single_sequence_respects_total_gas_limit() {
         .build()
         .unwrap();
     let (outcomes, _) = generation
-        .run(&factory(), &config, &pool, &mut checker, block_state(&fallback))
+        .run(
+            &factory(),
+            &config,
+            &pool,
+            &mut checker,
+            block_state(&fallback),
+        )
         .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
 

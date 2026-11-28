@@ -23,7 +23,7 @@ pub trait OverlayRead {
 
 /// Storage behind a `StateOverlay`: a plain `EvmState` for sequential use, or a
 /// `sharded::Sharded` state used by parallel sequences.
-pub trait OverlayWrite: OverlayRead + Sized {
+pub trait OverlayWrite: OverlayRead + Sized + Sync {
     /// Updates `address`'s account info, inserting `init()` if absent; slots go through
     /// `slot_mut`.
     fn account_mut<R>(
@@ -49,14 +49,6 @@ pub trait OverlayWrite: OverlayRead + Sized {
     /// or add to the stored ones; serially for a sequential store, lock-free in parallel for a
     /// shared one.
     fn write_accounts(&mut self, accounts: EvmState);
-
-    /// Read-only view of the whole store, shared by threads while nothing writes.
-    type View<'a>: OverlayRead + Sync
-    where
-        Self: 'a;
-
-    /// Returns a read-only view of the whole store.
-    fn view(&mut self) -> Self::View<'_>;
 }
 
 impl<T: OverlayRead> OverlayRead for &T {
@@ -94,7 +86,9 @@ impl OverlayRead for EvmState {
         key: U256,
         f: impl FnOnce(Option<&EvmStorageSlot>) -> R,
     ) -> R {
-        f(self.get(&address).and_then(|account| account.storage.get(&key)))
+        f(self
+            .get(&address)
+            .and_then(|account| account.storage.get(&key)))
     }
 
     /// Searches every account for the code.
@@ -147,11 +141,21 @@ impl OverlayWrite for EvmState {
             current.storage.extend(storage);
         }
     }
+}
 
-    type View<'a> = &'a EvmState;
-
-    /// Views the state through a shared borrow.
-    fn view(&mut self) -> &EvmState {
-        self
+/// Merges a later batch's changes into `merged`: a created or removed account replaces the earlier
+/// one, any other takes the later info and slots.
+#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
+pub(crate) fn merge(merged: &mut EvmState, changes: EvmState) {
+    for (address, account) in changes {
+        match merged.get_mut(&address) {
+            Some(current) if !(account.is_created() || account.is_selfdestructed()) => {
+                current.info = account.info;
+                current.storage.extend(account.storage);
+            }
+            _ => {
+                merged.insert(address, account);
+            }
+        }
     }
 }

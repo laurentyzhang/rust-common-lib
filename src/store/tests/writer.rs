@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::store::{FallbackStore, cache::CachedStore};
+use crate::store::{PhysicalStore, cache::CachedStore};
 
 struct MapStore(HashMap<u64, u64>);
 
-impl FallbackStore<u64, u64> for MapStore {
+impl PhysicalStore<u64, u64> for MapStore {
     fn get(&self, key: &u64) -> Result<Option<u64>, StoreError> {
         Ok(self.0.get(key).copied())
     }
@@ -22,8 +22,13 @@ impl MapStore {
 fn consume_commit_to_backend_and_cache_then_rebuild() {
     let mut backend = MapStore(HashMap::from([(1, 10)]));
 
-    let store = CachedStore::new(8, Some(&backend));
-    assert_eq!(store.get(&1), Ok(Some(10)));
+    let store = CachedStore::<_, _>::new(
+        8,
+        quick_cache::UnitWeighter,
+        Default::default(),
+        Some(&backend),
+    );
+    assert_eq!(store.get_with(&1, |value| *value), Ok(Some(10)));
     let mut cache_writer = CachedStoreWriter::new(store.into_cache());
 
     let updates = vec![(1, 11), (2, 20)];
@@ -31,8 +36,8 @@ fn consume_commit_to_backend_and_cache_then_rebuild() {
     cache_writer.flush(updates).unwrap();
 
     let store = CachedStore::from_cache(cache_writer.into_inner(), Some(&backend));
-    assert_eq!(store.get(&1), Ok(Some(11)));
-    assert_eq!(store.get(&2), Ok(Some(20)));
+    assert_eq!(store.get_with(&1, |value| *value), Ok(Some(11)));
+    assert_eq!(store.get_with(&2, |value| *value), Ok(Some(20)));
     assert_eq!(backend.0.get(&1), Some(&11));
     assert_eq!(backend.0.get(&2), Some(&20));
 }

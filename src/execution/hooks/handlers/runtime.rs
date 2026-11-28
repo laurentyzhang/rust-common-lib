@@ -1,8 +1,9 @@
 use super::super::{CallInput, CallOutput, CallScheme};
 use super::CallHandler;
 use crate::execution::key::Key;
-use crate::execution::{CallHookError, Recorder, evm::api_store::ApiStore};
+use crate::execution::{CallHookError, Recorder};
 use crate::planner::meta::{MetaCodec, MetaFieldId};
+use crate::store::SlotStore;
 use alloy_evm::EvmInternals;
 use alloy_primitives::{KECCAK256_EMPTY, U256};
 use alloy_sol_types::{SolInterface, SolValue, sol};

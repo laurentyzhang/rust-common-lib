@@ -3,7 +3,7 @@ use crate::crdt::{
     self, Scalar,
     state::{CrdtValue, DeltaOp, Status},
 };
-use crate::execution::evm::api_store::ApiStore;
+use crate::store::SlotStore;
 use crate::execution::{
     ApiAddress, ArcologyEvmFactory, ArcologyTx, CallInput, CallOutput, CallRouter, CallScheme,
     EvmStateCommitter, ExitStatus, JobResult, Recorder, StateDb, key::Key, scalar,

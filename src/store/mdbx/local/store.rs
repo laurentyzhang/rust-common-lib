@@ -1,8 +1,8 @@
-use std::{marker::PhantomData, path::Path};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use alloy_evm::revm::{
     DatabaseRef,
-    database_interface::DBErrorMarker,
     primitives::KECCAK_EMPTY,
     state::{AccountInfo, Bytecode, EvmState},
 };
@@ -11,100 +11,26 @@ use reth_db::{
     Database,
     cursor::{DbCursorRO, DbCursorRW, DbDupCursorRO, DbDupCursorRW},
     init_db,
-    mdbx::{DatabaseArguments, init_db_for},
+    mdbx::DatabaseArguments,
     tables::{Bytecodes, CanonicalHeaders, PlainAccountState, PlainStorageState},
     transaction::{DbTx, DbTxMut},
 };
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode, StorageEntry};
-use std::collections::{BTreeMap, HashSet};
 
-use super::cache::{CacheDb, to_storage};
-use super::traits::Committer;
-use crate::execution::evm::state::sharded::{Sharded, update};
+use crate::store::cache::{CacheKey, CacheVal, load};
+use crate::store::traits::Committer;
 
-use super::{FallbackStore, StoreCodec, StoreError};
+use crate::store::{PhysicalStore, StoreError};
 
-mod tables {
-    use reth_db::{TableSet, TableType, TableViewer, table::TableInfo, tables};
-    use std::fmt;
-
-    tables! {
-        table CachedState {
-            type Key = Vec<u8>;
-            type Value = Vec<u8>;
-        }
-    }
-}
-
-pub struct MdbxStore<K, V, KC, VC> {
-    db: reth_db::DatabaseEnv,
-    key_codec: KC,
-    value_codec: VC,
-    marker: PhantomData<fn(K, V)>,
-}
-
-impl<K, V, KC, VC> MdbxStore<K, V, KC, VC> {
-    pub fn open(
-        path: impl AsRef<Path>,
-        key_codec: KC,
-        value_codec: VC,
-    ) -> Result<Self, StoreError> {
-        let db = init_db_for::<_, tables::Tables>(path, DatabaseArguments::default())
-            .map_err(|error| StoreError::Database(error.to_string()))?;
-        Ok(Self {
-            db,
-            key_codec,
-            value_codec,
-            marker: PhantomData,
-        })
-    }
-}
-
-impl<K, V, KC, VC> FallbackStore<K, V> for MdbxStore<K, V, KC, VC>
-where
-    KC: StoreCodec<K>,
-    VC: StoreCodec<V>,
-{
-    fn get(&self, key: &K) -> Result<Option<V>, StoreError> {
-        let key = self.key_codec.encode(key)?;
-        let tx = self.db.tx().map_err(database_error)?;
-        let encoded = tx.get::<tables::CachedState>(key).map_err(database_error)?;
-        tx.commit().map_err(database_error)?;
-        encoded
-            .as_deref()
-            .map(|value| self.value_codec.decode(value))
-            .transpose()
-    }
-}
-
-impl<K, V, KC, VC> MdbxStore<K, V, KC, VC>
-where
-    K: std::hash::Hash + Eq,
-    KC: StoreCodec<K>,
-    VC: StoreCodec<V>,
-{
-    pub fn flush(&mut self, updates: Vec<(K, V)>) -> Result<(), StoreError> {
-        let encoded = updates
-            .iter()
-            .map(|(key, value)| Ok((self.key_codec.encode(key)?, self.value_codec.encode(value)?)))
-            .collect::<Result<Vec<_>, StoreError>>()?;
-
-        let tx = self.db.tx_mut().map_err(database_error)?;
-        for (key, value) in encoded {
-            tx.put::<tables::CachedState>(key, value)
-                .map_err(database_error)?;
-        }
-        tx.commit().map_err(database_error)
-    }
-}
+use super::writer::LocalMdbxWriter;
 
 /// EVM state in MDBX, in reth's tables and codec; the cache loads its misses from it.
 #[derive(Debug)]
-pub struct MdbxState {
+pub struct LocalMdbxStore {
     db: reth_db::DatabaseEnv,
 }
 
-impl MdbxState {
+impl LocalMdbxStore {
     /// Opens, or creates, the database at `path` with reth's tables.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let db = init_db(path, DatabaseArguments::default())
@@ -113,7 +39,7 @@ impl MdbxState {
     }
 
     /// Writes `staged` in one transaction.
-    fn write(&self, staged: &[Staged]) -> Result<(), StoreError> {
+    pub(super) fn write(&self, staged: &[Staged]) -> Result<(), StoreError> {
         let tx = self.db.tx_mut().map_err(database_error)?;
         {
             let mut slots = tx
@@ -156,19 +82,19 @@ impl MdbxState {
 
 /// One account's changes in reth's types, staged for MDBX.
 #[derive(Debug)]
-struct Staged {
-    address: Address,
+pub struct Staged {
+    pub(super) address: Address,
     /// Created or self-destructed: its stored slots are deleted first.
-    wipe: bool,
+    pub(super) wipe: bool,
     /// `None` removes the account.
-    account: Option<RethAccount>,
-    code: Option<(B256, RethBytecode)>,
+    pub(super) account: Option<RethAccount>,
+    pub(super) code: Option<(B256, RethBytecode)>,
     /// A zero value deletes the slot.
-    slots: Vec<StorageEntry>,
+    pub(super) slots: Vec<StorageEntry>,
 }
 
 /// Encodes `state`, already in the compact format, into reth's types.
-fn encode(state: &EvmState) -> impl Iterator<Item = Staged> + '_ {
+pub(super) fn encode(state: &EvmState) -> impl Iterator<Item = Staged> + '_ {
     state.iter().map(|(&address, account)| {
         let info = &account.info;
         let has_code = info.code_hash != KECCAK_EMPTY;
@@ -197,78 +123,70 @@ fn encode(state: &EvmState) -> impl Iterator<Item = Staged> + '_ {
     })
 }
 
-/// Commits accepted blocks to MDBX: compacts their execution-format changes, encodes them into
-/// reth's types, and writes them on flush. It keeps its own execution-format mirror of the
-/// Sets, so compaction never reads the execution side's cache.
+/// Commits accepted batches to MDBX, then to the cache in front of it, with the same buffer, stage
+/// and flush as the cache; only the formats differ. Rejected batches are never written.
 #[derive(Debug)]
-pub struct MdbxCommitter<'a> {
-    mdbx: &'a MdbxState,
-    /// The Sets in the execution format, with the list MDBX holds; loaded from MDBX on a miss.
-    mirror: Sharded,
+pub struct LocalMdbxCommitter<'a> {
     buffered: BTreeMap<u64, EvmState>,
-    staged: Vec<Staged>,
+    staged: Vec<(u64, EvmState)>,
+    writer: LocalMdbxWriter<'a>,
 }
 
-impl<'a> MdbxCommitter<'a> {
-    /// Commits into `mdbx`, starting with an empty mirror.
-    pub fn new(mdbx: &'a MdbxState) -> Self {
+impl<'a> LocalMdbxCommitter<'a> {
+    /// Commits into `writer`.
+    pub fn new(writer: LocalMdbxWriter<'a>) -> Self {
         Self {
-            mdbx,
-            mirror: Sharded::new(),
             buffered: BTreeMap::new(),
             staged: Vec::new(),
+            writer,
         }
     }
 
-    /// Compacts one block's changes against the mirror, stages them encoded, and updates the
-    /// mirror.
-    fn compact(&mut self, changes: EvmState) -> Result<(), StoreError> {
-        let compacted = {
-            let mirror = CacheDb::new(&self.mirror, self.mdbx);
-            // A Set is expanded only once its account is loaded.
-            for &owner in changes.keys() {
-                mirror.basic_ref(owner)?;
-            }
-            to_storage(changes.clone(), &mirror)?.into_inner()
-        };
-        self.staged.extend(encode(&compacted));
-        update(&mut self.mirror, changes, compacted);
-        Ok(())
+    /// Returns the target, for reads between commits.
+    pub fn writer(&self) -> &LocalMdbxWriter<'a> {
+        &self.writer
     }
 }
 
-impl Committer<u64, EvmState> for MdbxCommitter<'_> {
-    /// Holds a block's execution-format changes until it is accepted.
-    fn buffer(&mut self, block: u64, state: EvmState) {
-        self.buffered.insert(block, state);
+impl Committer<u64, EvmState> for LocalMdbxCommitter<'_> {
+    /// Holds a batch's changes until it is accepted or rejected.
+    fn buffer(&mut self, batch: u64, changes: EvmState) {
+        self.buffered.insert(batch, changes);
     }
 
-    /// Compacts and stages the accepted blocks in block order; drops the rest.
+    /// Keeps the accepted batches, in batch order, and drops the rest.
     fn stage(&mut self, accepted: Vec<u64>) -> Result<(), StoreError> {
         let accepted = accepted.into_iter().collect::<HashSet<_>>();
-        for (block, changes) in std::mem::take(&mut self.buffered) {
-            if accepted.contains(&block) {
-                self.compact(changes)?;
+        for (batch, changes) in std::mem::take(&mut self.buffered) {
+            if accepted.contains(&batch) {
+                self.staged.push((batch, changes));
             }
         }
         Ok(())
     }
 
-    /// Writes the staged changes in one transaction, then clears them.
+    /// Hands the staged batches to the writer.
     fn flush(&mut self) -> Result<(), StoreError> {
-        self.mdbx.write(&self.staged)?;
-        self.staged.clear();
-        Ok(())
+        self.writer.write(std::mem::take(&mut self.staged))
     }
 }
 
-impl DatabaseRef for MdbxState {
+impl PhysicalStore<CacheKey, CacheVal> for LocalMdbxStore {
+    /// Loads the key from MDBX in the execution format.
+    fn get(&self, key: &CacheKey) -> Result<Option<CacheVal>, StoreError> {
+        load(self, key)
+    }
+}
+
+impl DatabaseRef for LocalMdbxStore {
     type Error = StoreError;
 
     /// Reads the account from `PlainAccountState`; its code is loaded by hash when needed.
     fn basic_ref(&self, address: Address) -> Result<Option<AccountInfo>, StoreError> {
         let tx = self.db.tx().map_err(database_error)?;
-        let account = tx.get::<PlainAccountState>(address).map_err(database_error)?;
+        let account = tx
+            .get::<PlainAccountState>(address)
+            .map_err(database_error)?;
         Ok(account.map(|account| AccountInfo {
             balance: account.balance,
             nonce: account.nonce,
@@ -309,12 +227,10 @@ impl DatabaseRef for MdbxState {
     }
 }
 
-impl DBErrorMarker for StoreError {}
-
 fn database_error(error: reth_db::DatabaseError) -> StoreError {
     StoreError::Database(error.to_string())
 }
 
 #[cfg(test)]
-#[path = "tests/mdbx.rs"]
+#[path = "tests/local.rs"]
 mod tests;

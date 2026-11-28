@@ -1,12 +1,12 @@
 use super::{Generation, JobResult, ReceiptStatus, TransactionGasLimit};
-use crate::execution::evm::state::{StateOverlay, sharded, store::OverlayWrite};
-use crate::store::cache;
+use crate::execution::evm::state::{StateOverlay, sharded};
 use crate::execution::{ArcologyEvmFactory, ArcologyParaBlockExecutor, StateDb, key::Key};
 use crate::planner::{Planner, resolver::CommitDecision};
+use crate::store::cache::PersistentStore;
 use alloy_evm::{
     Database, EvmEnv, EvmFactory,
     block::{BlockExecutorFactory, ExecutableTxParts},
-    revm::{DatabaseRef, state::EvmState},
+    revm::state::EvmState,
 };
 use alloy_op_evm::{OpBlockExecutionCtx, post_exec::PostExecEvmFactoryAdapter};
 use rayon::ThreadPool;
@@ -18,15 +18,16 @@ pub struct Block<Tx> {
 }
 
 impl<Tx> Block<Tx> {
-    /// Executes planned generations, carrying unused gas forward after each generation.
-    pub fn run<F, PDB, Fallback>(
+    /// Executes planned generations over `cache`, carrying unused gas forward after each
+    /// generation. Returns the results and the changes in the execution format; they are committed
+    /// only once consensus accepts the block.
+    pub fn run<F, PDB>(
         self,
         factory: &F,
         config: &ParaBlockConfig<F>,
         pool: &ThreadPool,
         set_cumulative: &impl Fn(&mut F::Receipt, u64),
-        cache: &mut sharded::Sharded,
-        fallback: &Fallback,
+        cache: &PersistentStore<'_>,
         planner: &mut Planner<PDB, Key>,
     ) -> Result<
         (
@@ -43,24 +44,26 @@ impl<Tx> Block<Tx> {
         <F::EvmFactory as EvmFactory>::Spec: Clone + Send + Sync,
         <F::EvmFactory as EvmFactory>::BlockEnv: Clone + Send + Sync,
         PDB: Database,
-        Fallback: DatabaseRef + Sync + std::fmt::Debug,
         F::Receipt: Clone + Send + ReceiptStatus,
         Tx: Send
             + TransactionGasLimit
             + ExecutableTxParts<<F::EvmFactory as EvmFactory>::Tx, F::Transaction>,
     {
-        // The cache, kept across blocks in front of the store, holds Sets expanded.
-        let cache_db = cache::CacheDb::new(&*cache, fallback);
-        // Shared by all sequences; each generation adds its sequences' balance and nonce deltas.
+        // Shared by all sequences over the cache; each generation adds its sequences' balance and
+        // nonce deltas.
         let mut state: StateDb<_, sharded::Sharded> = StateDb::with_fallback(
-            StateOverlay::new(sharded::Sharded::new(), StateOverlay::add_balance_nonce_deltas),
-            Some(&cache_db),
+            StateOverlay::new(
+                sharded::Sharded::new(),
+                StateOverlay::add_balance_nonce_deltas,
+            ),
+            Some(cache),
         );
         let mut results = Vec::new();
         let mut remaining_gas = config.env.block_env.gas_limit;
         for generation in self.generations {
             planner.checker.set_gas_limit(remaining_gas);
-            let (raws, next) = generation.run(factory, config, pool, &mut planner.checker, state)?;
+            let (raws, next) =
+                generation.run(factory, config, pool, &mut planner.checker, state)?;
             state = next;
             remaining_gas -= raws.iter().filter_map(|raw| raw.gas_used()).sum::<u64>();
             results.extend(raws);
@@ -71,7 +74,7 @@ impl<Tx> Block<Tx> {
         merged.retain(|_, account| account.is_touched());
         let mut block_db = StateDb::with_fallback(
             StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
-            Some(&cache_db),
+            Some(cache),
         );
 
         let metadata = planner
@@ -87,14 +90,9 @@ impl<Tx> Block<Tx> {
             .commit_with_original_slots(metadata)
             .map_err(|error| Error::other(format!("failed to commit planner metadata. {error}")))?;
 
-        let changes = block_db.into_inner();
-        // The cache keeps the block's results in the execution format, ready for the next block;
-        // the store's committer compacts them.
-        drop(cache_db);
-        cache.write_accounts(changes.clone());
         Ok((
             ArcologyParaBlockExecutor::finish_block(results, set_cumulative),
-            changes,
+            block_db.into_inner(),
         ))
     }
 }

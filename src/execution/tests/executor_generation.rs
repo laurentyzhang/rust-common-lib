@@ -1,4 +1,3 @@
-use crate::execution::evm::state::sharded::Sharded;
 use super::*;
 use crate::execution::evm::state::{StateOverlay, sharded};
 use crate::execution::{ArcologyBlockExecutorFactory, ArcologyTx, CallRouter, StateDb};
@@ -6,6 +5,8 @@ use crate::planner::resolver::{
     CommitDecision, CommitVerdict, ConflictDetector, accepted_ids, rejected_ids,
 };
 use crate::planner::scheduler::{Generation, JobSequence};
+use crate::store::PhysicalStore;
+use crate::store::cache::{ByWeight, CacheKey, CacheVal, PersistentStore};
 use alloy_evm::{
     Evm, EvmEnv, FromRecoveredTx, RecoveredTx,
     block::BlockExecutor,
@@ -22,10 +23,18 @@ use op_revm::OpSpecId;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+/// The cache in front of `store`, as the caller keeps it across blocks.
+pub(super) fn cache<DB: PhysicalStore<CacheKey, CacheVal>>(store: &DB) -> PersistentStore<'_> {
+    PersistentStore::new(1 << 20, ByWeight, Default::default(), Some(store))
+}
+
 /// Builds the block state shared by a generation's sequences, as `Block::run` does.
 pub(super) fn block_state<DB>(fallback: DB) -> StateDb<DB, sharded::Sharded> {
     StateDb::with_fallback(
-        StateOverlay::new(sharded::Sharded::new(), StateOverlay::add_balance_nonce_deltas),
+        StateOverlay::new(
+            sharded::Sharded::new(),
+            StateOverlay::add_balance_nonce_deltas,
+        ),
         Some(fallback),
     )
 }
@@ -303,7 +312,13 @@ fn single_sequence_gets_accepted_verdicts_from_checker() {
         .unwrap();
     let mut checker = ConflictDetector::new();
     let (outcomes, _) = generation
-        .run(&factory, &config, &pool, &mut checker, block_state(StateDb::default()))
+        .run(
+            &factory,
+            &config,
+            &pool,
+            &mut checker,
+            block_state(StateDb::default()),
+        )
         .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
     assert_eq!(outcomes[0].verdict.decision, CommitDecision::Accepted);
@@ -411,7 +426,13 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
                 .collect(),
         };
         let (mut outcomes, committed_state) = generation
-            .run(&factory, &config, &pool, &mut checker, block_state(&persistent))
+            .run(
+                &factory,
+                &config,
+                &pool,
+                &mut checker,
+                block_state(&persistent),
+            )
             .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         assert_eq!(outcomes.len(), 2);
@@ -486,7 +507,13 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             Some(&persistent),
         );
         let (mut outcomes, committed_state) = generation
-            .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+            .run(
+                &factory,
+                &config,
+                &pool,
+                &mut checker,
+                block_state(&fallback),
+            )
             .map(|(raws, state)| (raws, state.into_inner()))
             .unwrap();
         assert_eq!(outcomes.len(), 1);
@@ -514,8 +541,7 @@ fn detects_conflicts_in_serial_and_parallel_generations_without_reusing_records(
             &config,
             &pool,
             &|_, _| {},
-            &mut Sharded::new(),
-            &persistent,
+            &cache(&*persistent),
             &mut planner,
             [job(1, contract).tx, job(2, contract).tx],
         )
@@ -585,7 +611,13 @@ fn commits_all_conflict_free_parallel_jobs() {
         .build()
         .unwrap();
     let (outcomes, committed_state) = generation
-        .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+        .run(
+            &factory,
+            &config,
+            &pool,
+            &mut checker,
+            block_state(&fallback),
+        )
         .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
     assert!(rejected_ids(outcomes.iter().map(|raw| &raw.verdict)).is_empty());
@@ -632,8 +664,7 @@ fn block_execution_carries_the_environment_block_number_into_ids() {
         &config,
         &pool,
         &|_, _| {},
-        &mut Sharded::new(),
-        &fallback,
+        &cache(&fallback),
         &mut planner,
         [job(1, Address::repeat_byte(0x99)).tx],
     )
@@ -708,8 +739,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
                 &config,
                 &pool,
                 &|_, gas| cumulative.borrow_mut().push(gas),
-                &mut Sharded::new(),
-                &fallback,
+                &cache(&fallback),
                 &mut planner,
             )
             .unwrap();
@@ -751,9 +781,7 @@ fn deposits_run_in_order_and_preserve_storage_and_sender_nonces() {
 #[test]
 fn sequence_keeps_api_transitions_for_rejected_suffixes() {
     use crate::crdt::state::{Status, Tracked};
-    use crate::execution::{
-        ApiAddress, IU256, scalar, U256Handler, output::ExecutionOutput,
-    };
+    use crate::execution::{ApiAddress, IU256, U256Handler, output::ExecutionOutput, scalar};
     use crate::planner::resolver::Checker;
     use alloy_evm::revm::state::EvmStorageSlot;
     use alloy_sol_types::SolCall;
@@ -856,7 +884,13 @@ fn sequence_keeps_api_transitions_for_rejected_suffixes() {
                 }],
             }],
         }
-        .run(&factory, &config, &pool, &mut checker, block_state(&fallback))
+        .run(
+            &factory,
+            &config,
+            &pool,
+            &mut checker,
+            block_state(&fallback),
+        )
         .map(|(raws, state)| (raws, state.into_inner()))
         .unwrap();
         let account = &committed[&caller];
@@ -931,7 +965,13 @@ fn execution_errors_are_reported_without_committing_state() {
         .build()
         .unwrap();
     let mut checker = ConflictDetector::new();
-    let result = generation.run(&factory, &config, &pool, &mut checker, block_state(StateDb::default()));
+    let result = generation.run(
+        &factory,
+        &config,
+        &pool,
+        &mut checker,
+        block_state(StateDb::default()),
+    );
     assert!(matches!(result, Err(error) if error.to_string().contains(
         "transaction gas limit 100001 is more than blocks available gas 100000"
     )));
