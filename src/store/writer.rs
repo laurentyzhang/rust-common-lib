@@ -2,11 +2,12 @@ use std::hash::Hash;
 
 use quick_cache::{Lifecycle, UnitWeighter, Weighter, unsync};
 
-use crate::store::cache::{CachedStore, Load, Plain};
+use crate::store::cache::{PhysicalCachedStore, Load, Plain};
 use crate::store::traits::StoreError;
 
-/// Applies committed updates to the entries of a `CachedStore`.
-/// It wraps the bare cache (see `CachedStore::into_cache`), so it never holds the fallback borrow.
+/// Applies committed updates to the entries of a `PhysicalCachedStore`.
+/// It wraps the bare cache (see `PhysicalCachedStore::into_cache`), so it never holds the fallback
+/// borrow.
 pub struct CachedStoreWriter<
     'a,
     K,
@@ -16,17 +17,17 @@ pub struct CachedStoreWriter<
     Lo = Plain,
     const N: usize = 64,
 > {
-    cache: CachedStore<'a, K, V, We, L, Lo, N>,
+    cache: PhysicalCachedStore<'a, K, V, We, L, Lo, N>,
 }
 
 impl<'a, K, V, We, L, Lo, const N: usize> CachedStoreWriter<'a, K, V, We, L, Lo, N> {
     /// Wraps the bare cache.
-    pub fn new(cache: CachedStore<'a, K, V, We, L, Lo, N>) -> Self {
+    pub fn new(cache: PhysicalCachedStore<'a, K, V, We, L, Lo, N>) -> Self {
         Self { cache }
     }
 
     /// Returns the bare cache.
-    pub fn into_inner(self) -> CachedStore<'a, K, V, We, L, Lo, N> {
+    pub fn into_inner(self) -> PhysicalCachedStore<'a, K, V, We, L, Lo, N> {
         self.cache
     }
 }

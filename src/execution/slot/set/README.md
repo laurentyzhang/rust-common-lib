@@ -4,7 +4,7 @@
 changes to different elements affect shared state, including the set's size and iteration
 order.
 
-Each sequence records its own additions and removals during execution. At generation commit, the library merges the conflict free changes and updates the shared set. The contract can check whether an element is present and iterate over the unique elements in insertion order.
+Each sequence records its own additions and removals during execution. Generation commits only merge the conflict free changes; the persistent store applies them to the shared set once, at block end. The contract can check whether an element is present and iterate over the unique elements in insertion order.
 
 ## Typical uses
 
@@ -32,8 +32,9 @@ All of a set's data lives in its owner's slots, in one of two formats:
 - **Indexed format**: an array plus an element → position lookup. Appending, removing and
   membership checks are O(1), at the cost of extra slots.
 
-`Converter::expand` and `Converter::compact` convert between them, one O(n) pass each. Contract
-calls work on the indexed format; which layer converts, and when, is up to the caller.
+`Converter::expand` converts the list into the index as the cache loads a Set, and the
+persistent store's committers apply the pending changes in each format, one O(n) pass each.
+Contract calls work on the indexed format; only MDBX keeps the list.
 
 ## Slot key
 
@@ -99,14 +100,14 @@ Appending `y` takes two writes: `Node[Tail] = y`, then `Tail = y`; on an empty s
 ## Indexed format: an array
 
 The elements sit in an array, one per slot, with a reverse lookup from element to position.
-Removing an element leaves a hole instead of shifting the array.
+Every commit rebuilds it without holes; the cache holds nothing else.
 
 | #  | Property   | Key field | Value                                     |
 |----|------------|-----------|-------------------------------------------|
 | 0  | `Length`   | zeros     | number of live elements                   |
-| 9  | `Index`    | index     | elements in order, zero when removed      |
+| 9  | `Index`    | index     | elements in order                         |
 | 10 | `Position` | hash      | position + 1 in `Index`                   |
-| 11 | `Holes`    | index     | bitmap of removed positions, 256 per word |
+| 11 | `Holes`    | index     | unused: commits leave no holes            |
 | 12 | `Indexed`  | zeros     | 1 once the set is expanded                |
 
 Set `{1, 3, 4}` right after `expand`:
@@ -121,43 +122,42 @@ Set `{1, 3, 4}` right after `expand`:
  Position[1]         1     1 is at position 0 (stored as position + 1)
  Position[3]         2     3 is at position 1
  Position[4]         3     4 is at position 2
- Holes               0     no positions removed
 ```
 
-The same set after 3 is removed and 5 is added:
+The same set once a commit removes 3 and adds 5:
 
 ```text
-            #0    #1    #2    #3
- Index    ┌─────┬─────┬─────┬─────┐
-          │  1  │  0  │  4  │  5  │
-          └─────┴─────┴─────┴─────┘
- Holes       0     1     0     0         bit set = removed
+            #0    #1    #2
+ Index    ┌─────┬─────┬─────┐
+          │  1  │  4  │  5  │
+          └─────┴─────┴─────┘
 
- Position[1] = 1   Position[4] = 3   Position[5] = 4   (Position[3] cleared)
+ Position[1] = 1   Position[4] = 2   Position[5] = 3   (Position[3] cleared)
  Length = 3
 ```
 
 | Read      | How                         | Example     |
 |-----------|-----------------------------|-------------|
-| walk      | index order, skipping holes | 1, 4, 5     |
+| walk      | index order                 | 1, 4, 5     |
 | next(x)   | continue from `Position[x]` | next(4) = 5 |
 | member(x) | `Position[x]` is non-zero   | 4 yes, 3 no |
 | length    | `Length`                    | 3           |
 
-A hole is marked in `Holes` because a zero entry alone could also be the element 0.
+`Length` bounds the index, so an entry of zero is the element 0.
 
 ## Converting between the formats
 
 - **`expand`** walks the list from `Head`, writes each element to `Index` with its `Position`,
   and sets `Indexed`. It does nothing once `Indexed` is set.
-- **`compact`** takes each expanded set's live entries in index order and updates the list in
-  place: only the `Node` slots whose next element changed are written, then `Head` and `Tail`.
-  It then clears `Index`, `Position`, `Holes` and `Indexed`.
+- **`compact`** applies the pending changes to the committed list and updates it in place: only
+  the `Node` slots whose next element changed are written, then `Head` and `Tail`. The indexed
+  format never reaches MDBX.
+- **`reindex`** applies them to the committed index, rewriting it without holes.
 
 ```text
  list 1 → 3 → 4 ─expand─▶ Index [1, 3, 4]
                             … remove 3, add 5 …
- list 1 → 4 → 5 ◀─compact─ Index [1, _, 4, 5]
+ list 1 → 4 → 5 ◀─compact─ committed [1, 3, 4] + pending ─reindex─▶ Index [1, 4, 5]
 ```
 
 ## Changes during a block
@@ -183,24 +183,37 @@ as pending changes on top of it:
 Reads combine the indexed format with the pending changes:
 
 - **member(x):** pending added, or indexed without a pending removal.
-- **walk:** the index (skipping holes and pending removals), then the pending additions.
+- **walk:** the index (skipping pending removals), then the pending additions.
 - **length:** `Length` + entries in `DeltaAdded` − cancelled entries − entries in `PendingRemovals`.
 
-The pending changes accumulate across the jobs of one sequence.
+The pending changes accumulate across the jobs, sequences and generations of one block.
 
-## Merging at generation commit
+## Merging until block end
 
-At each generation commit, `Applier::merge_delta_from` collects every accepted sequence's pending
-changes, and `Applier::apply` writes them once into the indexed format. Conflict detection
-guarantees that the sequences' changes are independent, so the merge is a plain union:
+Every store above the persistent store only merges: at each sequence and generation commit,
+`Applier::merge_delta_from` reads each accepted state's own changes over its base from the flags
+it changed, and `Applier::apply` writes them into the shared pending changes. The committed index
+stays as the block found it. Conflict detection guarantees that the states' changes are
+independent, so the merge is a plain union:
 
-1. Append the uncancelled additions to `Index` in (block, generation, sequence, job) order, each
-   element once, and set their `Position`.
-2. For each removal, zero its `Index` entry, set its `Holes` bit, and clear its `Position`
-   and `Node`.
-3. Update `Length`.
+1. The base's additions stay, less the cancelled ones; the new uncancelled additions follow in
+   (block, generation, sequence, job) order, each element once.
+2. The base's removals stay, less the restored ones; the new removals join, ascending.
 
-The pending slots themselves are dropped and never reach the block state.
+So a later generation that re-inserts a committed element pending removal restores it at its
+original position.
+
+## Applying at block end
+
+The persistent store applies the merged pending changes once, through its two committers, which
+get the same accepted batches. Each takes a Set's committed elements, drops the removals, and
+appends the additions in batch order, each element once:
+
+- **The cache** (`Converter::reindex`) rewrites `Index` and `Position` from the first position
+  that changed, with no holes, and keeps no pending changes. A Set it doesn't hold is skipped and
+  loads whole from MDBX on its next read.
+- **MDBX** (`Converter::compact`) expands its list internally and writes back only the `Node`
+  slots whose successor changed, a removed element's emptied, then `Head`, `Tail` and `Length`.
 
 Example, starting from `{1, 3, 4}`:
 
@@ -208,11 +221,12 @@ Example, starting from `{1, 3, 4}`:
  sequence A: remove 3, add 5
  sequence B: add 6, add 7, remove 7      (7 is cancelled within B)
 
-            #0    #1    #2    #3    #4
- Index    ┌─────┬─────┬─────┬─────┬─────┐
-          │  1  │  0  │  4  │  5  │  6  │      Length = 4
-          └─────┴─────┴─────┴─────┴─────┘
- Holes       0     1     0     0     0
+ pending:  added [5, 6]   removed [3]
 
- compacted: list 1 → 4 → 5 → 6, Head = 1, Tail = 6
+            #0    #1    #2    #3
+ Index    ┌─────┬─────┬─────┬─────┐
+          │  1  │  4  │  5  │  6  │      Length = 4
+          └─────┴─────┴─────┴─────┘
+
+ list 1 → 4 → 5 → 6, Head = 1, Tail = 6
 ```

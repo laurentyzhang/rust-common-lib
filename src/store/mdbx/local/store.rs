@@ -17,12 +17,15 @@ use reth_db::{
 };
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode, StorageEntry};
 
-use crate::store::cache::{CacheKey, CacheVal, load};
+use crate::execution::CrdtSlot;
+use crate::execution::evm::state::store::merge;
+use crate::execution::evm::state::{StateDb, StateOverlay};
+use crate::execution::workload::ID;
+use crate::namespace::crdt::CrdtKeyCodec;
+use crate::store::cache::{ByWeight, CacheKey, CacheVal, PersistentStore, load};
 use crate::store::traits::Committer;
 
 use crate::store::{PhysicalStore, StoreError};
-
-use super::writer::LocalMdbxWriter;
 
 /// EVM state in MDBX, in reth's tables and codec; the cache loads its misses from it.
 #[derive(Debug)]
@@ -123,34 +126,44 @@ pub(super) fn encode(state: &EvmState) -> impl Iterator<Item = Staged> + '_ {
     })
 }
 
-/// Commits accepted batches to MDBX, then to the cache in front of it, with the same buffer, stage
-/// and flush as the cache; only the formats differ. Rejected batches are never written.
+/// Commits accepted batches to MDBX, in parallel with the cache's committer, with the same buffer,
+/// stage and flush; only the formats differ. Rejected batches are never written. The CRDT values a
+/// commit reads are prefetched as batches are buffered.
 #[derive(Debug)]
 pub struct LocalMdbxCommitter<'a> {
     buffered: BTreeMap<u64, EvmState>,
     staged: Vec<(u64, EvmState)>,
-    writer: LocalMdbxWriter<'a>,
+    mdbx: &'a LocalMdbxStore,
+    /// The prefetch buffer's capacity in weight.
+    capacity: u64,
+    /// The block's prefetched CRDT values over MDBX; a value it lacks loads from MDBX.
+    prefetched: PersistentStore<'a>,
 }
 
 impl<'a> LocalMdbxCommitter<'a> {
-    /// Commits into `writer`.
-    pub fn new(writer: LocalMdbxWriter<'a>) -> Self {
+    /// Commits into `mdbx`, prefetching up to `capacity` in weight per block.
+    pub fn new(mdbx: &'a LocalMdbxStore, capacity: u64) -> Self {
         Self {
             buffered: BTreeMap::new(),
             staged: Vec::new(),
-            writer,
+            mdbx,
+            capacity,
+            prefetched: PersistentStore::new(capacity, ByWeight, Default::default(), Some(mdbx)),
         }
-    }
-
-    /// Returns the target, for reads between commits.
-    pub fn writer(&self) -> &LocalMdbxWriter<'a> {
-        &self.writer
     }
 }
 
 impl Committer<u64, EvmState> for LocalMdbxCommitter<'_> {
-    /// Holds a batch's changes until it is accepted or rejected.
+    /// Holds a batch's changes until it is accepted or rejected, and prefetches from MDBX the
+    /// values of every CRDT slot it changed; a failed read is left to the commit.
     fn buffer(&mut self, batch: u64, changes: EvmState) {
+        for (&owner, account) in &changes {
+            for &key in account.storage.keys() {
+                if CrdtKeyCodec::decode(key).is_some() {
+                    let _ = self.prefetched.storage_ref(owner, key);
+                }
+            }
+        }
         self.buffered.insert(batch, changes);
     }
 
@@ -165,9 +178,37 @@ impl Committer<u64, EvmState> for LocalMdbxCommitter<'_> {
         Ok(())
     }
 
-    /// Hands the staged batches to the writer.
+    /// Merges the staged batches, applies their CRDT deltas to MDBX's committed values, read from
+    /// the prefetched ones first, and writes the result in the compact format in one transaction.
+    /// The prefetched values are then dropped for the next block.
     fn flush(&mut self) -> Result<(), StoreError> {
-        self.writer.write(std::mem::take(&mut self.staged))
+        let mut crdt = CrdtSlot::default();
+        let mut merged = EvmState::default();
+        for (batch, changes) in std::mem::take(&mut self.staged) {
+            let id = ID {
+                block: batch,
+                ..Default::default()
+            };
+            merge(&mut merged, crdt.merge_delta_from(id, changes)?);
+        }
+        let mut db = StateDb::with_fallback(
+            StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
+            Some(&self.prefetched),
+        );
+        let mut compacted = Vec::new();
+        for (owner, sets, scalars) in crdt.drain() {
+            compacted.push((owner, CrdtSlot::compact(&mut db, owner, sets, scalars)?));
+        }
+        let mut list = db.into_inner();
+        for (owner, slots) in compacted {
+            if let Some(account) = list.get_mut(&owner) {
+                account.storage.extend(slots);
+            }
+        }
+        self.mdbx.write(&encode(&list).collect::<Vec<_>>())?;
+        self.prefetched =
+            PersistentStore::new(self.capacity, ByWeight, Default::default(), Some(self.mdbx));
+        Ok(())
     }
 }
 

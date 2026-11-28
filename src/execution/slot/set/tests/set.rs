@@ -309,16 +309,28 @@ fn reload(state: &EvmState) -> Journal<EmptyDB> {
             Converter::expand(internals, OWNER, KeyCodec::length(set)).unwrap();
         }
     });
+    // The slots are the base's, as a load through the fallback would read them.
+    for slot in journal.inner.state.get_mut(&OWNER).unwrap().storage.values_mut() {
+        slot.original_value = slot.present_value;
+    }
     exist(&mut journal);
     journal
 }
 
-/// Returns `merged` as the store keeps it: OWNER's Sets in the compact format.
+/// Returns `merged` as the store keeps it at block end: OWNER's pending deltas applied to its
+/// committed Sets, kept as the list alone.
 fn compact(merged: EvmState) -> EvmState {
-    let slots = merged[&OWNER].storage.clone();
-    let mut persisted = merged.clone();
-    persisted.get_mut(&OWNER).unwrap().storage =
-        Converter::compact(&mut StateDb::new(merged), OWNER, &slots).unwrap();
+    let mut delta = Delta::default();
+    Applier::merge_delta_from(&mut delta, ID::default(), &merged[&OWNER].storage).unwrap();
+    let list = Converter::compact(&mut StateDb::new(merged.clone()), OWNER, delta).unwrap();
+    let mut persisted = merged;
+    let storage = &mut persisted.get_mut(&OWNER).unwrap().storage;
+    storage.retain(|&key, _| {
+        KeyCodec::decode(key).is_some_and(|(_, property, ..)| {
+            matches!(property, Property::Length | Property::Head | Property::Tail | Property::Node)
+        })
+    });
+    storage.extend(list);
     persisted
 }
 
@@ -349,29 +361,29 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
     committer.flush().unwrap();
     let merged = committer.into_inner();
 
-    // Pending slots are dropped; the index holds additions in sequence order, removals as holes.
-    let pending = [Property::Added, Property::Removed, Property::DeltaAdded, Property::PendingRemovals];
-    assert!(merged[&OWNER].storage.keys().all(|&key| {
-        KeyCodec::decode(key).is_none_or(|(_, property, ..)| !pending.contains(&property))
-    }));
+    // The generation only merges the pending changes: the committed index stays as it was.
+    let index = KeyCodec::delta(Property::Index, id);
+    for (at, element) in [(0, 96), (1, 1), (2, 2), (3, 3)] {
+        assert_eq!(merged[&OWNER].storage[&index.key(at).unwrap()].present_value, U256::from(element));
+    }
     let mut next = reload(&merged);
     assert_eq!(elements(&mut next, set), vec![3, 4, 5]);
     assert_eq!(length(&mut next, set), U256::from(3));
     assert!(!contains(&mut next, set, 1) && !contains(&mut next, set, 6));
 
-    // A later generation re-adds a removed element at the end of the index.
+    // A later generation re-inserts a committed element pending removal, which restores it.
     assert!(stage(&mut next, set, 2, true));
     let mut committer = EvmStateCommitter::with_target(merged, EmptyDB::default());
     committer.buffer(ID::new(0, 3), next.inner.state);
     committer.flush().unwrap();
 
-    // Block end relinks the live elements in index order; the index never leaves the Set.
+    // Block end applies the deltas to the committed list; the index never leaves the Set.
     let mut db = StateDb::new(compact(committer.into_inner()));
     let node = |element: u64| KeyCodec::element(Property::Node, id, U256::from(element));
-    assert_eq!(slot(&mut db, KeyCodec::head(id)), U256::from(3));
-    assert_eq!(slot(&mut db, KeyCodec::tail(id)), U256::from(2));
+    assert_eq!(slot(&mut db, KeyCodec::head(id)), U256::from(2));
+    assert_eq!(slot(&mut db, KeyCodec::tail(id)), U256::from(5));
     assert_eq!(slot(&mut db, KeyCodec::length(id)), U256::from(4));
-    for (element, successor) in [(3, 4), (4, 5), (5, 2), (2, 0), (1, 0)] {
+    for (element, successor) in [(2, 3), (3, 4), (4, 5), (5, 0), (1, 0)] {
         assert_eq!(slot(&mut db, node(element)), U256::from(successor));
     }
     assert_eq!(slot(&mut db, KeyCodec::indexed(id)), U256::ZERO);
@@ -381,7 +393,7 @@ fn sequences_merge_into_the_block_index_and_persist_as_the_committed_list() {
                 matches!(property, Property::Length | Property::Head | Property::Tail | Property::Node)
             })
     }));
-    assert_eq!(elements(&mut reload(db.inner()), set), vec![3, 4, 5, 2]);
+    assert_eq!(elements(&mut reload(db.inner()), set), vec![2, 3, 4, 5]);
 }
 
 #[test]

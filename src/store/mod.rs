@@ -11,7 +11,6 @@ pub use codec::{IdentityCodec, StoreCodec};
 pub use error::StoreError;
 #[cfg(feature = "mdbx")]
 pub use mdbx::local::store::{LocalMdbxCommitter, LocalMdbxStore};
-#[cfg(feature = "mdbx")]
-pub use mdbx::local::writer::LocalMdbxWriter;
 pub use traits::{PhysicalStore, SlotStore};
+pub use cache::PhysicalStoreCacheCommitter;
 pub use writer::CachedStoreWriter;

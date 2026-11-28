@@ -10,37 +10,52 @@ use crate::store::SlotStore;
 use crate::execution::workload::ID;
 use crate::store::StoreError;
 
-/// Collects accepted states' changes to one CRDT namespace and applies them once onto the shared
-/// EVM state; every CRDT namespace has its own applier.
+/// Collects accepted states' changes to one CRDT namespace and writes them once into the shared
+/// EVM state's pending deltas; only the persistent store applies them. Every CRDT namespace has
+/// its own applier.
 pub trait ApplyDelta {
     /// Pending changes of one owner in this namespace, collected from accepted states.
     type Delta: Default;
 
-    /// Reads one accepted state's `slots` in this namespace into `delta`, tagged with the state's
-    /// `id`; touches no store.
+    /// Reads one accepted state's own changes over its base, among `slots` in this namespace, into
+    /// `delta`, tagged with the state's `id`; touches no store.
     fn merge_delta_from(delta: &mut Self::Delta, id: ID, slots: &EvmStorage) -> Result<(), CodecError>;
 
-    /// Writes `owner`'s collected `delta` into the committed values in `store`.
+    /// Writes `owner`'s collected `delta` into the pending deltas in `store`; the committed values
+    /// stay unchanged.
     fn apply<S: SlotStore>(store: &mut S, owner: Address, delta: Self::Delta) -> Result<(), StoreError>
     where
         S::Error: Debug;
 }
 
-/// Converts one CRDT namespace between its compact format and its indexed format; each namespace
-/// knows its own keys and layout.
+/// Converts one CRDT namespace between its compact format and its indexed format, and applies its
+/// pending deltas at the persistent store; each namespace knows its own keys and layout.
 pub trait FormatConverter {
+    /// Pending changes of one owner in this namespace.
+    type Delta;
+
     /// Expands `owner`'s value that `key` belongs to into the indexed format; does nothing once
     /// expanded.
     fn expand<S: SlotStore>(store: &mut S, owner: Address, key: U256) -> Result<(), S::Error>
     where
         S::Error: From<CodecError>;
 
-    /// Returns `owner`'s changed values among `slots` in the compact format, reading what `slots`
-    /// doesn't hold from `store`.
+    /// Applies `owner`'s `delta` to its committed values in `store` and returns the changed ones in
+    /// the compact format.
     fn compact<S: SlotStore>(
         store: &mut S,
         owner: Address,
-        slots: &EvmStorage,
+        delta: Self::Delta,
+    ) -> Result<EvmStorage, StoreError>
+    where
+        S::Error: Debug;
+
+    /// Applies `owner`'s `delta` to its committed values in `store` and returns the changed ones in
+    /// the indexed format, without holes.
+    fn reindex<S: SlotStore>(
+        store: &mut S,
+        owner: Address,
+        delta: Self::Delta,
     ) -> Result<EvmStorage, StoreError>
     where
         S::Error: Debug;

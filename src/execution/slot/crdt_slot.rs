@@ -9,8 +9,6 @@ use alloy_primitives::{Address, U256};
 
 use super::{ApplyDelta, FormatConverter, scalar, set};
 use crate::common::codec::CodecError;
-use crate::namespace::Namespace;
-use crate::namespace::crdt::CrdtKeyCodec;
 use crate::execution::StateDb;
 use crate::store::SlotStore;
 use crate::execution::evm::state::store::OverlayWrite;
@@ -45,8 +43,8 @@ impl CrdtSlot {
         Ok(incoming)
     }
 
-    /// Applies the collected deltas into `db` and clears them: owners in parallel against a view
-    /// of the store, then one batched write.
+    /// Writes the collected deltas into `db`'s pending deltas and clears them: owners in parallel
+    /// against a view of the store, then one batched write.
     pub(crate) fn apply<DB: DatabaseRef + Sync, Store: OverlayWrite>(
         &mut self,
         db: &mut StateDb<DB, Store>,
@@ -69,7 +67,7 @@ impl CrdtSlot {
             .collect()
     }
 
-    /// Applies one owner's Set and scalar deltas into `store`.
+    /// Writes one owner's Set and scalar deltas into the pending deltas in `store`.
     pub(crate) fn apply_owner<S: SlotStore>(
         store: &mut S,
         owner: Address,
@@ -88,37 +86,51 @@ impl CrdtSlot {
         Ok(())
     }
 
-    /// Returns `owner`'s CRDT slots in the compact format, each namespace converted by its own
-    /// type.
+    /// Applies one owner's Set and scalar deltas to its committed values in `store` and returns
+    /// the changed ones in the compact format, each namespace converted by its own type.
     #[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
     pub(crate) fn compact<S: SlotStore>(
         store: &mut S,
         owner: Address,
-        slots: &EvmStorage,
+        sets: Option<set::Delta>,
+        scalars: Option<scalar::Delta>,
     ) -> Result<EvmStorage, StoreError>
     where
         S::Error: Debug,
     {
         let mut compacted = EvmStorage::default();
-        let mut sets = EvmStorage::default();
-        for (&key, slot) in slots {
-            match CrdtKeyCodec::decode(key) {
-                Some((Namespace::Set, _)) => {
-                    sets.insert(key, slot.clone());
-                }
-                // Scalars have one format.
-                _ => {
-                    compacted.insert(key, slot.clone());
-                }
-            }
+        if let Some(delta) = sets {
+            compacted.extend(set::Converter::compact(store, owner, delta)?);
         }
-        if !sets.is_empty() {
-            compacted.extend(set::Converter::compact(store, owner, &sets)?);
+        if let Some(delta) = scalars {
+            compacted.extend(scalar::Applier::fold(store, owner, delta)?);
         }
         Ok(compacted)
     }
 
-    /// Applies the CRDT slots of `incoming` alone into `db`; returns the plain slots.
+    /// Applies one owner's Set and scalar deltas to its committed values in `store` and returns
+    /// the changed ones in the indexed format, each namespace converted by its own type.
+    pub(crate) fn reindex<S: SlotStore>(
+        store: &mut S,
+        owner: Address,
+        sets: Option<set::Delta>,
+        scalars: Option<scalar::Delta>,
+    ) -> Result<EvmStorage, StoreError>
+    where
+        S::Error: Debug,
+    {
+        let mut reindexed = EvmStorage::default();
+        if let Some(delta) = sets {
+            reindexed.extend(set::Converter::reindex(store, owner, delta)?);
+        }
+        if let Some(delta) = scalars {
+            reindexed.extend(scalar::Applier::fold(store, owner, delta)?);
+        }
+        Ok(reindexed)
+    }
+
+    /// Writes the CRDT slots of `incoming` alone into `db`'s pending deltas; returns the plain
+    /// slots.
     pub(crate) fn merge_and_apply<DB: DatabaseRef + Sync, Store: OverlayWrite>(
         db: &mut StateDb<DB, Store>,
         incoming: EvmState,

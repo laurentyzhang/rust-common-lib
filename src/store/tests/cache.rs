@@ -1,12 +1,8 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::common::codec::CodecError;
-use crate::execution::ApplyDelta;
-use crate::execution::evm::state::StateOverlay;
-use crate::execution::set::{Applier, Delta, KeyCodec, Property};
-use crate::execution::workload::ID;
-use alloy_evm::revm::state::{Account, AccountInfo, EvmStorage, EvmStorageSlot};
+use crate::execution::set::{Indexer, KeyCodec, Property};
+use alloy_evm::revm::state::{Account, AccountInfo, EvmStorageSlot};
 
 struct MapStore(HashMap<u64, u64>);
 
@@ -19,13 +15,14 @@ impl PhysicalStore<u64, u64> for MapStore {
 #[test]
 fn consuming_and_rebuilding_cached_store_preserves_cache_and_fallback() {
     let mut fallback = MapStore(HashMap::from([(1, 10)]));
-    let store = CachedStore::<_, _>::new(4, UnitWeighter, Default::default(), Some(&fallback));
+    let store =
+        PhysicalCachedStore::<_, _>::new(4, UnitWeighter, Default::default(), Some(&fallback));
 
     assert_eq!(store.get_with(&1, |value| *value), Ok(Some(10)));
     let cache = store.into_cache();
 
     fallback.0.insert(2, 20);
-    let store = CachedStore::from_cache(cache, Some(&fallback));
+    let store = PhysicalCachedStore::from_cache(cache, Some(&fallback));
 
     assert_eq!(store.get_with(&1, |value| *value), Ok(Some(10)));
     assert_eq!(store.get_with(&2, |value| *value), Ok(Some(20)));
@@ -51,84 +48,84 @@ fn store() -> StateDb {
     StateDb::new(EvmState::from_iter([(OWNER, account)]))
 }
 
-/// Runs a batch over `cache` that adds or removes `element` in SET, then compacts it and writes the
-/// changes and the list into the cache, as the MDBX committer does; returns what goes to the store.
-fn batch(cache: &mut PersistentStore<'_, 8>, property: Property, element: u64) -> EvmState {
+/// Runs a batch over the cache that inserts or removes `element` in SET; its changes are pending
+/// deltas over the committed Set.
+fn batch(cache: &PersistentStore<'_>, insert: bool, element: u64) -> EvmState {
     let mut block_db = StateDb::with_fallback(
         StateOverlay::new(EvmState::default(), StateOverlay::add_balance_nonce_deltas),
-        Some(&*cache),
+        Some(cache),
     );
-    let mut slots = EvmStorage::default();
-    KeyCodec::delta(property, SET)
-        .encode(&vec![U256::from(element)], |key, word| {
-            slots.insert(
-                key,
-                EvmStorageSlot::new_changed(U256::ZERO, word, Default::default()),
-            );
-            Ok::<_, CodecError>(())
-        })
-        .unwrap();
-    let mut delta = Delta::default();
-    Applier::merge_delta_from(&mut delta, ID::default(), &slots).unwrap();
-    Applier::apply(&mut block_db, OWNER, delta).unwrap();
-
-    let merged = block_db.into_inner();
-    let mut persisted = merged.clone();
-    let slots = std::mem::take(&mut persisted.get_mut(&OWNER).unwrap().storage);
-    let mut db = StateDb::with_fallback(
-        StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
-        Some(&*cache),
-    );
-    persisted.get_mut(&OWNER).unwrap().storage =
-        set::Converter::compact(&mut db, OWNER, &slots).unwrap();
-    let merged = db.into_inner();
-    cache.write(entries(merged)).unwrap();
-    cache.write(entries(persisted.clone())).unwrap();
-    persisted
+    let element = U256::from(element);
+    match insert {
+        true => Indexer::insert(&mut block_db, OWNER, SET, element),
+        false => Indexer::remove(&mut block_db, OWNER, SET, element),
+    }
+    .unwrap();
+    block_db.into_inner()
 }
 
-/// Reads `key` of OWNER from a persisted state.
-fn persisted_slot(state: &EvmState, key: U256) -> Option<U256> {
-    state[&OWNER]
-        .storage
-        .get(&key)
-        .map(|slot| slot.present_value)
+/// Returns the keys of SET's cache entry by property, and the value of each.
+fn cached_set(cache: &PersistentStore<'_>) -> Vec<(Property, U256)> {
+    cache
+        .get_with(&CacheKey::Set(OWNER, SET), |value| match value {
+            CacheVal::Set(slots) => slots
+                .iter()
+                .filter_map(|(&key, slot)| KeyCodec::decode(key).map(|(_, property, _)| (property, slot.present_value)))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
-fn the_cache_keeps_the_execution_format_and_the_store_gets_the_list() {
+fn the_cache_commits_deltas_into_its_index_without_holes() {
     let store = store();
-    let mut cache = PersistentStore::<8>::new(1 << 20, ByWeight, Default::default(), Some(&store));
-    let node = |element: u64| KeyCodec::element(Property::Node, SET, U256::from(element));
+    let mut committer = PhysicalStoreCacheCommitter::new(PersistentStore::new(
+        1 << 20,
+        ByWeight,
+        Default::default(),
+        Some(&store),
+    ));
+    let read = |committer: &PhysicalStoreCacheCommitter<'_>, key: U256| {
+        committer.cache().storage_ref(OWNER, key).unwrap()
+    };
+    let index = KeyCodec::delta(Property::Index, SET);
+    let position = |element: u64| KeyCodec::element(Property::Position, SET, U256::from(element));
 
-    // Batch 1 removes 20: the store gets the list 10, and the cache stays converted.
-    let first = batch(&mut cache, Property::PendingRemovals, 20);
-    assert_eq!(
-        persisted_slot(&first, KeyCodec::head(SET)),
-        Some(U256::from(10))
-    );
-    assert_eq!(
-        persisted_slot(&first, KeyCodec::tail(SET)),
-        Some(U256::from(10))
-    );
-    assert_eq!(persisted_slot(&first, node(10)), Some(U256::ZERO));
-    assert_eq!(persisted_slot(&first, KeyCodec::indexed(SET)), None);
-    assert_eq!(
-        cache.storage_ref(OWNER, KeyCodec::indexed(SET)).unwrap(),
-        U256::from(1)
-    );
+    // Batch 1 removes 10; batch 2, rejected, adds 30.
+    let first = batch(committer.cache(), false, 10);
+    let rejected = batch(committer.cache(), true, 30);
+    committer.buffer(1, first);
+    committer.buffer(2, rejected);
+    committer.stage(vec![1]).unwrap();
+    committer.flush().unwrap();
+    // The index is rebuilt without the hole, and the deltas are gone.
+    assert_eq!(read(&committer, KeyCodec::length(SET)), U256::from(1));
+    assert_eq!(read(&committer, index.key(0).unwrap()), U256::from(32));
+    assert_eq!(read(&committer, index.key(1).unwrap()), U256::from(20));
+    assert_eq!(read(&committer, position(20)), U256::from(1));
+    assert_eq!(read(&committer, position(10)), U256::ZERO);
+    assert!(cached_set(committer.cache()).iter().all(|(property, _)| {
+        matches!(
+            property,
+            Property::Length | Property::Index | Property::Position | Property::Indexed
+        )
+    }));
 
-    // Batch 2 adds 20 back: 10 → 20 must be written again, as the store holds 10 → 0.
-    let second = batch(&mut cache, Property::DeltaAdded, 20);
-    assert_eq!(persisted_slot(&second, node(10)), Some(U256::from(20)));
-    assert_eq!(
-        persisted_slot(&second, KeyCodec::tail(SET)),
-        Some(U256::from(20))
-    );
-    assert_eq!(
-        persisted_slot(&second, KeyCodec::length(SET)),
-        Some(U256::from(2))
-    );
+    // Batches 3 and 4 run against the same base and both add: each element lands once, in batch
+    // order.
+    let third = batch(committer.cache(), true, 30);
+    let fourth = batch(committer.cache(), true, 40);
+    committer.buffer(3, third);
+    committer.buffer(4, fourth);
+    committer.stage(vec![3, 4]).unwrap();
+    committer.flush().unwrap();
+    assert_eq!(read(&committer, KeyCodec::length(SET)), U256::from(3));
+    for (at, element) in [(1, 20), (2, 30), (3, 40)] {
+        assert_eq!(read(&committer, index.key(at).unwrap()), U256::from(element));
+        assert_eq!(read(&committer, position(element)), U256::from(at));
+    }
 }
 
 #[test]
@@ -140,7 +137,7 @@ fn a_write_skips_sets_the_cache_does_not_hold() {
     };
     let length = KeyCodec::length(SET);
 
-    // A Set not cached is skipped, as only part of it is written; plain entries are kept.
+    // An entry not cached is skipped, a Set or a plain slot alike: it loads from the store.
     let mut account = Account::from(AccountInfo::default());
     account.storage.insert(
         length,
@@ -154,7 +151,7 @@ fn a_write_skips_sets_the_cache_does_not_hold() {
         .write(entries(EvmState::from_iter([(OWNER, account)])))
         .unwrap();
     assert!(!cached(&cache, &CacheKey::Set(OWNER, SET)));
-    assert!(cached(&cache, &CacheKey::Slot(OWNER, U256::from(100))));
+    assert!(!cached(&cache, &CacheKey::Slot(OWNER, U256::from(100))));
 
     // Its next read expands the whole Set from the store.
     assert_eq!(

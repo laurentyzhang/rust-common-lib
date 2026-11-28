@@ -145,7 +145,6 @@ impl OverlayWrite for EvmState {
 
 /// Merges a later batch's changes into `merged`: a created or removed account replaces the earlier
 /// one, any other takes the later info and slots.
-#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
 pub(crate) fn merge(merged: &mut EvmState, changes: EvmState) {
     for (address, account) in changes {
         match merged.get_mut(&address) {

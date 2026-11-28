@@ -2,7 +2,7 @@
 
 use std::fmt::Debug;
 
-use alloy_evm::revm::state::EvmStorage;
+use alloy_evm::revm::state::{EvmStorage, EvmStorageSlot};
 use alloy_primitives::map::HashMap;
 use alloy_primitives::{Address, U256};
 
@@ -65,5 +65,48 @@ impl ApplyDelta for Applier {
             store.write(owner, key, value).map_err(database)?;
         }
         Ok(())
+    }
+}
+
+impl Applier {
+    /// Returns `owner`'s scalars once `delta` is folded in at the persistent store: each Value
+    /// takes its PosDelta and NegDelta, the other changed properties stay as they are, and no delta
+    /// is kept.
+    pub(crate) fn fold<S: SlotStore>(
+        store: &mut S,
+        owner: Address,
+        delta: Delta,
+    ) -> Result<EvmStorage, StoreError>
+    where
+        S::Error: Debug,
+    {
+        let slot = |value: U256| EvmStorageSlot::new(value, Default::default());
+        let mut folded = EvmStorage::default();
+        // Each scalar's net delta, by its Value key.
+        let mut net = HashMap::<U256, U256>::default();
+        for (key, value) in delta.slots {
+            let value_key = KeyCodec::with_property(key, Property::Value as u8);
+            match KeyCodec::decode(key) {
+                Some((_, property, _)) if property == Property::PosDelta as u8 => {
+                    let total = net.entry(value_key).or_default();
+                    *total = total.wrapping_add(value);
+                }
+                Some((_, property, _)) if property == Property::NegDelta as u8 => {
+                    let total = net.entry(value_key).or_default();
+                    *total = total.wrapping_sub(value);
+                }
+                _ => {
+                    folded.insert(key, slot(value));
+                }
+            }
+        }
+        for (key, change) in net {
+            let value = match folded.get(&key) {
+                Some(changed) => changed.present_value,
+                None => store.read(owner, key).map_err(database)?,
+            };
+            folded.insert(key, slot(value.wrapping_add(change)));
+        }
+        Ok(folded)
     }
 }

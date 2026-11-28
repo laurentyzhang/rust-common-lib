@@ -1,10 +1,12 @@
-//! `CachedStore`, sharded quick_caches over a physical_store, and `PersistentStore`, its EVM form over
-//! MDBX, which keeps accounts, slots and whole Sets in the execution format.
+//! `PhysicalCachedStore`, sharded quick_caches over a physical_store, and `PersistentStore`, its
+//! EVM form over MDBX, which keeps accounts, slots and whole Sets in the execution format.
 //!
 //! Only MDBX keeps Sets compact; the cache and every layer above hold them expanded. A Set miss
-//! expands through `Expand`; MDBX's committer compacts through each namespace's converter.
-//! The cache holds only what MDBX holds: it is written after MDBX, with the same accepted batches.
+//! expands through `Expand`. The cache holds only committed values with no pending deltas, the
+//! same data MDBX holds: `PhysicalStoreCacheCommitter` writes it in parallel with MDBX's
+//! committer, from the same accepted batches.
 
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Debug;
 use std::hash::{BuildHasher, Hash};
 use std::marker::PhantomData;
@@ -21,9 +23,11 @@ use quick_cache::{Lifecycle, UnitWeighter, Weighter, unsync};
 use rayon::prelude::*;
 
 use crate::store::SlotStore;
-use crate::execution::evm::state::{StateDb, store::OverlayRead};
-use crate::execution::{FormatConverter, set};
-use crate::store::traits::{PhysicalStore, StoreError};
+use crate::execution::evm::state::store::merge;
+use crate::execution::evm::state::{StateDb, StateOverlay, store::OverlayRead};
+use crate::execution::workload::ID;
+use crate::execution::{CrdtSlot, FormatConverter, set};
+use crate::store::traits::{Committer, PhysicalStore, StoreError};
 
 /// Converts a missing entry from a physical_store's format into a cache's, as the cache loads it.
 pub trait Load<K, V> {
@@ -46,7 +50,7 @@ impl<K, V> Load<K, V> for Plain {
 /// A cache split into `N` shards, each a quick_cache behind its own lock, over an optional
 /// physical_store whose entries `Lo` converts as they load. Reads and misses lock one shard; `flush`
 /// writes through `&mut` without locks.
-pub struct CachedStore<
+pub struct PhysicalCachedStore<
     'a,
     K,
     V,
@@ -69,7 +73,7 @@ pub struct CachedStore<
 
 /// Construction, reads with loading on a miss, and lock-free writes.
 impl<'a, K: Eq + Hash, V, We: Weighter<K, V>, L: Lifecycle<K, V>, Lo: Load<K, V>, const N: usize>
-    CachedStore<'a, K, V, We, L, Lo, N>
+    PhysicalCachedStore<'a, K, V, We, L, Lo, N>
 {
     /// Creates a cache holding up to `capacity` in weight, split evenly over the shards.
     pub fn new(
@@ -101,8 +105,8 @@ impl<'a, K: Eq + Hash, V, We: Weighter<K, V>, L: Lifecycle<K, V>, Lo: Load<K, V>
     }
 
     /// Detaches the physical_store, keeping the cached entries.
-    pub fn into_cache<'b>(self) -> CachedStore<'b, K, V, We, L, Lo, N> {
-        CachedStore {
+    pub fn into_cache<'b>(self) -> PhysicalCachedStore<'b, K, V, We, L, Lo, N> {
+        PhysicalCachedStore {
             shards: self.shards,
             hasher: self.hasher,
             lifecycle: self.lifecycle,
@@ -113,7 +117,7 @@ impl<'a, K: Eq + Hash, V, We: Weighter<K, V>, L: Lifecycle<K, V>, Lo: Load<K, V>
 
     /// Attaches `physical_store` to the entries of `cache`.
     pub fn from_cache(
-        cache: CachedStore<'_, K, V, We, L, Lo, N>,
+        cache: PhysicalCachedStore<'_, K, V, We, L, Lo, N>,
         physical_store: Option<&'a dyn PhysicalStore<K, V>>,
     ) -> Self {
         Self {
@@ -206,10 +210,10 @@ impl<'a, K: Eq + Hash, V, We: Weighter<K, V>, L: Lifecycle<K, V>, Lo: Load<K, V>
 }
 
 /// A `Debug` that needs no bounds on the parameters.
-impl<K, V, We, L, Lo, const N: usize> Debug for CachedStore<'_, K, V, We, L, Lo, N> {
+impl<K, V, We, L, Lo, const N: usize> Debug for PhysicalCachedStore<'_, K, V, We, L, Lo, N> {
     /// Shows the shard count; the shards and the physical_store have no useful `Debug`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CachedStore")
+        f.debug_struct("PhysicalCachedStore")
             .field("shards", &N)
             .finish_non_exhaustive()
     }
@@ -261,7 +265,7 @@ impl Weighter<CacheKey, CacheVal> for ByWeight {
 }
 
 /// The persistent store execution reads: the cache over MDBX, one store to callers.
-pub type PersistentStore<'a, const N: usize = 64> = CachedStore<
+pub type PersistentStore<'a, const N: usize = 64> = PhysicalCachedStore<
     'a,
     CacheKey,
     CacheVal,
@@ -273,7 +277,6 @@ pub type PersistentStore<'a, const N: usize = 64> = CachedStore<
 
 /// Splits execution-format changes into cache entries: accounts, plain slots, code, and the
 /// changed slots of each Set.
-#[cfg_attr(not(feature = "mdbx"), allow(dead_code))]
 pub(crate) fn entries(changes: EvmState) -> Vec<(CacheKey, CacheVal)> {
     let mut entries = Vec::new();
     let mut sets: HashMap<(Address, [u8; 6]), HashMap<U256, EvmStorageSlot>> = HashMap::default();
@@ -298,23 +301,113 @@ pub(crate) fn entries(changes: EvmState) -> Vec<(CacheKey, CacheVal)> {
     entries
 }
 
-/// Writes accepted changes into the cache once MDBX holds them.
+/// Writes committed changes into the cache.
 impl<const N: usize> PersistentStore<'_, N> {
-    /// Writes `entries` without locks: a cached Set takes the changed slots, a Set not cached is
-    /// skipped, as it expands whole from MDBX on its next read; any other entry is replaced.
+    /// Writes `entries` into what the cache holds, without locks: an entry it doesn't hold is
+    /// skipped, as it loads from MDBX on its next read. A Set takes the changed slots, an empty
+    /// one leaving it; any other entry is replaced.
     pub fn write(&mut self, entries: Vec<(CacheKey, CacheVal)>) -> Result<(), StoreError> {
-        self.flush(entries, |current, new| match (current, new) {
-            (Some(CacheVal::Set(slots)), CacheVal::Set(new)) => {
-                slots.extend(new);
-                None
+        self.flush(entries, |current, new| {
+            match (current, new) {
+                (Some(CacheVal::Set(slots)), CacheVal::Set(new)) => {
+                    for (key, slot) in new {
+                        match slot.present_value.is_zero() {
+                            true => slots.remove(&key),
+                            false => slots.insert(key, slot),
+                        };
+                    }
+                }
+                (Some(current), new) => *current = new,
+                (None, _) => {}
             }
-            (None, CacheVal::Set(_)) => None,
-            (Some(current), new) => {
-                *current = new;
-                None
-            }
-            (None, new) => Some(new),
+            None
         });
+        Ok(())
+    }
+}
+
+/// Commits accepted batches into the cache in front of MDBX, in parallel with MDBX's committer,
+/// with the same buffer, stage and flush: native values as they are, CRDT values with their
+/// deltas applied and Sets reindexed. A value the cache doesn't hold is skipped; it loads from MDBX
+/// on its next read.
+#[derive(Debug)]
+pub struct PhysicalStoreCacheCommitter<'a> {
+    buffered: BTreeMap<u64, EvmState>,
+    staged: Vec<(u64, EvmState)>,
+    cache: PersistentStore<'a>,
+}
+
+impl<'a> PhysicalStoreCacheCommitter<'a> {
+    /// Commits into `cache`.
+    pub fn new(cache: PersistentStore<'a>) -> Self {
+        Self {
+            buffered: BTreeMap::new(),
+            staged: Vec::new(),
+            cache,
+        }
+    }
+
+    /// Returns the cache, for reads between commits.
+    pub fn cache(&self) -> &PersistentStore<'a> {
+        &self.cache
+    }
+}
+
+impl Committer<u64, EvmState> for PhysicalStoreCacheCommitter<'_> {
+    /// Holds a batch's changes until it is accepted or rejected.
+    fn buffer(&mut self, batch: u64, changes: EvmState) {
+        self.buffered.insert(batch, changes);
+    }
+
+    /// Keeps the accepted batches, in batch order, and drops the rest.
+    fn stage(&mut self, accepted: Vec<u64>) -> Result<(), StoreError> {
+        let accepted = accepted.into_iter().collect::<HashSet<_>>();
+        for (batch, changes) in std::mem::take(&mut self.buffered) {
+            if accepted.contains(&batch) {
+                self.staged.push((batch, changes));
+            }
+        }
+        Ok(())
+    }
+
+    /// Merges the staged batches, applies their CRDT deltas to the values the cache holds, and
+    /// writes the cache. An account the batches created or destroyed is dropped, so it loads again
+    /// from MDBX without the batches' status.
+    fn flush(&mut self) -> Result<(), StoreError> {
+        let mut crdt = CrdtSlot::default();
+        let mut merged = EvmState::default();
+        for (batch, changes) in std::mem::take(&mut self.staged) {
+            let id = ID {
+                block: batch,
+                ..Default::default()
+            };
+            merge(&mut merged, crdt.merge_delta_from(id, changes)?);
+        }
+        // Detached from MDBX, which takes this commit in parallel, reads see only what the cache holds.
+        let physical_store = self.cache.physical_store.take();
+        let mut db = StateDb::with_fallback(
+            StateOverlay::new(merged, StateOverlay::copy_balance_nonce),
+            Some(&self.cache),
+        );
+        let reindexed = crdt
+            .drain()
+            .into_iter()
+            .map(|(owner, sets, scalars)| Ok((owner, CrdtSlot::reindex(&mut db, owner, sets, scalars)?)))
+            .collect::<Result<Vec<_>, StoreError>>();
+        let mut merged = db.into_inner();
+        self.cache.physical_store = physical_store;
+        for (owner, slots) in reindexed? {
+            if let Some(account) = merged.get_mut(&owner) {
+                account.storage.extend(slots);
+            }
+        }
+        let wiped: Vec<CacheKey> = merged
+            .iter()
+            .filter(|(_, account)| account.is_created() || account.is_selfdestructed())
+            .map(|(&address, _)| CacheKey::Account(address))
+            .collect();
+        self.cache.write(entries(merged))?;
+        self.cache.remove(&wiped);
         Ok(())
     }
 }
@@ -415,8 +508,7 @@ impl Load<CacheKey, CacheVal> for Expand {
     }
 }
 
-/// Expands one Set from the store's list into a map: reads keep the loaded slots, writes the
-/// converted ones.
+/// Expands one Set from the store's list into a map, which keeps only the converted slots.
 struct Expanding<'a> {
     /// The store the list is read from.
     physical_store: &'a dyn PhysicalStore<CacheKey, CacheVal>,
@@ -428,18 +520,15 @@ struct Expanding<'a> {
 impl SlotStore for Expanding<'_> {
     type Error = StoreError;
 
-    /// Reads the slot from the map, or loads it as a plain slot from the store and keeps it.
+    /// Reads the slot from the map, or as a plain slot from the store.
     fn read(&mut self, owner: Address, key: U256) -> Result<U256, StoreError> {
         if let Some(slot) = self.slots.get(&key) {
             return Ok(slot.present_value);
         }
-        let value = match self.physical_store.get(&CacheKey::Slot(owner, key))? {
+        Ok(match self.physical_store.get(&CacheKey::Slot(owner, key))? {
             Some(CacheVal::Slot(slot)) => slot.present_value,
             _ => U256::ZERO,
-        };
-        self.slots
-            .insert(key, EvmStorageSlot::new(value, TransactionId::ZERO));
-        Ok(value)
+        })
     }
 
     /// Writes the converted slot into the map.
